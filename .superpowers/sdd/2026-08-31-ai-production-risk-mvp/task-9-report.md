@@ -51,7 +51,7 @@ HTTP 200; kpis, production_trend, top_order_risks, recommended_actions 확인
 
 ## 검증 참고 및 우려 사항
 
-기본 `python -m pytest -v`는 저장소에 이미 존재하던 접근 거부 `backend/pytest-cache-files-*` 디렉터리를 pytest가 수집하려 해 `PermissionError`로 중단됐다. 테스트 디렉터리를 명시한 `python -m pytest tests -v`는 동일한 백엔드 테스트 전체를 성공적으로 실행했다. 이 권한 디렉터리는 변경하거나 삭제하지 않았다.
+README의 백엔드 검증 명령은 권한 제한 디렉터리 수집을 피하도록 `python -m pytest tests -v`로 문서화했다. 저장소에 이미 존재하던 접근 거부 `backend/pytest-cache-files-*` 디렉터리는 변경하거나 삭제하지 않았다.
 
 프론트엔드 최초 실행은 Windows 샌드박스의 `spawn EPERM`으로 실패했으나 승인된 외부 실행 환경에서 동일 명령을 재시도해 테스트·린트·빌드 모두 통과했다.
 

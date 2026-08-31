@@ -94,7 +94,7 @@ npm run dev
 ```powershell
 # 백엔드
 Set-Location C:\path\to\ai-production-risk-mvp\backend
-python -m pytest -v
+python -m pytest tests -v
 
 # 프론트엔드
 Set-Location ..\frontend
