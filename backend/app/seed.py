@@ -18,6 +18,11 @@ from app.services.order_risk import calculate_order_risk
 FIXED_SEED = 20_260_831
 
 
+def initialize_sample_database(reference_date: date | None = None) -> None:
+    """실행일(또는 지정 기준일)에 맞춘 합성 샘플 DB를 초기화한다."""
+    reset_database(reference_date)
+
+
 def reset_database(reference_date: date | None = None) -> None:
     """기준일에 상대적인 가상 소재 공장 데이터를 SQLite에 다시 생성한다."""
     effective_reference_date = reference_date or date.today()
@@ -166,4 +171,4 @@ def reset_database(reference_date: date | None = None) -> None:
 
 
 if __name__ == "__main__":
-    reset_database()
+    initialize_sample_database()
