@@ -29,6 +29,7 @@ def calculate_material_risk(
 
     stock = current_stock
     minimum_stock = current_stock
+    shortage_expected = current_stock < safety_stock
     stockout_date: date | None = None
 
     for offset in range(horizon_days):
@@ -36,10 +37,11 @@ def calculate_material_risk(
         stock += scheduled_receipts.get(day, 0)
         stock -= daily_demands.get(day, 0)
         minimum_stock = min(minimum_stock, stock)
+        shortage_expected = shortage_expected or stock < safety_stock
         if stock <= 0 and stockout_date is None:
             stockout_date = day
 
-    shortage_expected = stockout_date is not None or stock < safety_stock
+    shortage_expected = shortage_expected or stockout_date is not None
     return MaterialRiskResult(
         ending_stock=stock,
         minimum_stock=minimum_stock,

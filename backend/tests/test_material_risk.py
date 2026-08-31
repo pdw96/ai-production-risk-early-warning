@@ -13,7 +13,7 @@ def test_receipt_arriving_before_demand_prevents_stockout() -> None:
     )
 
     assert result.stockout_date is None
-    assert result.shortage_expected is False
+    assert result.shortage_expected is True
     assert result.ending_stock == 20
 
 
