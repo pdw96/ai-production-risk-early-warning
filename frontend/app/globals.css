@@ -93,6 +93,49 @@ a {
   min-width: 0;
 }
 
+.dashboard-page { display: grid; gap: 20px; max-width: 1600px; padding: 30px; }
+.dashboard-header, .dashboard-panel__header, .risk-list li > a, .risk-list__metrics, .action-list li { align-items: center; display: flex; }
+.dashboard-header, .dashboard-panel__header { gap: 20px; justify-content: space-between; }
+.dashboard-header h1, .dashboard-panel h2, .data-state h1 { letter-spacing: -0.045em; margin: 0; }
+.dashboard-header h1 { font-size: clamp(1.7rem, 2.5vw, 2.35rem); }
+.dashboard-header p:not(.section-kicker) { color: var(--muted); margin: 8px 0 0; }
+.section-kicker { color: var(--signal); font-family: "Cascadia Mono", Consolas, monospace; font-size: .68rem; font-weight: 700; letter-spacing: .1em; margin: 0 0 6px; }
+.dashboard-header__status, .dashboard-panel__meta { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: .74rem; white-space: nowrap; }
+.dashboard-header__status { border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); color: var(--signal); padding: 7px 9px; }
+.kpi-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.kpi-card, .dashboard-panel, .data-state { background: var(--panel); border: 1px solid var(--line); }
+.kpi-card { min-height: 144px; padding: 18px; transition: border-color 160ms ease, transform 160ms ease; }
+.kpi-grid a:focus-visible, .panel-link:focus-visible, .risk-list a:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.kpi-grid a:hover .kpi-card { border-color: var(--signal); transform: translateY(-2px); }
+.kpi-card__label, .kpi-card__detail, .kpi-card__link-cue { color: var(--muted); font-size: .8rem; margin: 0; }
+.kpi-card__value { color: var(--text); display: block; font-family: "Cascadia Mono", Consolas, monospace; font-size: 2rem; letter-spacing: -.07em; margin: 15px 0 6px; }
+.kpi-card__link-cue { color: var(--signal); display: block; margin-top: 16px; }
+.dashboard-panel { padding: 20px; }
+.dashboard-panel h2 { font-size: 1.06rem; }
+.trend-panel__chart { height: 300px; margin-top: 16px; }
+.dashboard-lower-grid { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.action-panel { grid-column: 1 / -1; }
+.panel-link { color: var(--signal); font-size: .8rem; }
+.risk-list, .action-list { background: var(--line); display: grid; gap: 1px; list-style: none; margin: 17px 0 0; padding: 0; }
+.risk-list li, .action-list li { background: var(--panel); }
+.risk-list li > a { gap: 16px; justify-content: space-between; min-height: 68px; padding: 11px 0; }
+.risk-list strong, .risk-list span { display: block; }
+.risk-list strong { font-size: .9rem; }
+.risk-list li > a > div:first-child span, .risk-list__metrics > span { color: var(--muted); font-size: .76rem; margin-top: 4px; }
+.risk-list__metrics { align-items: flex-end; flex-direction: column; gap: 2px; text-align: right; }
+.status-badge { align-items: center; border: 1px solid currentColor; display: inline-flex; font-size: .72rem; font-weight: 700; gap: 5px; padding: 3px 7px; width: fit-content; }
+.status-badge__icon { display: inline-grid; min-width: .7rem; place-items: center; }
+.status-badge--정상 { color: var(--signal); }
+.status-badge--주의 { color: #f7b955; }
+.status-badge--위험 { color: #ff7a73; }
+.action-list li { gap: 16px; padding: 13px 0; }
+.action-list span { color: var(--signal); font-family: "Cascadia Mono", Consolas, monospace; font-size: .78rem; }
+.action-list p { font-size: .9rem; margin: 0; }
+.data-state { margin: 80px auto; max-width: 560px; padding: 30px; }
+.data-state p { color: var(--muted); margin: 10px 0 0; }
+.data-state--error { border-color: #ff7a73; }
+.sr-only { border: 0; clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
+
 @media (max-width: 720px) {
   .control-room {
     grid-template-columns: 1fr;
@@ -109,4 +152,9 @@ a {
     grid-template-columns: repeat(4, max-content);
     overflow-x: auto;
   }
+
+  .dashboard-page { padding: 20px 18px; }
+  .kpi-grid, .dashboard-lower-grid { grid-template-columns: 1fr; }
+  .action-panel { grid-column: auto; }
+  .dashboard-header { align-items: flex-start; flex-direction: column; }
 }
