@@ -1,7 +1,8 @@
 from datetime import date
+from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import base as db_base
@@ -114,3 +115,31 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
         assert database_session.query(Material).one().purchase_receipts[0].scheduled_quantity == 300
         assert database_session.query(Order).one().daily_productions[0].actual_quantity == 45
         assert database_session.query(RiskStatus).one().status == "신규"
+
+
+def test_get_session_yields_a_usable_session_and_closes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TrackingSession(Session):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.close_called = False
+
+        def close(self) -> None:
+            self.close_called = True
+            super().close()
+
+    engine = create_engine("sqlite:///:memory:")
+    session_factory = sessionmaker(bind=engine, class_=TrackingSession)
+    monkeypatch.setattr(db_base, "SessionLocal", session_factory)
+
+    session_generator = db_base.get_session()
+    yielded_session = next(session_generator)
+
+    assert isinstance(yielded_session, TrackingSession)
+    assert yielded_session.execute(text("SELECT 1")).scalar_one() == 1
+    assert yielded_session.close_called is False
+
+    session_generator.close()
+
+    assert yielded_session.close_called is True
