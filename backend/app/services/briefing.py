@@ -184,7 +184,14 @@ def get_dashboard(session: Session) -> DashboardResponse:
     reference_date = get_reference_date(session)
     orders = list_orders(session)
     materials = list_materials(session)
-    order_risks = [order for order in orders if order.severity != "정상"]
+    order_risks = sorted(
+        (order for order in orders if order.severity != "정상"),
+        key=lambda order: (
+            0 if order.severity == "위험" else 1,
+            order.due_date,
+            order.order_id,
+        ),
+    )
     material_risks = [material for material in materials if material.shortage_expected]
     daily_totals = session.execute(
         select(

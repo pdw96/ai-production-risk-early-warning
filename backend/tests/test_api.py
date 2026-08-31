@@ -72,6 +72,33 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
     assert data["recommended_actions"]
 
 
+def test_seeded_material_shortage_is_exposed_across_risk_apis(
+    client: TestClient,
+) -> None:
+    materials = client.get("/api/materials").json()["data"]
+    shortage_materials = [item for item in materials if item["shortage_expected"]]
+    dashboard = client.get("/api/dashboard").json()["data"]
+    risks = client.get("/api/risks").json()["data"]
+
+    assert shortage_materials
+    assert dashboard["kpis"]["material_shortage_count"] == len(shortage_materials)
+    assert dashboard["top_material_risks"]
+    assert {
+        risk["entity_id"] for risk in risks if risk["risk_type"] == "자재"
+    } == {material["material_id"] for material in shortage_materials}
+
+
+def test_dashboard_prioritizes_danger_orders_with_stable_order_id_tiebreaker(
+    client: TestClient,
+) -> None:
+    top_order_risks = client.get("/api/dashboard").json()["data"][
+        "top_order_risks"
+    ]
+
+    assert [order["severity"] for order in top_order_risks] == ["위험"] * 5
+    assert [order["order_id"] for order in top_order_risks] == [1, 4, 7, 10, 13]
+
+
 def test_local_frontend_origin_is_allowed_by_cors(client: TestClient) -> None:
     response = client.options(
         "/api/dashboard",

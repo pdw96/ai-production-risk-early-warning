@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db import base as db_base
 from app.db.models import BomRequirement, DailyProduction, Material, Order, Product, PurchaseReceipt
 from app.seed import reset_database
+from app.services.briefing import list_materials
 from app.services.order_risk import calculate_order_risk
 
 
@@ -97,3 +98,14 @@ def test_seeded_orders_include_normal_caution_and_danger_by_existing_risk_rule(
         }
 
     assert severities == {"정상", "주의", "위험"}
+
+
+def test_seeded_materials_include_a_fourteen_day_shortage_risk(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        materials = list_materials(session)
+
+    assert any(material.shortage_expected for material in materials)

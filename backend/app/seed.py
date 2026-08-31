@@ -62,6 +62,7 @@ def reset_database(reference_date: date | None = None) -> None:
             start=1,
         )
     ]
+    materials[0].current_stock = materials[0].safety_stock + 1.0
 
     with db_base.SessionLocal() as session:
         session.add_all(products + materials)
@@ -77,11 +78,15 @@ def reset_database(reference_date: date | None = None) -> None:
                     )
                 )
 
-        for material in materials:
+        for material_index, material in enumerate(materials):
+            scheduled_offset = rng.randrange(14)
+            if material_index == 0:
+                scheduled_offset = 13
             session.add(
                 PurchaseReceipt(
                     material=material,
-                    scheduled_date=effective_reference_date + timedelta(days=rng.randrange(14)),
+                    scheduled_date=effective_reference_date
+                    + timedelta(days=scheduled_offset),
                     scheduled_quantity=float(rng.randrange(180, 521)),
                 )
             )
