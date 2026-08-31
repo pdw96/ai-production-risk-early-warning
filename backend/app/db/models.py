@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Date, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-
-if TYPE_CHECKING:
-    from typing import List
 
 
 class Product(Base):
