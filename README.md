@@ -126,7 +126,26 @@ docker compose -f compose.codespaces.yaml down     # Codespaces
 ### 알아두면 좋은 함정 두 가지
 
 1. **`API_INTERNAL_BASE_URL`은 런타임 환경변수가 아니라 빌드 시점 값입니다.** `next.config.ts`의 `rewrites()`는 빌드할 때 `.next/routes-manifest.json`으로 구워지므로, 이미 빌드된 컨테이너에 환경변수를 주입해도 프록시 대상은 바뀌지 않습니다. 값을 바꾸려면 `--build`로 다시 빌드해야 합니다.
-2. **Codespaces에서는 컨테이너 간 bridge 통신이 막힙니다.** 서비스 이름 DNS는 정상 해석되지만(`backend` → `172.18.0.2`) TCP 연결이 타임아웃됩니다(docker-in-docker의 iptables-legacy/nftables 혼재). 그래서 Codespaces용 구성만 `network_mode: host`를 사용합니다. 이 제약은 Codespaces 환경 문제이며 일반 Docker 호스트에는 해당하지 않습니다.
+2. **Codespaces에서는 기본 상태로 컨테이너 간 bridge 통신이 막힙니다.** 서비스 이름 DNS는 정상 해석되지만(`backend` → `172.18.0.2`) TCP 연결이 타임아웃됩니다. 원인은 아래 [Codespaces에서 bridge 구성 쓰기](#codespaces에서-bridge-구성-쓰기)에 정리했습니다. `compose.codespaces.yaml`은 이 문제를 아예 우회하므로 별도 설정 없이 바로 동작합니다.
+
+
+### Codespaces에서 bridge 구성 쓰기
+
+`compose.codespaces.yaml`은 아무 설정 없이 동작하므로 보통은 그쪽을 쓰면 됩니다. Codespaces에서 굳이 `compose.yaml`(bridge)을 그대로 검증하고 싶다면, 호스트 방화벽 규칙을 한 번 손보면 됩니다.
+
+원인은 **iptables 백엔드가 둘로 갈라져 있는 것**입니다. Docker는 nft 테이블에 규칙을 심지만(`FORWARD` 정책 `ACCEPT`, 브리지 허용 규칙 정상), Codespaces 이미지에는 legacy 테이블도 함께 남아 있고 그쪽은 **정책이 `DROP`인데 `docker0`만 참조**합니다. compose가 만드는 `br-*` 브리지는 legacy 쪽 어느 규칙에도 매칭되지 않아 정책 `DROP`으로 떨어지고, 그 결과 SYN이 조용히 사라집니다.
+
+```bash
+# nft 쪽은 ACCEPT인데 legacy 쪽 정책이 DROP인지 확인 (드롭 카운터가 증거)
+sudo iptables-nft    -t filter -S FORWARD | head -1   # -P FORWARD ACCEPT
+sudo iptables-legacy -t filter -L FORWARD -n | head -1  # policy DROP N packets
+
+# legacy 테이블에서 docker 사용자 정의 브리지를 허용
+sudo iptables-legacy -I FORWARD -i br+ -j ACCEPT
+sudo iptables-legacy -I FORWARD -o br+ -j ACCEPT
+```
+
+적용하면 `docker compose up --build`(bridge)가 그대로 동작합니다. 이 규칙은 호스트 방화벽 설정이라 **저장소가 아니라 환경에 적용되며, Codespace를 다시 만들거나 재시작하면 사라집니다.** 되돌리려면 `-I`를 `-D`로 바꿔 같은 명령을 실행합니다.
 
 ## GitHub Codespaces에서 실행
 
