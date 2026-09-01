@@ -12,7 +12,7 @@
 
 ## 아키텍처
 
-Next.js App Router 프론트엔드는 `NEXT_PUBLIC_API_BASE_URL`의 FastAPI만 호출합니다. FastAPI 라우터는 조회·상태 변경을 제공하고, 서비스 계층의 순수 함수가 납기·자재 리스크를 계산하며, SQLAlchemy가 SQLite를 영속화합니다.
+Next.js App Router 프론트엔드는 기본적으로 같은 출처의 `/api`를 내부 FastAPI로 프록시하며, 필요하면 `NEXT_PUBLIC_API_BASE_URL`로 공개 API 주소를 지정할 수 있습니다. FastAPI 라우터는 조회·상태 변경을 제공하고, 서비스 계층의 순수 함수가 납기·자재 리스크를 계산하며, SQLAlchemy가 SQLite를 영속화합니다.
 
 ```text
 Next.js 화면 → FastAPI API → briefing 서비스 → risk 계산 함수
@@ -79,6 +79,18 @@ npm run dev
 ```
 
 브라우저에서 `http://localhost:3000`을 엽니다. API 주소를 바꾸려면 `.env.local`의 `NEXT_PUBLIC_API_BASE_URL`을 수정합니다.
+
+## GitHub Codespaces에서 실행
+
+GitHub 저장소의 **Code → Codespaces → Create codespace**로 일시적인 개발 환경을 만들 수 있습니다. 컨테이너 생성 시 Python·Node 의존성과 합성 SQLite 데이터가 자동으로 준비됩니다. 준비가 끝나면 Codespace 터미널에서 다음 명령을 실행합니다.
+
+```bash
+bash .devcontainer/start.sh
+```
+
+포트 3000의 **AI 생산 리스크 대시보드**를 열면 브라우저에서 화면을 직접 검증할 수 있습니다. 프론트엔드는 같은 출처의 `/api` 요청을 Codespace 내부 FastAPI로 프록시하므로 별도의 공개 API URL이 필요하지 않습니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르고 Codespace를 중지하거나 삭제합니다. SQLite 파일은 Git에 포함되지 않으며 Codespace마다 합성 데이터로 다시 생성됩니다.
+
+GitHub Actions의 `Cloud validation` 워크플로는 테스트·타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 대시보드, 오더, 자재, 리스크 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
 
 ## 화면 안내
 
