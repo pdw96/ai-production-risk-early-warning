@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("API client", () => {
-  it("unwraps a dashboard envelope from the configured API origin", async () => {
+  it("unwraps a dashboard envelope through the same-origin API proxy", async () => {
     const fetch_mock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ data: { kpis: { due_risk_order_count: 3 } } }),
@@ -20,7 +20,7 @@ describe("API client", () => {
     const dashboard = await getDashboard();
 
     expect(dashboard.kpis.due_risk_order_count).toBe(3);
-    expect(fetch_mock).toHaveBeenCalledWith("http://localhost:8000/api/dashboard", {
+    expect(fetch_mock).toHaveBeenCalledWith("/api/dashboard", {
       cache: "no-store",
     });
   });
@@ -45,7 +45,7 @@ describe("API client", () => {
 
     expect(risk.status).toBe("조치 완료");
     expect(fetch_mock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/risks/RISK-ORDER-001/status",
+      "/api/risks/RISK-ORDER-001/status",
       {
         body: '{"status":"조치 완료"}',
         cache: "no-store",

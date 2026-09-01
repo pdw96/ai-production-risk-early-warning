@@ -1,0 +1,95 @@
+name: Cloud validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Initialize synthetic SQLite data
+        working-directory: backend
+        run: python -m app.seed
+
+      - name: Test backend
+        working-directory: backend
+        run: python -m pytest tests -v
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
+      - name: Check TypeScript
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Start FastAPI and Next.js
+        run: |
+          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000) > /tmp/backend.log 2>&1 &
+          (cd frontend && npm run start -- --hostname 127.0.0.1 --port 3000) > /tmp/frontend.log 2>&1 &
+          for attempt in {1..60}; do
+            # FastAPI 자체와 Next.js 프록시 경로까지 확인해야 백엔드가 죽은 상태로 통과하지 않는다.
+            if curl --fail --silent --max-time 5 http://127.0.0.1:8000/api/dashboard > /dev/null \
+              && curl --fail --silent --max-time 5 http://127.0.0.1:3000/ > /dev/null \
+              && curl --fail --silent --max-time 5 http://127.0.0.1:3000/api/dashboard > /dev/null; then
+              echo "FastAPI(8000)와 Next.js(3000)가 ${attempt}초 만에 준비되었습니다."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "서버 준비 대기 시간이 초과되었습니다."
+          cat /tmp/backend.log /tmp/frontend.log
+          exit 1
+
+      - name: Install screenshot browser
+        run: npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Capture cloud preview
+        run: |
+          mkdir -p artifacts/screenshots
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/ artifacts/screenshots/dashboard.png
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/orders artifacts/screenshots/orders.png
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/materials artifacts/screenshots/materials.png
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/risks artifacts/screenshots/risks.png
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-risk-screenshots
+          path: artifacts/screenshots
+          if-no-files-found: warn
+
+      - name: Print server logs on failure
+        if: failure()
+        run: cat /tmp/backend.log /tmp/frontend.log || true
