@@ -1,0 +1,30 @@
+# GitHub Codespaces(docker-in-docker)용 구성.
+#   docker compose -f compose.codespaces.yaml up --build
+# Codespaces에서는 컨테이너 간 bridge 통신의 SYN이 드롭되어 http://backend:8000 이 닿지 않는다.
+# host 네트워크를 쓰면 두 컨테이너가 호스트의 3000/8000에 직접 바인딩되므로
+# devcontainer.json의 forwardPorts 설정이 그대로 동작한다.
+name: ai-production-risk-codespaces
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_PATH: /data/production_risk.db
+    volumes:
+      - backend-data:/data
+    # network_mode: host 에서는 ports 매핑이 무시되고 호스트 포트를 직접 점유한다.
+    network_mode: host
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # host 네트워크에서는 백엔드가 같은 네트워크 네임스페이스의 127.0.0.1:8000 이다.
+        # 이 값은 빌드 시점에 routes-manifest.json으로 구워지므로 런타임에 바꿀 수 없다.
+        API_INTERNAL_BASE_URL: http://127.0.0.1:8000
+    network_mode: host
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
