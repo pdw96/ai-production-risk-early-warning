@@ -57,12 +57,17 @@ jobs:
         run: |
           (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000) > /tmp/backend.log 2>&1 &
           (cd frontend && npm run start -- --hostname 127.0.0.1 --port 3000) > /tmp/frontend.log 2>&1 &
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:3000/ > /dev/null; then
+          for attempt in {1..60}; do
+            # FastAPI 자체와 Next.js 프록시 경로까지 확인해야 백엔드가 죽은 상태로 통과하지 않는다.
+            if curl --fail --silent --max-time 5 http://127.0.0.1:8000/api/dashboard > /dev/null \
+              && curl --fail --silent --max-time 5 http://127.0.0.1:3000/ > /dev/null \
+              && curl --fail --silent --max-time 5 http://127.0.0.1:3000/api/dashboard > /dev/null; then
+              echo "FastAPI(8000)와 Next.js(3000)가 ${attempt}초 만에 준비되었습니다."
               exit 0
             fi
             sleep 1
           done
+          echo "서버 준비 대기 시간이 초과되었습니다."
           cat /tmp/backend.log /tmp/frontend.log
           exit 1
 
