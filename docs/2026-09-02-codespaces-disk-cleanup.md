@@ -253,6 +253,21 @@ Codespace를 재시작할 때마다 Docker가 죽어 있게 된다. 그래서 `d
 3. 재기동 후 데몬이 뜨지 않으면 **이전 설정으로 되돌리고 다시 띄운다.**
 
 기존 `daemon.json` 이 손상된 JSON이면 아무것도 건드리지 않고 중단한다.
+교체는 같은 디렉터리에 임시 파일을 쓰고 `rename` 하는 방식이다. `install` 이나
+`tee` 는 대상 inode 를 잘라서 덮어쓰기 때문에 중간에 죽으면 잘린 파일이 남는다.
+
+### ⚠️ 함정 ④ `builder.gc` 에서는 퍼센트를 쓸 수 없다
+
+Docker 문서의 `buildkitd.toml` 예시(`[worker.oci]`)에는 `reservedSpace = "30%"`
+같은 퍼센트 표기가 나오지만, **`daemon.json` 의 `builder.gc.policy` 에서는 안 된다.**
+`"50%"` 조차 기동 시 이렇게 죽는다(실측).
+
+```
+failed to parse maxUsedSpace: invalid suffix: '%'
+```
+
+바이트 수나 K/M/G/T 접미사만 받는다. `2GB`, `512MB`, `512K`, `2.5GB`, `1gb`,
+`1024000000` 은 모두 정상 기동을 확인했다.
 
 ### `.dockerignore`는 손댈 필요가 없었다
 
