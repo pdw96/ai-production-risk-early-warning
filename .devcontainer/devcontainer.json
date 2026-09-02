@@ -21,7 +21,12 @@
   // 셸에서 DOCKER_BUILD_CACHE_MAX 만 주고 docker-gc.sh 를 돌리면 그 값은
   // 이번 실행에만 적용되고, 다음 기동 때 여기 값으로 되돌아간다.
   "containerEnv": {
-    "DOCKER_BUILD_CACHE_MAX": "2GB"
+    "DOCKER_BUILD_CACHE_MAX": "2GB",
+    // npm/pip 다운로드 캐시를 32GB 루프 디바이스 밖으로 뺀다. /tmp 는 별도
+    // 디스크(/dev/sda1, 118G)다. 재생성 가능한 캐시만 보낸다 — node_modules 나
+    // .venv 는 /tmp 가 비워지면 앱이 깨지므로 저장소에 그대로 둔다.
+    "NPM_CONFIG_CACHE": "/tmp/cache/npm",
+    "PIP_CACHE_DIR": "/tmp/cache/pip"
   },
   "postCreateCommand": "bash .devcontainer/setup.sh",
   // 빌드 캐시 상한(2GB)을 매 기동 시 다시 건다. /etc 는 컨테이너 쓰기
