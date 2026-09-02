@@ -228,8 +228,31 @@ GC 상한 2GB를 쓴다.
 - 새 형식(`reservedSpace`/`maxUsedSpace`)을 썼다. Docker 28+에서
   `defaultKeepStorage`/`keepStorage`는 비권장이다. `dockerd --validate`로 검증했다.
 
-상한을 바꾸려면 `DOCKER_BUILD_CACHE_MAX=1GB bash .devcontainer/docker-gc.sh`.
+상한을 바꾸려면 `devcontainer.json` 의 `containerEnv.DOCKER_BUILD_CACHE_MAX` 를
+고칠 것. 저장소에 커밋되므로 Codespace를 다시 만들어도 유지된다. 셸에서
+`DOCKER_BUILD_CACHE_MAX=1GB bash .devcontainer/docker-gc.sh` 로 주는 값은
+**이번 실행에만** 적용되고 다음 기동 때 `containerEnv` 값으로 되돌아간다.
 수동 회수는 여전히 `docker builder prune -af`.
+
+### ⚠️ 함정 ③ `dockerd --validate` 는 크기 문자열을 검사하지 않는다
+
+`maxUsedSpace` 에 `"banana"` 를 넣어도 `dockerd --validate` 는 `configuration OK`
+(rc=0)를 반환한다. 그런데 실제로 기동하면
+
+```
+error initializing buildkit: error creating buildkit instance:
+  failed to parse maxUsedSpace: invalid size: 'banana'
+```
+
+로 **데몬이 통째로 뜨지 못한다**(실측). 잘못된 값이 `daemon.json` 에 남으면
+Codespace를 재시작할 때마다 Docker가 죽어 있게 된다. 그래서 `docker-gc.sh` 는
+
+1. 값 형식을 정규식으로 **먼저** 검사하고,
+2. 새 설정을 임시 파일에 써서 `dockerd --validate` 로 검증한 뒤에만
+   `daemon.json` 을 교체하고(살아 있는 설정을 먼저 덮어쓰지 않는다),
+3. 재기동 후 데몬이 뜨지 않으면 **이전 설정으로 되돌리고 다시 띄운다.**
+
+기존 `daemon.json` 이 손상된 JSON이면 아무것도 건드리지 않고 중단한다.
 
 ### `.dockerignore`는 손댈 필요가 없었다
 
