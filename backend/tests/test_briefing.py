@@ -145,3 +145,51 @@ def test_a_discard_that_actually_drops_stock_below_safety_stock_is_reported() ->
 
     assert response.severity == "주의"
     assert "유효기간 경과로" in response.reason
+
+
+def test_only_the_discard_up_to_the_shortage_is_named_as_its_cause() -> None:
+    # 9/3 에 40 이 폐기돼 재고가 바닥나고, 그 뒤 도착한 예정 입고 500 이 9/10 에
+    # 또 폐기된다. 전체 폐기량(540)을 소진의 원인으로 적으면 담당자는 아직
+    # 오지도 않았던 수량 때문에 재고가 떨어졌다고 읽게 된다.
+    response = _build_material_response(
+        _material(
+            safety_stock=10,
+            lots=[_lot("LOT-SOON", 40, expiry_date=date(2026, 9, 3))],
+            receipts=[
+                PurchaseReceipt(
+                    scheduled_date=date(2026, 9, 6),
+                    scheduled_quantity=500,
+                    expiry_date=date(2026, 9, 10),
+                )
+            ],
+        ),
+        REFERENCE_DATE,
+        {},
+    )
+
+    assert response.stockout_date == date(2026, 9, 3)
+    assert response.expiring_quantity == 540
+    assert "폐기 40.0으로" in response.reason
+
+
+def test_a_scheduled_lot_sharing_a_lot_number_keeps_its_own_state() -> None:
+    # 예정 입고의 가상 로트번호가 보유 로트와 겹쳐도 폐기 기록이 섞이면 안 된다.
+    response = _build_material_response(
+        _material(
+            safety_stock=10,
+            lots=[_lot("LOT-RM-01-IN-01", 40, expiry_date=date(2026, 12, 31))],
+            receipts=[
+                PurchaseReceipt(
+                    scheduled_date=date(2026, 9, 3),
+                    scheduled_quantity=60,
+                    expiry_date=date(2026, 9, 5),
+                )
+            ],
+        ),
+        REFERENCE_DATE,
+        {},
+    )
+
+    assert response.expiring_quantity == 60
+    states = sorted(lot.state for lot in response.lots)
+    assert states == ["가용", "기간 내 폐기"]

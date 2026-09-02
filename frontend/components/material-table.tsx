@@ -21,8 +21,9 @@ function LotDetails({ lots }: Readonly<{ lots: MaterialLot[] }>) {
     <details className="lot-details">
       <summary>로트 {lots.length}건</summary>
       <ul className="lot-details__list">
-        {lots.map((lot) => (
-          <li key={`${lot.lot_number}-${lot.warehouse}`}>
+        {/* 예정 입고의 가상 로트번호는 보유 로트와 겹칠 수 있으므로 순번까지 키에 넣는다. */}
+        {lots.map((lot, index) => (
+          <li key={`${lot.lot_number}-${lot.warehouse}-${index}`}>
             <span className="lot-details__number">{lot.lot_number}</span>
             <span className="lot-details__warehouse">{lot.warehouse}</span>
             <span className="lot-details__quantity">{format_quantity(lot.quantity)}</span>

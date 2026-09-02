@@ -132,7 +132,7 @@ def test_production_warehouse_is_issued_first_when_lots_are_otherwise_equal() ->
     assert result.available_stock == 100
     assert result.stock_by_warehouse == {"원재료창고": 60.0, "생산창고": 40.0}
     # 생산창고 40이 먼저 나갔으므로 유효기간에 남아 폐기되는 것은 원재료창고 60뿐이다.
-    assert result.discarded_by_lot == {("LOT-SPLIT", "원재료창고"): 60.0}
+    assert result.discarded_by_lot == {("LOT-SPLIT", "원재료창고", False): 60.0}
     assert result.expiring_quantity == 60
     assert result.ending_stock == 0
 
@@ -205,7 +205,7 @@ def test_a_lot_expiring_on_the_reference_date_counts_as_discarded_today() -> Non
     assert result.available_stock == 0
     assert result.expiring_quantity == 100
     assert result.first_discard_date == date(2026, 9, 1)
-    assert result.discarded_by_lot == {("LOT-A", "원재료창고"): 100}
+    assert result.discarded_by_lot == {("LOT-A", "원재료창고", False): 100}
 
 
 def test_a_lot_expired_before_the_reference_date_is_not_reported_as_disposal() -> None:
@@ -250,7 +250,7 @@ def test_partial_consumption_only_discards_what_is_left_at_expiry() -> None:
         date(2026, 9, 1),
     )
 
-    assert result.discarded_by_lot == {("LOT-SOON", "원재료창고"): 30}
+    assert result.discarded_by_lot == {("LOT-SOON", "원재료창고", False): 30}
     assert result.expiring_quantity == 30
     assert result.first_discard_date == date(2026, 9, 5)
 
@@ -270,3 +270,53 @@ def test_first_discard_date_is_reported_after_an_earlier_demand_stockout() -> No
     assert result.stockout_date == date(2026, 9, 1)
     assert result.first_discard_date == date(2026, 9, 8)
     assert result.first_discard_date > result.stockout_date
+
+
+def test_exhausting_lots_exactly_is_not_hidden_by_a_floating_point_remnant() -> None:
+    # 0.1 + 0.2 에서 0.3 을 빼면 2.8e-17 이 남는다. 정규화가 없으면 이 잔차가
+    # `quantity > 0` 을 통과해 정확히 소진된 재고가 남아 있는 것처럼 보인다.
+    result = calculate_material_risk(
+        [
+            _lot(0.1, lot_number="LOT-A"),
+            _lot(0.2, lot_number="LOT-B"),
+        ],
+        0,
+        {date(2026, 9, 1): 0.3},
+        date(2026, 9, 1),
+    )
+
+    assert result.ending_stock == 0
+    assert result.stockout_date == date(2026, 9, 1)
+    assert result.shortage_expected is True
+
+
+def test_discards_are_recorded_per_day_for_causality() -> None:
+    result = calculate_material_risk(
+        [
+            _lot(50, expiry_day=3, lot_number="LOT-FIRST"),
+            _lot(70, expiry_day=6, lot_number="LOT-SECOND"),
+        ],
+        10,
+        {},
+        date(2026, 9, 1),
+    )
+
+    assert result.discarded_by_date == {date(2026, 9, 3): 50.0, date(2026, 9, 6): 70.0}
+
+
+def test_a_scheduled_lot_does_not_share_a_discard_record_with_a_stored_lot() -> None:
+    # 예정 입고의 가상 로트번호는 보유 로트와 겹칠 수 있다(DB 유일 제약 밖이다).
+    # 겹쳐도 폐기 기록이 한 칸으로 합쳐지면 안 버린 로트가 폐기로 표시된다.
+    stored = _lot(40, expiry_day=20, lot_number="LOT-A-IN-01")
+    scheduled = Lot(
+        lot_number="LOT-A-IN-01",
+        warehouse="원재료창고",
+        quantity=60,
+        received_date=date(2026, 9, 2),
+        expiry_date=date(2026, 9, 4),
+        scheduled=True,
+    )
+
+    result = calculate_material_risk([stored, scheduled], 10, {}, date(2026, 9, 1))
+
+    assert result.discarded_by_lot == {("LOT-A-IN-01", "원재료창고", True): 60.0}

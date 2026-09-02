@@ -20,6 +20,15 @@ _WAREHOUSE_ISSUE_PRIORITY: dict[str, int] = {
 # 유효기간이 없는 로트는 폐기되지 않으므로 가장 마지막에 쓴다.
 _NO_EXPIRY_SORT_KEY = date.max
 
+# 수량은 소수점 둘째 자리까지만 의미가 있다. 차감을 부동소수로 그냥 두면
+# 0.1 + 0.2 에서 0.3 을 뺀 잔차(2.8e-17)가 `quantity > 0` 을 통과해, 정확히
+# 소진된 재고가 남아 있는 것처럼 보인다(소진일이 안 잡힌다).
+_QUANTITY_PRECISION = 6
+
+
+def _normalize(quantity: float) -> float:
+    return round(quantity, _QUANTITY_PRECISION)
+
 
 @dataclass(frozen=True)
 class Lot:
@@ -30,6 +39,15 @@ class Lot:
     quantity: float
     received_date: date
     expiry_date: date | None = None
+    # 예정 입고에서 만들어진 가상 로트인가. 로트번호는 보유 로트와 겹칠 수
+    # 있으므로(예정 입고는 DB 유일 제약 밖이다) 이 값까지 넣어야 두 로트의
+    # 폐기 기록이 한 칸으로 합쳐지지 않는다.
+    scheduled: bool = False
+
+    @property
+    def key(self) -> tuple[str, str, bool]:
+        """로트를 유일하게 가리키는 키. 폐기 기록의 dict 키로 쓴다."""
+        return (self.lot_number, self.warehouse, self.scheduled)
 
 
 @dataclass(frozen=True)
@@ -44,13 +62,20 @@ class MaterialRiskResult:
     stockout_date: date | None
     expiring_quantity: float
     first_expiry_date: date | None
-    # 폐기가 처음 일어난 날. 소진의 원인이 폐기인지 판단하는 데 쓴다.
-    first_discard_date: date | None
     # 안전재고 미만이 처음 드러난 날. 소진 전에 이미 부족했는지 구분한다.
     first_shortage_date: date | None
-    # (로트번호, 창고) -> 기간 내 실제 폐기 수량. 수요가 먼저 먹어치운 로트는
+    # `Lot.key` -> 기간 내 실제 폐기 수량. 수요가 먼저 먹어치운 로트는
     # 유효기간이 기간 안이어도 여기에 들어오지 않는다.
-    discarded_by_lot: dict[tuple[str, str], float]
+    discarded_by_lot: dict[tuple[str, str, bool], float]
+    # 날짜 -> 그날 폐기된 수량. 부족이 드러난 날까지의 폐기만 그 부족의
+    # 원인으로 말하기 위해 필요하다(전체 폐기량을 원인으로 적으면 부족 이후에
+    # 도착한 입고가 나중에 버려진 것까지 원인으로 둔갑한다).
+    discarded_by_date: dict[date, float]
+
+    @property
+    def first_discard_date(self) -> date | None:
+        """폐기가 처음 일어난 날."""
+        return min(self.discarded_by_date, default=None)
 
 
 def _issue_order_key(lot: Lot) -> tuple[date, date, int, str]:
@@ -93,8 +118,8 @@ def calculate_material_risk(
 
     pool: list[Lot] = []
     expiring_quantity = 0.0
-    first_discard_date: date | None = None
-    discarded_by_lot: dict[tuple[str, str], float] = {}
+    discarded_by_lot: dict[tuple[str, str, bool], float] = {}
+    discarded_by_date: dict[date, float] = {}
     stockout_date: date | None = None
     first_shortage_date: date | None = None
     minimum_stock: float | None = None
@@ -123,19 +148,21 @@ def calculate_material_risk(
         for lot in pool:
             if lot.expiry_date is not None and lot.expiry_date <= day:
                 if lot.expiry_date >= reference_date and lot.quantity > 0:
-                    expiring_quantity += lot.quantity
-                    key = (lot.lot_number, lot.warehouse)
-                    discarded_by_lot[key] = discarded_by_lot.get(key, 0.0) + lot.quantity
-                    if first_discard_date is None:
-                        first_discard_date = day
+                    expiring_quantity = _normalize(expiring_quantity + lot.quantity)
+                    discarded_by_lot[lot.key] = _normalize(
+                        discarded_by_lot.get(lot.key, 0.0) + lot.quantity
+                    )
+                    discarded_by_date[day] = _normalize(
+                        discarded_by_date.get(day, 0.0) + lot.quantity
+                    )
             else:
                 remaining_pool.append(lot)
         pool = remaining_pool
 
         if offset == 0:
-            available_stock = sum(lot.quantity for lot in pool)
+            available_stock = _normalize(sum(lot.quantity for lot in pool))
             for lot in pool:
-                stock_by_warehouse[lot.warehouse] = (
+                stock_by_warehouse[lot.warehouse] = _normalize(
                     stock_by_warehouse.get(lot.warehouse, 0.0) + lot.quantity
                 )
             # 기준일 시점 재고가 이미 안전재고 미만이면 그 자체로 부족이다.
@@ -152,13 +179,13 @@ def calculate_material_risk(
                 if outstanding <= 0:
                     break
                 issued = min(lot.quantity, outstanding)
-                pool[index] = replace(lot, quantity=lot.quantity - issued)
-                outstanding -= issued
+                pool[index] = replace(lot, quantity=_normalize(lot.quantity - issued))
+                outstanding = _normalize(outstanding - issued)
             pool = [lot for lot in pool if lot.quantity > 0]
         deficit = max(outstanding, 0.0)
 
         # 4) 집계 — 못 채운 수요만큼 재고를 음수로 표현해 소진을 드러낸다.
-        stock = sum(lot.quantity for lot in pool) - deficit
+        stock = _normalize(sum(lot.quantity for lot in pool) - deficit)
         minimum_stock = stock if minimum_stock is None else min(minimum_stock, stock)
         shortage_expected = shortage_expected or stock < safety_stock
         if stock < safety_stock and first_shortage_date is None:
@@ -178,7 +205,7 @@ def calculate_material_risk(
         stockout_date=stockout_date,
         expiring_quantity=expiring_quantity,
         first_expiry_date=first_expiry_date,
-        first_discard_date=first_discard_date,
         first_shortage_date=first_shortage_date,
         discarded_by_lot=discarded_by_lot,
+        discarded_by_date=discarded_by_date,
     )

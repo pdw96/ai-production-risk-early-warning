@@ -57,7 +57,9 @@ class MaterialResponse(BaseModel):
     material_id: int
     material_code: str
     material_name: str
-    # 로트 합계에서 파생된 기준일 가용 재고(만료분 제외, 두 창고 합산)
+    # 기준일에 도착했고 만료되지 않은 로트의 합(두 창고 합산). 입고를 수요
+    # 차감보다 먼저 반영하므로 기준일 당일 도착하는 예정 입고분이 포함되며,
+    # 그래서 `material_lots` 행 합계와 다를 수 있다.
     current_stock: float
     raw_warehouse_stock: float
     production_warehouse_stock: float

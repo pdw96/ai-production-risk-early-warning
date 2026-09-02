@@ -535,6 +535,7 @@ def _build_material_response(
             quantity=receipt.scheduled_quantity,
             received_date=receipt.scheduled_date,
             expiry_date=receipt.expiry_date,
+            scheduled=True,
         )
         for index, receipt in enumerate(
             sorted(material.purchase_receipts, key=lambda item: item.scheduled_date)
@@ -554,17 +555,28 @@ def _build_material_response(
     # 일어난 폐기, 그리고 기준일부터 이미 안전재고 미만이던 자재를 뒤늦은 폐기
     # 탓으로 돌리면 담당자가 엉뚱한 로트를 붙잡게 된다.
     shortage_onset = result.stockout_date or result.first_shortage_date
-    discard_caused_shortage = (
-        result.first_discard_date is not None
-        and shortage_onset is not None
-        and result.first_discard_date <= shortage_onset
+    # 부족이 드러난 날까지 실제로 버려진 양만 그 부족의 원인이다. 전체
+    # 폐기량을 적으면, 부족 이후에 도착해 나중에 버려진 입고분까지 원인으로
+    # 둔갑해 담당자가 실제보다 큰 폐기를 부족의 이유로 읽게 된다.
+    discarded_until_shortage = (
+        round(
+            sum(
+                quantity
+                for day, quantity in result.discarded_by_date.items()
+                if day <= shortage_onset
+            ),
+            2,
+        )
+        if shortage_onset is not None
+        else 0.0
     )
+    discard_caused_shortage = discarded_until_shortage > 0
 
     if result.stockout_date is not None:
         severity = "위험"
         if discard_caused_shortage:
             reason = (
-                f"유효기간 경과 폐기 {round(result.expiring_quantity, 2)}으로 "
+                f"유효기간 경과 폐기 {discarded_until_shortage}으로 "
                 f"{result.stockout_date.isoformat()}에 소진될 전망입니다."
             )
             recommendation = "폐기 임박 로트를 우선 소진하도록 생산 순서를 조정하세요."
@@ -579,8 +591,9 @@ def _build_material_response(
         severity = "주의"
         if discard_caused_shortage:
             reason = (
-                f"14일 내 {round(result.expiring_quantity, 2)}이 유효기간 경과로 "
-                "폐기되어 안전재고 미만으로 하락할 전망입니다."
+                f"{discarded_until_shortage}이 유효기간 경과로 폐기되어 "
+                f"{shortage_onset.isoformat()}에 안전재고 미만으로 하락할 "
+                "전망입니다."
             )
             recommendation = "폐기 임박 로트를 우선 소진하고 추가 발주를 검토하세요."
         else:
@@ -623,7 +636,7 @@ def _build_material_response(
 def _build_lot_responses(
     lots: list[Lot],
     reference_date: date,
-    discarded_by_lot: dict[tuple[str, str], float],
+    discarded_by_lot: dict[tuple[str, str, bool], float],
 ) -> list[MaterialLotResponse]:
     """로트를 출고 순서(유효기간 → 입고일)대로 정렬해 화면용으로 변환한다.
 
@@ -651,7 +664,7 @@ def _build_lot_responses(
     ):
         if lot.expiry_date is not None and lot.expiry_date < reference_date:
             state = "만료"
-        elif discarded_by_lot.get((lot.lot_number, lot.warehouse), 0.0) > 0:
+        elif discarded_by_lot.get(lot.key, 0.0) > 0:
             state = "기간 내 폐기"
         elif lot.received_date > reference_date:
             state = "예정 입고"
