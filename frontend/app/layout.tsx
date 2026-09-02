@@ -3,18 +3,12 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import "./globals.css";
+import { navigation_groups } from "../lib/navigation";
 
 export const metadata: Metadata = {
   title: "AI 생산 리스크 조기경보",
   description: "생산 운영 통제실",
 };
-
-const navigation_items = [
-  { href: "/", label: "운영 현황" },
-  { href: "/orders", label: "오더" },
-  { href: "/materials", label: "자재" },
-  { href: "/risks", label: "리스크" },
-];
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
@@ -27,10 +21,15 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
               <strong className="control-room__title">AI 생산 리스크 조기경보</strong>
             </div>
             <nav aria-label="주요 메뉴" className="control-room__navigation">
-              {navigation_items.map((item) => (
-                <Link href={item.href} key={item.href}>
-                  {item.label}
-                </Link>
+              {navigation_groups.map((group) => (
+                <div className="control-room__navigation-group" key={group.label}>
+                  <p className="control-room__navigation-label">{group.label}</p>
+                  {group.items.map((item) => (
+                    <Link href={item.href} key={item.href}>
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
               ))}
             </nav>
           </aside>

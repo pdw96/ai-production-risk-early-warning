@@ -99,7 +99,10 @@ export default function HomePage() {
         </Link>
       </section>
 
-      <ProductionTrendChart data={dashboard.production_trend} />
+      <ProductionTrendChart
+        data={dashboard.production_trend}
+        productTrends={dashboard.product_trends}
+      />
 
       <section className="dashboard-lower-grid">
         <article className="dashboard-panel risk-list-panel">

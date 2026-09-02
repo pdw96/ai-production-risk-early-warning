@@ -1,5 +1,8 @@
 export type RiskSeverity = "정상" | "주의" | "위험";
 export type RiskWorkflowStatus = "신규" | "확인 중" | "조치 완료";
+export type Warehouse = "원재료창고" | "생산창고";
+export type LotState = "가용" | "예정 입고" | "기간 내 폐기";
+export type ItemType = "제품" | "자재";
 
 export interface ProductionPoint {
   work_date: string;
@@ -27,19 +30,81 @@ export interface OrderDetail extends Order {
   recent_productions: ProductionPoint[];
 }
 
+export interface MaterialLot {
+  lot_number: string;
+  warehouse: Warehouse;
+  quantity: number;
+  received_date: string;
+  expiry_date: string | null;
+  state: LotState;
+}
+
 export interface Material {
   material_id: number;
   material_code: string;
   material_name: string;
+  /** 로트 합계에서 파생된 기준일 가용 재고(만료분 제외, 두 창고 합산) */
   current_stock: number;
+  raw_warehouse_stock: number;
+  production_warehouse_stock: number;
   safety_stock: number;
   ending_stock: number;
   minimum_stock: number;
   shortage_expected: boolean;
   stockout_date: string | null;
+  expiring_quantity: number;
+  first_expiry_date: string | null;
+  lots: MaterialLot[];
   severity: RiskSeverity;
   reason: string;
   recommendation: string;
+}
+
+export interface ProductTrend {
+  product_code: string;
+  product_name: string;
+  points: ProductionPoint[];
+}
+
+export interface ProductionResult {
+  work_date: string;
+  planned_quantity: number;
+  actual_quantity: number;
+  achievement_rate: number;
+  active_order_count: number;
+}
+
+export interface MasterItem {
+  item_type: ItemType;
+  item_code: string;
+  item_name: string;
+  safety_stock: number | null;
+  lot_count: number | null;
+  linked_item_count: number;
+}
+
+export interface BomRequirement {
+  product_code: string;
+  product_name: string;
+  material_code: string;
+  material_name: string;
+  unit_quantity: number;
+}
+
+export interface MasterData {
+  items: MasterItem[];
+  bom_requirements: BomRequirement[];
+}
+
+export interface PurchaseReceipt {
+  receipt_id: number;
+  material_code: string;
+  material_name: string;
+  scheduled_date: string;
+  scheduled_quantity: number;
+  expiry_date: string | null;
+  days_until_arrival: number;
+  within_horizon: boolean;
 }
 
 export interface Risk {
@@ -62,6 +127,7 @@ export interface Dashboard {
     today_actual_quantity: number;
   };
   production_trend: ProductionPoint[];
+  product_trends: ProductTrend[];
   top_order_risks: Order[];
   top_material_risks: Material[];
   recommended_actions: string[];
@@ -109,6 +175,18 @@ export function getOrder(order_id: number): Promise<OrderDetail> {
 
 export function getMaterials(): Promise<Material[]> {
   return requestData<Material[]>("/api/materials");
+}
+
+export function getProductionResults(): Promise<ProductionResult[]> {
+  return requestData<ProductionResult[]>("/api/production-results");
+}
+
+export function getMasterData(): Promise<MasterData> {
+  return requestData<MasterData>("/api/master-data");
+}
+
+export function getPurchases(): Promise<PurchaseReceipt[]> {
+  return requestData<PurchaseReceipt[]>("/api/purchases");
 }
 
 export function getRisks(): Promise<Risk[]> {

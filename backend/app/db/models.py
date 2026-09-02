@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import Date, Float, ForeignKey, String
+from sqlalchemy import Date, Float, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -53,11 +53,14 @@ class Material(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
-    current_stock: Mapped[float] = mapped_column(Float)
     safety_stock: Mapped[float] = mapped_column(Float)
 
     bom_requirements: Mapped[list[BomRequirement]] = relationship(back_populates="material")
     purchase_receipts: Mapped[list[PurchaseReceipt]] = relationship(back_populates="material")
+    lots: Mapped[list[MaterialLot]] = relationship(
+        back_populates="material",
+        cascade="all, delete-orphan",
+    )
 
 
 class BomRequirement(Base):
@@ -79,8 +82,34 @@ class PurchaseReceipt(Base):
     material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
     scheduled_date: Mapped[date] = mapped_column(Date)
     scheduled_quantity: Mapped[float] = mapped_column(Float)
+    # 도착하면 로트가 되므로 예정 입고도 유효기간을 가진다. 도착지는 원재료창고다.
+    expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     material: Mapped[Material] = relationship(back_populates="purchase_receipts")
+
+
+class MaterialLot(Base):
+    """자재의 로트별 보유 재고.
+
+    같은 로트번호가 두 창고에 나뉘어 존재할 수 있으므로(원재료창고 100EA 중
+    50EA를 생산창고로 이동한 상태) 유일키는 로트번호 단독이 아니라
+    (로트번호, 창고) 조합이다.
+    """
+
+    __tablename__ = "material_lots"
+    __table_args__ = (
+        UniqueConstraint("lot_number", "warehouse", name="uq_material_lot_warehouse"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    lot_number: Mapped[str] = mapped_column(String(50), index=True)
+    warehouse: Mapped[str] = mapped_column(String(20))
+    quantity: Mapped[float] = mapped_column(Float)
+    received_date: Mapped[date] = mapped_column(Date)
+    expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    material: Mapped[Material] = relationship(back_populates="lots")
 
 
 class RiskStatus(Base):
