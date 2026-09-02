@@ -66,7 +66,7 @@ printf '%s' "$previous" > "$prev_file"
 # 기존 내용은 인자로 준 파일로 넘긴다. 힙독이 stdin 을 차지하므로
 # 파이프로는 전달되지 않는다.
 python3 - "$prev_file" "$MAX_USED_SPACE" > "$candidate" <<'PY'
-import json, pathlib, sys
+import json, pathlib, re, sys
 
 prev_path, max_used = sys.argv[1], sys.argv[2]
 
@@ -79,19 +79,44 @@ except json.JSONDecodeError as exc:
         "        손으로 고친 뒤 다시 실행할 것. 설정을 건드리지 않았다."
     )
 
-# "builder": null 이면 setdefault 는 None 을 돌려주고 뒤이은 대입이
-# TypeError 로 죽는다. dockerd 는 null 섹션을 기본값으로 받아들이므로
-# 그런 설정으로도 데몬은 떠 있을 수 있다. 객체로 정규화한다.
+# 최상위가 null 이어도 Go 는 zero value 로 받아들여 데몬이 뜬다.
+# 파이썬에서는 None 이라 .get 이 AttributeError 로 죽는다. 객체로 정규화한다.
+if config is None:
+    config = {}
+if not isinstance(config, dict):
+    sys.exit(
+        "기존 daemon.json 의 최상위가 객체가 아니다.\n"
+        "        손으로 고친 뒤 다시 실행할 것. 설정을 건드리지 않았다."
+    )
+
+# "builder": null 도 같은 이유로 정규화한다. setdefault 는 None 을 돌려주고
+# 뒤이은 대입이 TypeError 로 죽는다.
 builder = config.get("builder")
 if not isinstance(builder, dict):
     builder = {}
 config["builder"] = builder
 
+# reservedSpace 는 GC 가 그 아래로는 회수하지 않는 바닥이다. 이게 상한보다
+# 크면 상한을 걸어도 그 바닥만큼은 계속 남아, 요청한 상한이 적용된 것처럼
+# 보고하면서 실제로는 더 많이 쓰게 된다. 상한의 절반을 넘지 않게 잡는다.
+UNITS = {"": 1, "b": 1, "k": 1024, "kb": 1024, "m": 1024 ** 2, "mb": 1024 ** 2,
+         "g": 1024 ** 3, "gb": 1024 ** 3, "t": 1024 ** 4, "tb": 1024 ** 4,
+         "p": 1024 ** 5, "pb": 1024 ** 5}
+
+matched = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGTPkmgtp]?[Bb]?)", max_used)
+if matched is None:  # 셸에서 이미 걸렀지만, 갈라지지 않게 여기서도 막는다.
+    sys.exit(f"상한 값을 해석할 수 없다: {max_used}")
+
+max_bytes = int(float(matched.group(1)) * UNITS[matched.group(2).lower()])
+reserved_bytes = min(256 * 1024 * 1024, max_bytes // 2)
+
 builder["gc"] = {
     "enabled": True,
     # 정책을 직접 주면 전역 reservedSpace/maxUsedSpace 는 무시된다.
     # all=true 라 모든 캐시 레코드가 상한을 넘으면 회수 대상이 된다.
-    "policy": [{"all": True, "reservedSpace": "256MB", "maxUsedSpace": max_used}],
+    "policy": [
+        {"all": True, "reservedSpace": str(reserved_bytes), "maxUsedSpace": max_used}
+    ],
 }
 
 json.dump(config, sys.stdout, indent=2)

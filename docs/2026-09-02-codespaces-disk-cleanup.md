@@ -203,7 +203,7 @@ GC 상한 2GB를 쓴다.
     "gc": {
       "enabled": true,
       "policy": [
-        { "all": true, "reservedSpace": "256MB", "maxUsedSpace": "2GB" }
+        { "all": true, "reservedSpace": "268435456", "maxUsedSpace": "2GB" }
       ]
     }
   }
@@ -255,6 +255,17 @@ Codespace를 재시작할 때마다 Docker가 죽어 있게 된다. 그래서 `d
 기존 `daemon.json` 이 손상된 JSON이면 아무것도 건드리지 않고 중단한다.
 교체는 같은 디렉터리에 임시 파일을 쓰고 `rename` 하는 방식이다. `install` 이나
 `tee` 는 대상 inode 를 잘라서 덮어쓰기 때문에 중간에 죽으면 잘린 파일이 남는다.
+
+### `reservedSpace` 는 상한에서 파생시킨다
+
+`reservedSpace` 는 GC가 **그 아래로는 회수하지 않는 바닥**이다. 이게 상한보다
+크면 상한을 걸어도 바닥만큼은 계속 남는다. 예전처럼 `256MB` 로 고정해 두면
+`DOCKER_BUILD_CACHE_MAX=128MB` 를 줬을 때 "128MB 적용" 이라고 보고하면서
+실제로는 256MB까지 쓴다. 그래서 상한의 절반(최대 256MB)으로 계산해서 넣는다.
+
+GC가 실제로 도는 것은 확인했다. 상한을 `512K` 로 낮추자 빌드 캐시가
+**1.549GB → 326.6MB** 로 줄고 디스크가 79% → 76% 가 됐다. 다만 GC는 주기적으로
+돌기 때문에 상한이 즉시 정확히 강제되는 하드 리밋은 아니다.
 
 ### ⚠️ 함정 ④ `builder.gc` 에서는 퍼센트를 쓸 수 없다
 
