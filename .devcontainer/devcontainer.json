@@ -17,5 +17,8 @@
       "onAutoForward": "silent"
     }
   },
-  "postCreateCommand": "bash .devcontainer/setup.sh"
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  // 빌드 캐시 상한(2GB)을 매 기동 시 다시 건다. /etc 는 컨테이너 쓰기
+  // 레이어라 Codespace를 다시 만들면 daemon.json 이 사라지기 때문이다.
+  "postStartCommand": "bash .devcontainer/docker-gc.sh"
 }
