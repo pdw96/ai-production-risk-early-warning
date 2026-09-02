@@ -8,7 +8,14 @@ function format_stockout_date(value: string | null): string {
   return value ? format_date(value) : "소진 없음";
 }
 
-function format_expiry_date(value: string | null): string {
+// 로트의 `expiry_date` 가 없다는 것은 그 로트에 유효기간이 없다는 뜻이고,
+// 자재의 `first_expiry_date` 가 없다는 것은 14일 안에 만료가 없다는 뜻이다.
+// 같은 문구를 쓰면 만료되지 않는 로트를 "기간 밖 만료" 로 읽게 된다.
+function format_lot_expiry(value: string | null): string {
+  return value ? `유효기간 ${format_date(value)}` : "유효기간 없음";
+}
+
+function format_first_expiry_date(value: string | null): string {
   return value ? format_date(value) : "기간 내 없음";
 }
 
@@ -28,8 +35,8 @@ function LotDetails({ lots }: Readonly<{ lots: MaterialLot[] }>) {
             <span className="lot-details__warehouse">{lot.warehouse}</span>
             <span className="lot-details__quantity">{format_quantity(lot.quantity)}</span>
             <span className="lot-details__dates">
-              입고 {format_date(lot.received_date)} · 유효기간{" "}
-              {format_expiry_date(lot.expiry_date)}
+              입고 {format_date(lot.received_date)} ·{" "}
+              {format_lot_expiry(lot.expiry_date)}
             </span>
             <span className="lot-details__state">{lot.state}</span>
           </li>
@@ -83,7 +90,7 @@ export function MaterialTable({ materials }: Readonly<{ materials: Material[] }>
               <td className="numeric-cell">{format_quantity(material.ending_stock)}</td>
               <td className="numeric-cell">{format_quantity(material.minimum_stock)}</td>
               <td className="numeric-cell">{format_quantity(material.expiring_quantity)}</td>
-              <td>{format_expiry_date(material.first_expiry_date)}</td>
+              <td>{format_first_expiry_date(material.first_expiry_date)}</td>
               <td>{material.shortage_expected ? "부족 예상" : "수급 가능"}</td>
               <td>{format_stockout_date(material.stockout_date)}</td>
               <td><StatusBadge severity={material.severity} /></td>

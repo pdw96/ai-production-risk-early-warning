@@ -87,7 +87,17 @@ describe("MaterialTable", () => {
     );
     // 같은 로트번호가 두 창고에 나뉘어 있는 상태가 두 행으로 보인다.
     expect(markup.match(/LOT-MAT-001-01</g)).toHaveLength(2);
-    // 유효기간이 없는 로트는 기간 내 폐기 대상이 아님을 문구로 구분한다.
+    // 로트의 유효기간 없음과 자재의 "14일 내 만료 없음"은 다른 말이다.
+    // 로트 행에는 앞의 뜻만 나와야 한다.
+    expect(markup).toContain("유효기간 없음");
+    expect(markup).not.toContain("기간 내 없음");
+  });
+
+  it("distinguishes a material with no expiry inside the horizon", () => {
+    const markup = renderToStaticMarkup(
+      <MaterialTable materials={[{ ...sample_material, first_expiry_date: null }]} />,
+    );
+
     expect(markup).toContain("기간 내 없음");
   });
 
