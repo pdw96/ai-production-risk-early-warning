@@ -5,9 +5,12 @@ from app.db.base import get_session
 from app.schemas.contracts import (
     DashboardResponse,
     Envelope,
+    MasterDataResponse,
     MaterialResponse,
     OrderDetailResponse,
     OrderResponse,
+    ProductionResultResponse,
+    PurchaseReceiptResponse,
     RiskResponse,
     RiskStatusUpdate,
 )
@@ -46,6 +49,30 @@ def get_materials(
     session: Session = Depends(get_session),
 ) -> Envelope[list[MaterialResponse]]:
     return Envelope(data=briefing.list_materials(session))
+
+
+@router.get(
+    "/production-results",
+    response_model=Envelope[list[ProductionResultResponse]],
+)
+def get_production_results(
+    session: Session = Depends(get_session),
+) -> Envelope[list[ProductionResultResponse]]:
+    return Envelope(data=briefing.list_production_results(session))
+
+
+@router.get("/master-data", response_model=Envelope[MasterDataResponse])
+def get_master_data(
+    session: Session = Depends(get_session),
+) -> Envelope[MasterDataResponse]:
+    return Envelope(data=briefing.get_master_data(session))
+
+
+@router.get("/purchases", response_model=Envelope[list[PurchaseReceiptResponse]])
+def get_purchases(
+    session: Session = Depends(get_session),
+) -> Envelope[list[PurchaseReceiptResponse]]:
+    return Envelope(data=briefing.list_purchase_receipts(session))
 
 
 @router.get("/risks", response_model=Envelope[list[RiskResponse]])

@@ -81,6 +81,8 @@ jobs:
           npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/orders artifacts/screenshots/orders.png
           npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/materials artifacts/screenshots/materials.png
           npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/risks artifacts/screenshots/risks.png
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/master artifacts/screenshots/master.png
+          npx --yes playwright@1.55.0 screenshot --browser chromium --full-page --wait-for-timeout 3000 http://127.0.0.1:3000/purchases artifacts/screenshots/purchases.png
 
       - name: Upload screenshots
         if: always()

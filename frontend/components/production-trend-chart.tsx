@@ -10,20 +10,23 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import React from "react";
+import React, { useState } from "react";
 
-import type { ProductionPoint } from "../lib/api";
+import type { ProductionPoint, ProductTrend } from "../lib/api";
 
 interface ProductionTrendChartProps {
   data: ProductionPoint[];
+  productTrends?: ProductTrend[];
 }
+
+const ALL_PRODUCTS = "전체";
 
 function format_number(value: number): string {
   return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value);
 }
 
 function format_short_date(value: string): string {
-  const [year, month, day] = value.split("-").map(Number);
+  const [, month, day] = value.split("-").map(Number);
   return `${month}/${day}`;
 }
 
@@ -32,7 +35,21 @@ function format_full_date(value: string): string {
   return `${year}년 ${month}월 ${day}일`;
 }
 
-export function ProductionTrendChart({ data }: Readonly<ProductionTrendChartProps>) {
+export function ProductionTrendChart({
+  data,
+  productTrends = [],
+}: Readonly<ProductionTrendChartProps>) {
+  const [selected_code, set_selected_code] = useState<string | null>(null);
+  const selected_trend =
+    productTrends.find((trend) => trend.product_code === selected_code) ?? null;
+
+  // 제품을 고르면 그 제품의 계획·실적 두 선만 그린다. 제품 5개를 한꺼번에
+  // 그리면 계획·실적까지 10선이 되어 읽을 수 없다.
+  const points = selected_trend ? selected_trend.points : data;
+  const scope_label = selected_trend
+    ? `${selected_trend.product_name} · ${selected_trend.product_code}`
+    : "전 제품 합계";
+
   return (
     <section aria-labelledby="production-trend-title" className="dashboard-panel trend-panel">
       <div className="dashboard-panel__header">
@@ -40,11 +57,36 @@ export function ProductionTrendChart({ data }: Readonly<ProductionTrendChartProp
           <p className="section-kicker">OUTPUT TREND</p>
           <h2 id="production-trend-title">최근 7일 생산 계획 대비 실적</h2>
         </div>
-        <span className="dashboard-panel__meta">단위: 개</span>
+        <span className="dashboard-panel__meta">{scope_label} · 단위: 개</span>
       </div>
-      <div className="trend-panel__chart" role="img" aria-label="최근 7일 생산 계획과 실적 추이 차트">
+      {productTrends.length > 0 && (
+        <div aria-label="추이를 볼 제품 선택" className="trend-panel__filter" role="group">
+          <button
+            aria-pressed={selected_code === null}
+            onClick={() => set_selected_code(null)}
+            type="button"
+          >
+            {ALL_PRODUCTS}
+          </button>
+          {productTrends.map((trend) => (
+            <button
+              aria-pressed={selected_code === trend.product_code}
+              key={trend.product_code}
+              onClick={() => set_selected_code(trend.product_code)}
+              type="button"
+            >
+              {trend.product_name}
+            </button>
+          ))}
+        </div>
+      )}
+      <div
+        className="trend-panel__chart"
+        role="img"
+        aria-label={`${scope_label}의 최근 7일 생산 계획과 실적 추이 차트`}
+      >
         <ResponsiveContainer height="100%" width="100%">
-          <LineChart data={data} margin={{ bottom: 4, left: 0, right: 18, top: 18 }}>
+          <LineChart data={points} margin={{ bottom: 4, left: 0, right: 18, top: 18 }}>
             <CartesianGrid stroke="#2a3945" strokeDasharray="3 3" vertical={false} />
             <XAxis
               dataKey="work_date"
@@ -71,7 +113,7 @@ export function ProductionTrendChart({ data }: Readonly<ProductionTrendChartProp
         </ResponsiveContainer>
       </div>
       <table className="sr-only">
-        <caption>최근 7일 생산 계획과 실적</caption>
+        <caption>{scope_label}의 최근 7일 생산 계획과 실적</caption>
         <thead>
           <tr>
             <th>날짜</th>
@@ -80,7 +122,7 @@ export function ProductionTrendChart({ data }: Readonly<ProductionTrendChartProp
           </tr>
         </thead>
         <tbody>
-          {data.map((point) => (
+          {points.map((point) => (
             <tr key={point.work_date}>
               <th>{format_full_date(point.work_date)}</th>
               <td>{format_number(point.planned_quantity)}개</td>

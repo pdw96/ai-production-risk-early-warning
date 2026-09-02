@@ -25,8 +25,8 @@ export default function MaterialsPage() {
       <header className="page-header">
         <div>
           <p className="section-kicker">14-DAY SUPPLY WINDOW</p>
-          <h1>자재 수급 전망</h1>
-          <p>예정 입고와 생산 소요를 반영한 재고 소진·안전재고 위험입니다.</p>
+          <h1>재고관리</h1>
+          <p>로트별 재고와 창고, 예정 입고와 생산 소요를 반영한 14일 수급 전망입니다.</p>
         </div>
         <span className="page-header__count">{materials.length} MATERIALS</span>
       </header>
