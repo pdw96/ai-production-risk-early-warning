@@ -139,7 +139,7 @@ a {
 .risk-list strong { font-size: .9rem; }
 .risk-list li > a > div:first-child span, .risk-list__metrics > span { color: var(--muted); font-size: .76rem; margin-top: 4px; }
 .risk-list__metrics { align-items: flex-end; flex-direction: column; gap: 2px; text-align: right; }
-.status-badge { align-items: center; border: 1px solid currentColor; display: inline-flex; font-size: .72rem; font-weight: 700; gap: 5px; padding: 3px 7px; white-space: nowrap; width: fit-content; }
+.status-badge { align-items: center; border: 1px solid currentcolor; display: inline-flex; font-size: .72rem; font-weight: 700; gap: 5px; padding: 3px 7px; white-space: nowrap; width: fit-content; }
 .status-badge__icon { display: inline-grid; min-width: .7rem; place-items: center; }
 .status-badge--정상 { color: var(--signal); }
 .status-badge--주의 { color: #f7b955; }

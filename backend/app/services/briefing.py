@@ -550,9 +550,14 @@ def _build_material_response(
         horizon_days=HORIZON_DAYS,
     )
 
-    # 소진보다 늦게 일어난 폐기를 그 소진의 원인이라고 말하면 안 된다.
-    discard_caused_shortage = result.first_discard_date is not None and (
-        result.stockout_date is None or result.first_discard_date <= result.stockout_date
+    # 폐기가 원인이려면 부족이 드러난 날보다 늦지 않아야 한다. 소진보다 늦게
+    # 일어난 폐기, 그리고 기준일부터 이미 안전재고 미만이던 자재를 뒤늦은 폐기
+    # 탓으로 돌리면 담당자가 엉뚱한 로트를 붙잡게 된다.
+    shortage_onset = result.stockout_date or result.first_shortage_date
+    discard_caused_shortage = (
+        result.first_discard_date is not None
+        and shortage_onset is not None
+        and result.first_discard_date <= shortage_onset
     )
 
     if result.stockout_date is not None:
@@ -625,6 +630,15 @@ def _build_lot_responses(
     `기간 내 폐기`는 유효기간이 아니라 **시뮬레이션에서 실제로 버려졌는지**로
     정한다. 유효기간이 기간 안이어도 그전에 수요가 다 먹어치웠으면 폐기가
     아니다. 날짜만 보고 표시하면 담당자에게 없는 폐기를 알리게 된다.
+
+    판정 순서가 곧 우선순위다.
+
+    1. `만료` — 기준일보다 앞서 유효기간이 지난 로트. 시뮬레이션이 가용 재고와
+       폐기 수량 어디에도 넣지 않으므로, 상태를 붙이지 않으면 `가용`으로 흘러가
+       쓸 수 없는 수량을 가용으로 읽히게 된다.
+    2. `기간 내 폐기` — 예정 입고로 들어와 기간 안에 버려지는 로트도 여기 든다.
+       입고 여부를 먼저 보면 요약의 폐기 수량에 대응하는 로트가 목록에서 사라진다.
+    3. `예정 입고` — 기준일 이후에 도착하며 기간 내 폐기되지 않는 로트.
     """
     responses = []
     for lot in sorted(
@@ -635,10 +649,12 @@ def _build_lot_responses(
             item.lot_number,
         ),
     ):
-        if lot.received_date > reference_date:
-            state = "예정 입고"
+        if lot.expiry_date is not None and lot.expiry_date < reference_date:
+            state = "만료"
         elif discarded_by_lot.get((lot.lot_number, lot.warehouse), 0.0) > 0:
             state = "기간 내 폐기"
+        elif lot.received_date > reference_date:
+            state = "예정 입고"
         else:
             state = "가용"
         responses.append(

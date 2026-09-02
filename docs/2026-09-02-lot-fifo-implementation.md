@@ -252,7 +252,7 @@ class MaterialRiskResult:
   `raw_warehouse_stock`, `production_warehouse_stock`,
   `lots: list[MaterialLotResponse]`.
 - `MaterialLotResponse`: `lot_number`, `warehouse`, `quantity`, `received_date`,
-  `expiry_date`, `state`(`"가용"` / `"예정 입고"` / `"기간 내 폐기"`).
+  `expiry_date`, `state`(`"가용"` / `"예정 입고"` / `"기간 내 폐기"` / `"만료"`).
 - 판정 문구에 폐기 원인을 추가한다. 예: 소진일이 있고 `expiring_quantity > 0`
   이면 `"유효기간 경과 폐기 N으로 YYYY-MM-DD에 소진될 전망입니다."`,
   권장 조치는 `"폐기 임박 로트를 우선 소진하도록 생산 순서를 조정하세요."`

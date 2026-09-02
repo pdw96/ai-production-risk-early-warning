@@ -1,7 +1,7 @@
 export type RiskSeverity = "정상" | "주의" | "위험";
 export type RiskWorkflowStatus = "신규" | "확인 중" | "조치 완료";
 export type Warehouse = "원재료창고" | "생산창고";
-export type LotState = "가용" | "예정 입고" | "기간 내 폐기";
+export type LotState = "가용" | "예정 입고" | "기간 내 폐기" | "만료";
 export type ItemType = "제품" | "자재";
 
 export interface ProductionPoint {

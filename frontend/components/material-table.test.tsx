@@ -91,6 +91,33 @@ describe("MaterialTable", () => {
     expect(markup).toContain("기간 내 없음");
   });
 
+  it("shows an expired lot with its own state instead of counting it as available", () => {
+    // 기준일보다 앞서 만료된 로트는 가용 재고에 들어가지 않으므로 목록에서도
+    // `가용`으로 보이면 안 된다.
+    const markup = renderToStaticMarkup(
+      <MaterialTable
+        materials={[
+          {
+            ...sample_material,
+            lots: [
+              {
+                expiry_date: "2026-08-30",
+                lot_number: "LOT-MAT-001-OLD",
+                quantity: 999,
+                received_date: "2026-07-01",
+                state: "만료",
+                warehouse: "원재료창고",
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("LOT-MAT-001-OLD");
+    expect(markup).toContain("만료");
+  });
+
   it("falls back to a placeholder when a material has no lots", () => {
     const markup = renderToStaticMarkup(
       <MaterialTable materials={[{ ...sample_material, lots: [] }]} />,

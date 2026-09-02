@@ -117,10 +117,12 @@ def test_demand_is_issued_from_the_earliest_expiring_lot_first() -> None:
 
 
 def test_production_warehouse_is_issued_first_when_lots_are_otherwise_equal() -> None:
+    # 두 로트의 유효기간을 같게 두고 그 날짜를 넘겨야 어느 창고가 먼저 나갔는지
+    # 드러난다. 남은 60이 어디 것인지 폐기 내역으로 확인한다.
     result = calculate_material_risk(
         [
-            _lot(60, warehouse="원재료창고", lot_number="LOT-SPLIT"),
-            _lot(40, warehouse="생산창고", lot_number="LOT-SPLIT"),
+            _lot(60, warehouse="원재료창고", expiry_day=3, lot_number="LOT-SPLIT"),
+            _lot(40, warehouse="생산창고", expiry_day=3, lot_number="LOT-SPLIT"),
         ],
         10,
         {date(2026, 9, 1): 40},
@@ -129,7 +131,51 @@ def test_production_warehouse_is_issued_first_when_lots_are_otherwise_equal() ->
 
     assert result.available_stock == 100
     assert result.stock_by_warehouse == {"원재료창고": 60.0, "생산창고": 40.0}
-    assert result.ending_stock == 60
+    # 생산창고 40이 먼저 나갔으므로 유효기간에 남아 폐기되는 것은 원재료창고 60뿐이다.
+    assert result.discarded_by_lot == {("LOT-SPLIT", "원재료창고"): 60.0}
+    assert result.expiring_quantity == 60
+    assert result.ending_stock == 0
+
+
+def test_first_expiry_date_includes_a_lot_expiring_on_the_reference_date() -> None:
+    # 기준일 당일 만료는 폐기 수량에 잡히므로 최초 유효기간에도 잡혀야 한다.
+    # 한쪽만 보면 화면이 "폐기 예정 100"과 "최초 유효기간 없음"을 함께 띄운다.
+    result = calculate_material_risk(
+        [_lot(100, expiry_day=1)],
+        10,
+        {},
+        date(2026, 9, 1),
+    )
+
+    assert result.expiring_quantity == 100
+    assert result.first_expiry_date == date(2026, 9, 1)
+    assert result.first_discard_date == date(2026, 9, 1)
+
+
+def test_first_shortage_date_precedes_a_later_discard_when_stock_starts_low() -> None:
+    # 기준일부터 안전재고(200) 미만인 150. 뒤늦은 폐기를 부족의 원인으로
+    # 지목하지 않으려면 부족이 먼저 드러난 날이 남아 있어야 한다.
+    result = calculate_material_risk(
+        [
+            _lot(100, lot_number="LOT-KEEP"),
+            _lot(50, expiry_day=5, lot_number="LOT-SOON"),
+        ],
+        200,
+        {},
+        date(2026, 9, 1),
+    )
+
+    assert result.shortage_expected is True
+    assert result.stockout_date is None
+    assert result.first_shortage_date == date(2026, 9, 1)
+    assert result.first_discard_date == date(2026, 9, 5)
+
+
+def test_first_shortage_date_is_none_while_stock_stays_above_safety_stock() -> None:
+    result = calculate_material_risk([_lot(100)], 10, {}, date(2026, 9, 1))
+
+    assert result.shortage_expected is False
+    assert result.first_shortage_date is None
 
 
 def test_both_warehouses_count_towards_available_stock() -> None:

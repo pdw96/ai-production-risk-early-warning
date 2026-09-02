@@ -10,7 +10,7 @@ DataT = TypeVar("DataT")
 RiskSeverity = Literal["정상", "주의", "위험"]
 RiskWorkflowStatus = Literal["신규", "확인 중", "조치 완료"]
 Warehouse = Literal["원재료창고", "생산창고"]
-LotState = Literal["가용", "예정 입고", "기간 내 폐기"]
+LotState = Literal["가용", "예정 입고", "기간 내 폐기", "만료"]
 ItemType = Literal["제품", "자재"]
 
 

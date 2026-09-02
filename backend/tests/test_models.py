@@ -210,3 +210,51 @@ def test_the_same_lot_number_cannot_repeat_within_one_warehouse(
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_the_same_lot_number_can_repeat_across_different_materials(
+    session: Session,
+) -> None:
+    # 로트번호는 자재에 종속된 개념이다. 공급사 번호를 그대로 쓰기 시작하면
+    # 서로 다른 자재가 같은 번호를 들고 올 수 있으므로 자재까지 유일키에 넣는다.
+    session.add_all(
+        [
+            MaterialLot(
+                material=Material(code="RM-04", name="가상 원자재 D", safety_stock=50),
+                lot_number="SUP-2026-0001",
+                warehouse="원재료창고",
+                quantity=10,
+                received_date=date.today(),
+            ),
+            MaterialLot(
+                material=Material(code="RM-05", name="가상 원자재 E", safety_stock=50),
+                lot_number="SUP-2026-0001",
+                warehouse="원재료창고",
+                quantity=20,
+                received_date=date.today(),
+            ),
+        ]
+    )
+    session.commit()
+
+    assert session.query(MaterialLot).count() == 2
+
+
+def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
+    session: Session,
+) -> None:
+    # 완제품창고는 이 모델의 범위가 아니다(후속 ②). 상수와 Literal 은 저장을
+    # 막지 못하므로 저장 제약으로 막는다.
+    material = Material(code="RM-06", name="가상 원자재 F", safety_stock=50)
+    session.add(
+        MaterialLot(
+            material=material,
+            lot_number="LOT-RM-06-01",
+            warehouse="완제품창고",
+            quantity=10,
+            received_date=date.today(),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()

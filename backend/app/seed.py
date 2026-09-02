@@ -234,7 +234,9 @@ def _seed_material_lots(
     rng: random.Random,
 ) -> None:
     """자재별 보유 로트를 합성한다. 로트 합계가 곧 그 자재의 가용 재고가 된다."""
-    for index, (material, target_stock) in enumerate(zip(materials, target_stocks)):
+    for index, (material, target_stock) in enumerate(
+        zip(materials, target_stocks, strict=True)
+    ):
         if index == EXPIRY_SHORTAGE_MATERIAL_INDEX:
             entries = _expiring_lot_plan(material, target_stock, reference_date)
         else:

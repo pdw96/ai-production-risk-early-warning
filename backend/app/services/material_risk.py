@@ -46,6 +46,8 @@ class MaterialRiskResult:
     first_expiry_date: date | None
     # 폐기가 처음 일어난 날. 소진의 원인이 폐기인지 판단하는 데 쓴다.
     first_discard_date: date | None
+    # 안전재고 미만이 처음 드러난 날. 소진 전에 이미 부족했는지 구분한다.
+    first_shortage_date: date | None
     # (로트번호, 창고) -> 기간 내 실제 폐기 수량. 수요가 먼저 먹어치운 로트는
     # 유효기간이 기간 안이어도 여기에 들어오지 않는다.
     discarded_by_lot: dict[tuple[str, str], float]
@@ -84,7 +86,7 @@ def calculate_material_risk(
         (
             lot.expiry_date
             for lot in pending
-            if lot.expiry_date is not None and lot.expiry_date > reference_date
+            if lot.expiry_date is not None and lot.expiry_date >= reference_date
         ),
         default=None,
     )
@@ -94,6 +96,7 @@ def calculate_material_risk(
     first_discard_date: date | None = None
     discarded_by_lot: dict[tuple[str, str], float] = {}
     stockout_date: date | None = None
+    first_shortage_date: date | None = None
     minimum_stock: float | None = None
     shortage_expected = False
     available_stock = 0.0
@@ -137,6 +140,8 @@ def calculate_material_risk(
                 )
             # 기준일 시점 재고가 이미 안전재고 미만이면 그 자체로 부족이다.
             shortage_expected = available_stock < safety_stock
+            if shortage_expected:
+                first_shortage_date = day
             minimum_stock = available_stock
 
         # 3) 출고 — 이월 적자를 포함해 유효기간 빠른 순으로 부분 차감한다.
@@ -156,6 +161,8 @@ def calculate_material_risk(
         stock = sum(lot.quantity for lot in pool) - deficit
         minimum_stock = stock if minimum_stock is None else min(minimum_stock, stock)
         shortage_expected = shortage_expected or stock < safety_stock
+        if stock < safety_stock and first_shortage_date is None:
+            first_shortage_date = day
         if stock <= 0 and stockout_date is None:
             stockout_date = day
 
@@ -172,5 +179,6 @@ def calculate_material_risk(
         expiring_quantity=expiring_quantity,
         first_expiry_date=first_expiry_date,
         first_discard_date=first_discard_date,
+        first_shortage_date=first_shortage_date,
         discarded_by_lot=discarded_by_lot,
     )
