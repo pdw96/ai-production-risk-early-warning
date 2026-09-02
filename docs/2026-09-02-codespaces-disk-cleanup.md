@@ -286,8 +286,24 @@ failed to parse maxUsedSpace: invalid suffix: '%'
 (`.venv`, `__pycache__`, `tests`)가 이미 있다. 빌드 컨텍스트가 `./frontend`와
 `./backend`라 루트의 `.git`은 애초에 컨텍스트에 들어가지 않는다.
 
-## 4단계 — `/tmp`
+## 4단계 — `/tmp` (별도 디스크) 활용
 
 `/tmp`는 `/dev/sda1`의 `containerTmp`를 바인드 마운트한 것으로 32GB 루프
-디바이스와 무관하다(118G 중 107G 여유). 큰 산출물은 여기로 보내면 된다.
-**Codespace 재시작 후 유지되는지는 여전히 미검증**이므로 날아가도 되는 것만 둘 것.
+디바이스와 무관하다(118G 중 107G 여유).
+
+`devcontainer.json`의 `containerEnv`로 **npm/pip 다운로드 캐시를 여기로 뺐다.**
+
+```json
+"NPM_CONFIG_CACHE": "/tmp/cache/npm",
+"PIP_CACHE_DIR":    "/tmp/cache/pip"
+```
+
+`npm cache add` / `pip download` 로 실제로 `/tmp/cache/` 아래에 쌓이는 것을
+확인했다. 정리 전 npm 캐시만 147MB였고, `setup.sh`를 돌릴 때마다 다시 자란다.
+
+**`node_modules`와 `backend/.venv`는 옮기지 않았다.** `/tmp`는 Codespace
+재시작 시 사라질 수 있는데(**여전히 미검증**), 이것들이 없어지면 앱이 그냥
+깨진다. 캐시는 없어져도 다시 받으면 그만이라 안전하다. 이 구분이 핵심이다.
+
+큰 빌드 산출물이나 데이터셋을 임시로 둘 곳이 필요하면 `/tmp` 아래에 두되,
+같은 이유로 **날아가도 되는 것만** 둘 것.
