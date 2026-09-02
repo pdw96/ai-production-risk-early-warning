@@ -459,3 +459,44 @@ def test_product_trends_add_up_to_the_total_trend(client: TestClient) -> None:
         actual = sum(trend["points"][index]["actual_quantity"] for trend in data["product_trends"])
         assert round(planned, 2) == total_point["planned_quantity"]
         assert round(actual, 2) == total_point["actual_quantity"]
+
+
+def test_lot_state_reports_disposal_only_when_the_lot_is_actually_discarded(
+    client: TestClient,
+) -> None:
+    """유효기간이 기간 안이어도 수요가 먼저 먹었으면 폐기가 아니다."""
+    materials = client.get("/api/materials").json()["data"]
+
+    for material in materials:
+        discarded = [lot for lot in material["lots"] if lot["state"] == "기간 내 폐기"]
+        if discarded:
+            assert material["expiring_quantity"] > 0
+        else:
+            assert material["expiring_quantity"] == 0
+
+
+def test_expiry_is_named_as_the_cause_only_when_it_precedes_the_stockout(
+    client: TestClient,
+) -> None:
+    materials = client.get("/api/materials").json()["data"]
+
+    for material in materials:
+        if "유효기간" in material["reason"]:
+            assert material["expiring_quantity"] > 0
+            assert material["first_expiry_date"] is not None
+            if material["stockout_date"] is not None:
+                assert material["first_expiry_date"] <= material["stockout_date"]
+
+
+def test_every_product_stays_selectable_in_the_trend_even_without_recent_output(
+    client: TestClient,
+) -> None:
+    """최근 7일 실적이 없어도 제품이 선택지에서 사라지면 안 된다."""
+    product_codes = {
+        item["item_code"]
+        for item in client.get("/api/master-data").json()["data"]["items"]
+        if item["item_type"] == "제품"
+    }
+    trends = client.get("/api/dashboard").json()["data"]["product_trends"]
+
+    assert {trend["product_code"] for trend in trends} == product_codes

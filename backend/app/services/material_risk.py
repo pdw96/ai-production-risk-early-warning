@@ -44,6 +44,11 @@ class MaterialRiskResult:
     stockout_date: date | None
     expiring_quantity: float
     first_expiry_date: date | None
+    # 폐기가 처음 일어난 날. 소진의 원인이 폐기인지 판단하는 데 쓴다.
+    first_discard_date: date | None
+    # (로트번호, 창고) -> 기간 내 실제 폐기 수량. 수요가 먼저 먹어치운 로트는
+    # 유효기간이 기간 안이어도 여기에 들어오지 않는다.
+    discarded_by_lot: dict[tuple[str, str], float]
 
 
 def _issue_order_key(lot: Lot) -> tuple[date, date, int, str]:
@@ -86,6 +91,8 @@ def calculate_material_risk(
 
     pool: list[Lot] = []
     expiring_quantity = 0.0
+    first_discard_date: date | None = None
+    discarded_by_lot: dict[tuple[str, str], float] = {}
     stockout_date: date | None = None
     minimum_stock: float | None = None
     shortage_expected = False
@@ -107,13 +114,17 @@ def calculate_material_risk(
             pool.append(pending.pop(0))
 
         # 2) 폐기 — day < expiry 가 가용 조건이므로 유효기간 당일 아침에 빠진다.
-        #    기준일 이전에 이미 만료된 로트는 애초에 재고가 아니므로 폐기
-        #    예정 수량에 넣지 않고 조용히 뺀다.
+        #    기준일 당일 만료도 오늘 버리는 것이므로 폐기 수량에 넣는다.
+        #    기준일보다 앞선 유효기간만 이미 지난 재고로 보고 조용히 뺀다.
         remaining_pool: list[Lot] = []
         for lot in pool:
             if lot.expiry_date is not None and lot.expiry_date <= day:
-                if lot.expiry_date > reference_date:
+                if lot.expiry_date >= reference_date and lot.quantity > 0:
                     expiring_quantity += lot.quantity
+                    key = (lot.lot_number, lot.warehouse)
+                    discarded_by_lot[key] = discarded_by_lot.get(key, 0.0) + lot.quantity
+                    if first_discard_date is None:
+                        first_discard_date = day
             else:
                 remaining_pool.append(lot)
         pool = remaining_pool
@@ -160,4 +171,6 @@ def calculate_material_risk(
         stockout_date=stockout_date,
         expiring_quantity=expiring_quantity,
         first_expiry_date=first_expiry_date,
+        first_discard_date=first_discard_date,
+        discarded_by_lot=discarded_by_lot,
     )

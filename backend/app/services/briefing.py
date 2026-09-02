@@ -185,7 +185,8 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_code=material.code,
             item_name=material.name,
             safety_stock=round(material.safety_stock, 2),
-            lot_count=len(material.lots),
+            # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
+            lot_count=len({lot.lot_number for lot in material.lots}),
             linked_item_count=len(material.bom_requirements),
         )
         for material in materials
@@ -393,31 +394,31 @@ def _build_product_trends(
     실적이 없는 날도 0으로 채워 넣는다. 날짜 축이 합계 차트와 어긋나면 제품을
     바꿀 때마다 그래프가 튄다.
     """
+    # 제품 목록은 실적과 무관하게 전부 가져온다. 조인으로만 뽑으면 최근 7일에
+    # 실적이 한 줄도 없는 제품이 선택지에서 통째로 사라진다.
+    names: dict[int, tuple[str, str]] = {
+        product.id: (product.code, product.name)
+        for product in session.scalars(select(Product).order_by(Product.code)).all()
+    }
     rows = session.execute(
         select(
-            Product.id,
-            Product.code,
-            Product.name,
+            Order.product_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.planned_quantity),
             func.sum(DailyProduction.actual_quantity),
         )
-        .join(Order, Order.product_id == Product.id)
-        .join(DailyProduction, DailyProduction.order_id == Order.id)
+        .join(Order, DailyProduction.order_id == Order.id)
         .where(
             DailyProduction.work_date.between(
                 reference_date - timedelta(days=6),
                 reference_date,
             )
         )
-        .group_by(Product.id, DailyProduction.work_date)
-        .order_by(Product.code)
+        .group_by(Order.product_id, DailyProduction.work_date)
     ).all()
 
     totals: dict[int, dict[date, tuple[float, float]]] = defaultdict(dict)
-    names: dict[int, tuple[str, str]] = {}
-    for product_id, code, name, work_date, planned, actual in rows:
-        names[product_id] = (code, name)
+    for product_id, work_date, planned, actual in rows:
         totals[product_id][work_date] = (float(planned or 0), float(actual or 0))
 
     trends = []
@@ -549,9 +550,14 @@ def _build_material_response(
         horizon_days=HORIZON_DAYS,
     )
 
+    # 소진보다 늦게 일어난 폐기를 그 소진의 원인이라고 말하면 안 된다.
+    discard_caused_shortage = result.first_discard_date is not None and (
+        result.stockout_date is None or result.first_discard_date <= result.stockout_date
+    )
+
     if result.stockout_date is not None:
         severity = "위험"
-        if result.expiring_quantity > 0:
+        if discard_caused_shortage:
             reason = (
                 f"유효기간 경과 폐기 {round(result.expiring_quantity, 2)}으로 "
                 f"{result.stockout_date.isoformat()}에 소진될 전망입니다."
@@ -566,7 +572,7 @@ def _build_material_response(
             )
     elif result.shortage_expected:
         severity = "주의"
-        if result.expiring_quantity > 0:
+        if discard_caused_shortage:
             reason = (
                 f"14일 내 {round(result.expiring_quantity, 2)}이 유효기간 경과로 "
                 "폐기되어 안전재고 미만으로 하락할 전망입니다."
@@ -601,7 +607,7 @@ def _build_material_response(
         lots=_build_lot_responses(
             [*lots, *scheduled_lots],
             reference_date,
-            horizon_end,
+            result.discarded_by_lot,
         ),
         severity=severity,
         reason=reason,
@@ -612,9 +618,14 @@ def _build_material_response(
 def _build_lot_responses(
     lots: list[Lot],
     reference_date: date,
-    horizon_end: date,
+    discarded_by_lot: dict[tuple[str, str], float],
 ) -> list[MaterialLotResponse]:
-    """로트를 출고 순서(유효기간 → 입고일)대로 정렬해 화면용으로 변환한다."""
+    """로트를 출고 순서(유효기간 → 입고일)대로 정렬해 화면용으로 변환한다.
+
+    `기간 내 폐기`는 유효기간이 아니라 **시뮬레이션에서 실제로 버려졌는지**로
+    정한다. 유효기간이 기간 안이어도 그전에 수요가 다 먹어치웠으면 폐기가
+    아니다. 날짜만 보고 표시하면 담당자에게 없는 폐기를 알리게 된다.
+    """
     responses = []
     for lot in sorted(
         lots,
@@ -626,7 +637,7 @@ def _build_lot_responses(
     ):
         if lot.received_date > reference_date:
             state = "예정 입고"
-        elif lot.expiry_date is not None and lot.expiry_date <= horizon_end:
+        elif discarded_by_lot.get((lot.lot_number, lot.warehouse), 0.0) > 0:
             state = "기간 내 폐기"
         else:
             state = "가용"

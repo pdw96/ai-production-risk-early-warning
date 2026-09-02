@@ -50,4 +50,18 @@ describe("ProductionResultTable", () => {
     expect(markup).toContain("계획 없음");
     expect(markup).not.toContain("계획 미달");
   });
+
+  it("calls a fully missed plan a shortfall, not a missing plan", () => {
+    // 실적이 0이면 달성률도 0이라 계획이 없던 날과 구분이 안 된다.
+    const markup = renderToStaticMarkup(
+      <ProductionResultTable
+        results={[
+          result({ achievement_rate: 0, actual_quantity: 0, planned_quantity: 320 }),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("계획 미달");
+    expect(markup).not.toContain("계획 없음");
+  });
 });

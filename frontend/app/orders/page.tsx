@@ -10,7 +10,11 @@ import { use_api_data } from "../../lib/use-api-data";
 
 export default function OrdersPage() {
   const { data: orders, error_message, is_loading } = use_api_data(getOrders);
-  const { data: production_results } = use_api_data(getProductionResults);
+  const {
+    data: production_results,
+    error_message: production_results_error,
+    is_loading: production_results_loading,
+  } = use_api_data(getProductionResults);
 
   if (is_loading) {
     return <DataState state="loading" />;
@@ -38,10 +42,16 @@ export default function OrdersPage() {
           <h2>생산실적</h2>
           <span>기준일 포함 최근 14일의 계획 대비 실적</span>
         </div>
-        {production_results ? (
-          <ProductionResultTable results={production_results} />
-        ) : (
+        {production_results_loading && (
           <p className="page-panel__pending">생산실적을 불러오는 중입니다.</p>
+        )}
+        {!production_results_loading && production_results_error && (
+          <p className="page-panel__pending" role="alert">
+            생산실적을 불러오지 못했습니다. {production_results_error}
+          </p>
+        )}
+        {!production_results_loading && !production_results_error && (
+          <ProductionResultTable results={production_results ?? []} />
         )}
       </section>
     </div>

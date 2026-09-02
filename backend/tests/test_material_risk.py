@@ -145,3 +145,82 @@ def test_both_warehouses_count_towards_available_stock() -> None:
 
     assert result.available_stock == 250
     assert result.shortage_expected is False
+
+
+def test_a_lot_expiring_on_the_reference_date_counts_as_discarded_today() -> None:
+    """기준일 당일 만료는 '오늘 버리는 것'이라 폐기 수량에 들어가야 한다."""
+    result = calculate_material_risk(
+        [_lot(100, received_day=1, expiry_day=1)],
+        10,
+        {},
+        date(2026, 9, 1),
+    )
+
+    assert result.available_stock == 0
+    assert result.expiring_quantity == 100
+    assert result.first_discard_date == date(2026, 9, 1)
+    assert result.discarded_by_lot == {("LOT-A", "원재료창고"): 100}
+
+
+def test_a_lot_expired_before_the_reference_date_is_not_reported_as_disposal() -> None:
+    """기준일보다 앞선 유효기간은 이미 지난 재고이지 이번 기간의 폐기가 아니다."""
+    result = calculate_material_risk(
+        [Lot("LOT-OLD", "원재료창고", 100, date(2026, 8, 1), date(2026, 8, 20))],
+        10,
+        {},
+        date(2026, 9, 1),
+    )
+
+    assert result.available_stock == 0
+    assert result.expiring_quantity == 0
+    assert result.first_discard_date is None
+    assert result.discarded_by_lot == {}
+
+
+def test_a_lot_eaten_by_demand_before_its_expiry_is_not_counted_as_discarded() -> None:
+    result = calculate_material_risk(
+        [
+            _lot(50, expiry_day=5, lot_number="LOT-SOON"),
+            _lot(500, expiry_day=30, lot_number="LOT-LATE"),
+        ],
+        10,
+        {date(2026, 9, 1): 50},
+        date(2026, 9, 1),
+    )
+
+    assert result.expiring_quantity == 0
+    assert result.discarded_by_lot == {}
+    assert result.first_discard_date is None
+
+
+def test_partial_consumption_only_discards_what_is_left_at_expiry() -> None:
+    result = calculate_material_risk(
+        [
+            _lot(50, expiry_day=5, lot_number="LOT-SOON"),
+            _lot(500, expiry_day=30, lot_number="LOT-LATE"),
+        ],
+        10,
+        {date(2026, 9, 1): 20},
+        date(2026, 9, 1),
+    )
+
+    assert result.discarded_by_lot == {("LOT-SOON", "원재료창고"): 30}
+    assert result.expiring_quantity == 30
+    assert result.first_discard_date == date(2026, 9, 5)
+
+
+def test_first_discard_date_is_reported_after_an_earlier_demand_stockout() -> None:
+    """수요로 먼저 소진된 뒤 나중에 폐기가 나면 두 날짜가 갈려야 한다."""
+    result = calculate_material_risk(
+        [
+            _lot(10, lot_number="LOT-NOW"),
+            Lot("LOT-LATER", "원재료창고", 40, date(2026, 9, 4), date(2026, 9, 8)),
+        ],
+        5,
+        {date(2026, 9, 1): 10},
+        date(2026, 9, 1),
+    )
+
+    assert result.stockout_date == date(2026, 9, 1)
+    assert result.first_discard_date == date(2026, 9, 8)
+    assert result.first_discard_date > result.stockout_date

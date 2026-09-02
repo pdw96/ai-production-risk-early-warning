@@ -21,7 +21,7 @@ from app.seed import (
     _recent_output_series,
     reset_database,
 )
-from app.services.briefing import list_materials
+from app.services.briefing import get_master_data, list_materials
 from app.services.order_risk import calculate_order_risk
 
 
@@ -264,3 +264,35 @@ def test_seeded_orders_keep_their_seven_day_average_after_the_variance(
             # 시드는 8~15의 정수 일평균에서 출발한다.
             assert average == pytest.approx(round(average), abs=1e-9)
             assert 8 <= round(average) <= 15
+
+
+def test_master_data_counts_a_split_lot_as_one_held_lot(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """한 로트를 두 창고에 나눠 뒀다고 보유 로트가 두 건이 되지는 않는다."""
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        distinct_lot_numbers: dict[int, set[str]] = {}
+        lot_row_counts: dict[int, int] = {}
+        for lot in session.query(MaterialLot).all():
+            distinct_lot_numbers.setdefault(lot.material_id, set()).add(lot.lot_number)
+            lot_row_counts[lot.material_id] = lot_row_counts.get(lot.material_id, 0) + 1
+
+        materials = {
+            material.id: material.code
+            for material in session.query(Material).all()
+        }
+        counts_by_code = {
+            item.item_code: item.lot_count
+            for item in get_master_data(session).items
+            if item.item_type == "자재"
+        }
+
+    # 창고에 나뉜 로트가 있는 자재가 최소 한 건은 있어야 이 검증이 의미가 있다.
+    assert any(
+        len(distinct_lot_numbers[material_id]) < lot_row_counts[material_id]
+        for material_id in lot_row_counts
+    )
+    for material_id, code in materials.items():
+        assert counts_by_code[code] == len(distinct_lot_numbers[material_id])
