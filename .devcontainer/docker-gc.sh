@@ -67,13 +67,38 @@ if [ ! -x "$DOCKER_INIT" ]; then
 fi
 
 echo "빌드 캐시 상한을 $MAX_USED_SPACE 로 적용하기 위해 dockerd 를 다시 띄운다."
+old_pid=$(pgrep -x dockerd)
 sudo pkill -x dockerd || true
-sleep 2
-"$DOCKER_INIT" > /dev/null 2>&1 || true
 
-if docker info > /dev/null 2>&1; then
-  echo "dockerd 재기동 완료. 빌드 캐시 상한: $MAX_USED_SPACE"
+# pkill 은 시그널만 보내고 종료를 기다리지 않는다. 옛 데몬이 소켓을 쥔 채로
+# 새 데몬을 띄우면 기동에 실패하고, 그 실패가 묻힌 채 docker info 가
+# 죽어가는 옛 데몬에 붙어 거짓 성공을 보고할 수 있다. 완전히 죽을 때까지
+# 기다린다. (kill -0 은 권한이 없으면 EPERM 이라 생사 판정에 못 쓴다.)
+for _ in $(seq 30); do
+  pgrep -x dockerd > /dev/null || break
+  sleep 1
+done
+
+if pgrep -x dockerd > /dev/null; then
+  echo "경고: dockerd(pid $old_pid)가 30초 안에 종료되지 않았다." >&2
+  echo "        상한은 $CONFIG 에 기록됐다. Codespace를 재시작하면 적용된다." >&2
+  exit 1
+fi
+
+restart_log=$(mktemp)
+if ! "$DOCKER_INIT" > "$restart_log" 2>&1; then
+  echo "경고: $DOCKER_INIT 이 실패했다." >&2
+  tail -20 "$restart_log" >&2
+fi
+
+new_pid=$(pgrep -x dockerd || true)
+
+# 옛 데몬은 이미 죽은 것을 확인했으므로, 응답하는 데몬은 새 설정으로 뜬 것이다.
+if [ -n "$new_pid" ] && docker info > /dev/null 2>&1; then
+  echo "dockerd 재기동 완료(pid $old_pid -> $new_pid). 빌드 캐시 상한: $MAX_USED_SPACE"
+  rm -f "$restart_log"
 else
   echo "경고: dockerd 가 다시 뜨지 않았다. Codespace를 재시작할 것." >&2
+  echo "        기동 로그: $restart_log, dockerd 로그: /tmp/dockerd.log" >&2
   exit 1
 fi

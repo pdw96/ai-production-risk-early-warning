@@ -221,6 +221,10 @@ GC 상한 2GB를 쓴다.
   `/tmp/dockerd.log`의 "Reloaded configuration"에 `"builder":{"GC":{}}`로 남는다.
   dockerd 기동 시에만 읽히므로, 스크립트는 **설정이 실제로 바뀐 경우에만**
   `docker-init.sh`로 데몬을 다시 띄운다(멱등).
+- 재기동할 때는 `pkill` 뒤에 **옛 데몬이 실제로 사라질 때까지 기다린다**(최대 30초).
+  `pkill`은 시그널만 보내고 종료를 기다리지 않으므로, 그냥 이어서 새 데몬을 띄우면
+  옛 데몬이 소켓을 쥔 채라 기동에 실패하고 `docker info`가 죽어가는 옛 데몬에 붙어
+  거짓 성공을 보고할 수 있다. PID 교체까지 확인해야 새 설정이 실제로 붙은 것이다.
 - 새 형식(`reservedSpace`/`maxUsedSpace`)을 썼다. Docker 28+에서
   `defaultKeepStorage`/`keepStorage`는 비권장이다. `dockerd --validate`로 검증했다.
 
