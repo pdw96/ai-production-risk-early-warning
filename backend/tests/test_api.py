@@ -544,22 +544,22 @@ def test_finished_goods_expose_stock_by_state_for_every_product(
         "product_name",
         "shelf_life_days",
         "releasable_stock",
-        "transfer_pending_stock",
         "inspection_pending_stock",
         "rejected_stock",
         "expired_stock",
         "total_lot_quantity",
-        "lots",
     } <= set(products[0])
     assert [item["product_code"] for item in products] == sorted(
         item["product_code"] for item in products
     )
+    # 로트 내역은 창고별 재고가 맡는다. 영업관리는 출하 관점 요약만 본다.
+    assert "lots" not in products[0]
 
 
 def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
     client: TestClient,
 ) -> None:
-    """다섯 수량은 서로 겹치지 않고 합이 로트 행 합계와 같아야 한다.
+    """네 수량은 서로 겹치지 않고 합이 로트 합계와 같아야 한다.
 
     겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보인다.
     """
@@ -568,53 +568,98 @@ def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
     for product in products:
         buckets = (
             product["releasable_stock"]
-            + product["transfer_pending_stock"]
             + product["inspection_pending_stock"]
             + product["rejected_stock"]
             + product["expired_stock"]
         )
         assert round(buckets, 2) == product["total_lot_quantity"]
-        assert round(sum(lot["quantity"] for lot in product["lots"]), 2) == round(
-            product["total_lot_quantity"], 2
-        )
 
 
-def test_releasable_stock_counts_only_unexpired_lots_in_the_release_warehouse(
+def test_releasable_stock_matches_the_unexpired_product_warehouse_lots(
     client: TestClient,
 ) -> None:
-    products = client.get("/api/finished-goods").json()["data"]
+    products = {
+        product["product_code"]: product
+        for product in client.get("/api/finished-goods").json()["data"]
+    }
+    warehouse = client.get("/api/warehouses/products").json()["data"]
 
-    for product in products:
-        releasable = sum(
-            lot["quantity"]
-            for lot in product["lots"]
-            if lot["state"] == "출하 가능"
+    releasable_by_code: dict[str, float] = {}
+    for lot in warehouse["lots"]:
+        if lot["expired"]:
+            continue
+        releasable_by_code[lot["item_code"]] = (
+            releasable_by_code.get(lot["item_code"], 0) + lot["quantity"]
         )
-        assert round(releasable, 2) == product["releasable_stock"]
-        assert all(
-            lot["warehouse"] == "완제품창고" and lot["qc_status"] == "합격"
-            for lot in product["lots"]
-            if lot["state"] == "출하 가능"
-        )
+
+    assert releasable_by_code
+    for code, quantity in releasable_by_code.items():
+        assert round(quantity, 2) == products[code]["releasable_stock"]
 
 
-def test_expired_finished_goods_stay_in_the_list_but_leave_the_releasable_stock(
+def test_expired_products_stay_in_the_warehouse_but_leave_the_releasable_stock(
     client: TestClient,
 ) -> None:
-    """로트는 영구 기록이다. 만료돼도 목록에서 사라지지 않는다."""
-    products = client.get("/api/finished-goods").json()["data"]
+    """로트는 영구 기록이다. 만료돼도 창고에서 사라지지 않는다."""
+    warehouse = client.get("/api/warehouses/products").json()["data"]
 
-    expired = [
-        (product, lot)
-        for product in products
-        for lot in product["lots"]
-        if lot["state"] == "만료"
-    ]
+    expired = [lot for lot in warehouse["lots"] if lot["expired"]]
 
     assert expired
-    for product, lot in expired:
-        assert lot["expiry_date"] is not None
-        assert product["expired_stock"] > 0
+    assert warehouse["expired_quantity"] == round(
+        sum(lot["quantity"] for lot in expired), 2
+    )
+    assert all(lot["expiry_date"] is not None for lot in expired)
+
+
+def test_each_warehouse_holds_only_what_belongs_there(client: TestClient) -> None:
+    """창고마다 담는 것이 정해져 있다.
+
+    - 원재료창고: 자재만
+    - 생산창고: 자재와, 검사 대기·불합격 완제품
+    - 제품창고: 합격 완제품만
+    """
+    raw = client.get("/api/warehouses/raw").json()["data"]
+    production = client.get("/api/warehouses/production").json()["data"]
+    products = client.get("/api/warehouses/products").json()["data"]
+
+    assert raw["warehouse"] == "원재료창고"
+    assert {lot["item_type"] for lot in raw["lots"]} == {"자재"}
+    assert raw["product_lot_count"] == 0
+
+    assert production["warehouse"] == "생산창고"
+    assert {lot["item_type"] for lot in production["lots"]} == {"자재", "제품"}
+    assert {
+        lot["qc_status"] for lot in production["lots"] if lot["item_type"] == "제품"
+    } == {"검사 대기", "불합격"}
+
+    assert products["warehouse"] == "제품창고"
+    assert {lot["item_type"] for lot in products["lots"]} == {"제품"}
+    assert {lot["qc_status"] for lot in products["lots"]} == {"합격"}
+    assert products["material_lot_count"] == 0
+
+
+def test_warehouse_totals_match_their_lot_rows(client: TestClient) -> None:
+    for slug in ("raw", "production", "products"):
+        warehouse = client.get(f"/api/warehouses/{slug}").json()["data"]
+        materials = [lot for lot in warehouse["lots"] if lot["item_type"] == "자재"]
+        products = [lot for lot in warehouse["lots"] if lot["item_type"] == "제품"]
+
+        assert warehouse["material_quantity"] == round(
+            sum(lot["quantity"] for lot in materials), 2
+        )
+        assert warehouse["product_quantity"] == round(
+            sum(lot["quantity"] for lot in products), 2
+        )
+        # 한 로트가 두 창고에 나뉘어 있어도 창고 안에서는 한 건이다.
+        assert warehouse["material_lot_count"] == len(
+            {lot["lot_number"] for lot in materials}
+        )
+        assert warehouse["description"]
+
+
+def test_an_unknown_warehouse_is_not_found(client: TestClient) -> None:
+    assert client.get("/api/warehouses/nowhere").status_code == 404
 
 
 def test_quality_inspections_cover_all_three_types_with_a_summary(

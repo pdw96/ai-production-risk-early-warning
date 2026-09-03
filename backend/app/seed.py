@@ -7,9 +7,9 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from app.core.config import (
-    FINISHED_GOODS_WAREHOUSE,
     INCOMING_INSPECTION,
     OUTGOING_INSPECTION,
+    PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
     PRODUCTION_WAREHOUSE,
     QC_FAILED,
@@ -72,10 +72,6 @@ MATERIAL_SHELF_LIFE_DAYS: tuple[int | None, ...] = (
 
 # 생산 당일과 그 전날 생산분은 아직 OQC 를 받지 않은 것으로 둔다.
 OQC_PENDING_DAYS = 1
-# 검사를 마쳤지만 아직 완제품창고로 옮기지 않은 상태(이관 대기)를 만드는 날.
-# 합격이 곧 이동은 아니므로 이 상태가 실제로 존재하며, 화면의 다섯 수량이
-# 서로 겹치지 않는지도 이 로트들이 검증해 준다.
-OQC_TRANSFER_DAYS = 2
 # 검사 표본과 불합격을 고르는 고정 주기. 위와 같은 이유로 rng 를 쓰지 않는다.
 OQC_FAIL_CYCLE = 17
 PQC_SAMPLE_CYCLE = 7
@@ -293,11 +289,6 @@ def reset_database(reference_date: date | None = None) -> None:
         }:
             raise RuntimeError("합성 데이터가 OQC 세 상태를 모두 만들지 못했습니다.")
         if not any(
-            lot.qc_status == QC_PASSED and lot.warehouse == PRODUCTION_WAREHOUSE
-            for lot in finished_goods_lots
-        ):
-            raise RuntimeError("합성 데이터가 이관 대기 완제품 로트를 만들지 못했습니다.")
-        if not any(
             lot.expiry_date is not None and lot.expiry_date <= effective_reference_date
             for lot in finished_goods_lots
         ):
@@ -344,10 +335,12 @@ def _seed_finished_goods_lots(
     한 로트로 합친다 — 소재 제조에서 같은 날 산출을 한 로트로 보는 게
     자연스럽고, 오더별로 쪼개면 로트 수만 불어난다.
 
-    갓 생산된 로트는 생산창고에서 OQC 를 기다리고, 합격분만 완제품창고로
-    옮긴다. 불합격분은 생산창고에 남아 출하 가능 재고에서 빠진다. 과거 생산분을
-    빼지 않는 것은 로트가 영구 기록이기 때문이며, 그래서 출하가 없는 지금은
-    완제품 재고가 줄지 않고 쌓이기만 한다(후속: 출하 리스크).
+    갓 생산된 로트는 생산창고에서 OQC 를 기다리고, 합격하면 제품창고로 옮겨진다.
+    불합격분은 생산창고에 남아 출하 가능 재고에서 빠진다. 생산창고에 남는 완제품이
+    검사 대기와 불합격뿐인 것은 그 규칙 때문이다.
+
+    과거 생산분을 빼지 않는 것은 로트가 영구 기록이기 때문이며, 그래서 출하가
+    없는 지금은 제품창고 재고가 줄지 않고 쌓이기만 한다(후속: 출하 리스크).
     """
     products_by_id = {product.id: product for product in products}
     rows = session.execute(
@@ -367,22 +360,19 @@ def _seed_finished_goods_lots(
 
     for index, (product_id, work_date, quantity) in enumerate(rows):
         product = products_by_id[product_id]
-        days_since_production = (reference_date - work_date).days
-        if days_since_production <= OQC_PENDING_DAYS:
+        if (reference_date - work_date).days <= OQC_PENDING_DAYS:
             qc_status = QC_PENDING
         elif index % OQC_FAIL_CYCLE == 0:
             qc_status = QC_FAILED
         else:
             qc_status = QC_PASSED
-        transferred = (
-            qc_status == QC_PASSED and days_since_production > OQC_TRANSFER_DAYS
-        )
 
         lot = FinishedGoodsLot(
             product=product,
             lot_number=f"LOT-{product.code}-{work_date:%y%m%d}",
+            # 창고는 검사 결과가 정한다. 합격이면 제품창고, 아니면 생산창고다.
             warehouse=(
-                FINISHED_GOODS_WAREHOUSE if transferred else PRODUCTION_WAREHOUSE
+                PRODUCT_WAREHOUSE if qc_status == QC_PASSED else PRODUCTION_WAREHOUSE
             ),
             qc_status=qc_status,
             quantity=round(float(quantity), 2),

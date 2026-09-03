@@ -14,6 +14,7 @@ from app.schemas.contracts import (
     PurchaseReceiptResponse,
     QualityDataResponse,
     RiskResponse,
+    WarehouseStockResponse,
     RiskStatusUpdate,
 )
 from app.services import briefing
@@ -75,6 +76,23 @@ def get_purchases(
     session: Session = Depends(get_session),
 ) -> Envelope[list[PurchaseReceiptResponse]]:
     return Envelope(data=briefing.list_purchase_receipts(session))
+
+
+@router.get(
+    "/warehouses/{warehouse_slug}",
+    response_model=Envelope[WarehouseStockResponse],
+)
+def get_warehouse_stock(
+    warehouse_slug: str,
+    session: Session = Depends(get_session),
+) -> Envelope[WarehouseStockResponse]:
+    stock = briefing.get_warehouse_stock(session, warehouse_slug)
+    if stock is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="창고를 찾을 수 없습니다.",
+        )
+    return Envelope(data=stock)
 
 
 @router.get("/finished-goods", response_model=Envelope[list[FinishedGoodsResponse]])

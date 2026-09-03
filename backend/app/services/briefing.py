@@ -7,15 +7,18 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import (
-    FINISHED_GOODS_WAREHOUSE,
+    FINISHED_GOODS_WAREHOUSES,
     INCOMING_INSPECTION,
+    MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
+    PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
     PRODUCTION_WAREHOUSE,
     QC_FAILED,
     QC_PASSED,
     QC_PENDING,
     RAW_MATERIAL_WAREHOUSE,
+    WAREHOUSE_SLUGS,
 )
 from app.db.models import (
     BomRequirement,
@@ -33,7 +36,6 @@ from app.schemas.contracts import (
     BomRequirementResponse,
     DashboardKpis,
     DashboardResponse,
-    FinishedGoodsLotResponse,
     FinishedGoodsResponse,
     MasterDataResponse,
     MasterItemResponse,
@@ -46,6 +48,8 @@ from app.schemas.contracts import (
     ProductTrend,
     PurchaseReceiptResponse,
     QualityDataResponse,
+    WarehouseLotResponse,
+    WarehouseStockResponse,
     QualityInspectionResponse,
     QualityInspectionSummary,
     RiskResponse,
@@ -63,6 +67,15 @@ RISK_STATUS_NEW: RiskWorkflowStatus = "신규"
 # 과거이기 때문이다. 그래서 유형별로 자른다. 요약 건수는 잘라낸 것까지 포함한
 # 전체를 세므로, 화면의 합격·불합격 집계는 목록 길이와 무관하게 정확하다.
 RECENT_INSPECTIONS_PER_TYPE = 20
+
+# 창고가 무엇을 담는지. 화면 설명에 그대로 나가므로 규칙을 한 곳에만 적는다.
+WAREHOUSE_DESCRIPTIONS = {
+    RAW_MATERIAL_WAREHOUSE: "입고된 자재를 보관합니다.",
+    PRODUCTION_WAREHOUSE: (
+        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격한 완제품이 있습니다."
+    ),
+    PRODUCT_WAREHOUSE: "출하검사에 합격한 완제품만 적재됩니다. 출하는 여기서만 일어납니다.",
+}
 INSPECTION_TYPE_ORDER = (
     INCOMING_INSPECTION,
     PROCESS_INSPECTION,
@@ -305,6 +318,90 @@ def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
     ]
 
 
+def get_warehouse_stock(
+    session: Session,
+    warehouse_slug: str,
+) -> WarehouseStockResponse | None:
+    """창고 한 곳에 실제로 놓여 있는 것을 그대로 보여 준다.
+
+    창고마다 담는 것이 정해져 있다.
+
+    - 원재료창고 — 입고된 자재
+    - 생산창고 — 원재료창고에서 이동한 자재, 그리고 검사 대기·불합격 완제품
+    - 제품창고 — 출하검사 합격 완제품만
+
+    이 규칙은 DB 제약으로 강제되므로 여기서 다시 거르지 않는다. 창고 값으로
+    가져온 것이 곧 그 창고에 있는 것이다.
+    """
+    warehouse = WAREHOUSE_SLUGS.get(warehouse_slug)
+    if warehouse is None:
+        return None
+
+    reference_date = get_reference_date(session)
+    rows: list[WarehouseLotResponse] = []
+
+    if warehouse in MATERIAL_WAREHOUSES:
+        material_lots = session.scalars(
+            select(MaterialLot)
+            .options(selectinload(MaterialLot.material))
+            .where(MaterialLot.warehouse == warehouse)
+        ).all()
+        rows.extend(
+            WarehouseLotResponse(
+                item_type="자재",
+                item_code=lot.material.code,
+                item_name=lot.material.name,
+                lot_number=lot.lot_number,
+                quantity=round(lot.quantity, 2),
+                stocked_date=lot.received_date,
+                expiry_date=lot.expiry_date,
+                # 자재의 수입검사는 입고 시점에 이미 끝나 있다.
+                qc_status=None,
+                expired=_is_expired(lot.expiry_date, reference_date),
+            )
+            for lot in material_lots
+        )
+
+    if warehouse in FINISHED_GOODS_WAREHOUSES:
+        product_lots = session.scalars(
+            select(FinishedGoodsLot)
+            .options(selectinload(FinishedGoodsLot.product))
+            .where(FinishedGoodsLot.warehouse == warehouse)
+        ).all()
+        rows.extend(
+            WarehouseLotResponse(
+                item_type="제품",
+                item_code=lot.product.code,
+                item_name=lot.product.name,
+                lot_number=lot.lot_number,
+                quantity=round(lot.quantity, 2),
+                stocked_date=lot.produced_date,
+                expiry_date=lot.expiry_date,
+                qc_status=lot.qc_status,
+                expired=_is_expired(lot.expiry_date, reference_date),
+            )
+            for lot in product_lots
+        )
+
+    # 먼저 쓰거나 먼저 나갈 것이 위로 오도록 유효기간 순으로 세운다. 자재
+    # 화면의 로트 목록과 같은 규칙이다.
+    rows.sort(key=lambda row: (row.expiry_date or date.max, row.stocked_date, row.lot_number))
+    materials = [row for row in rows if row.item_type == "자재"]
+    products = [row for row in rows if row.item_type == "제품"]
+
+    return WarehouseStockResponse(
+        warehouse=warehouse,
+        warehouse_slug=warehouse_slug,
+        description=WAREHOUSE_DESCRIPTIONS[warehouse],
+        material_lot_count=len({row.lot_number for row in materials}),
+        material_quantity=round(sum(row.quantity for row in materials), 2),
+        product_lot_count=len({row.lot_number for row in products}),
+        product_quantity=round(sum(row.quantity for row in products), 2),
+        expired_quantity=round(sum(row.quantity for row in rows if row.expired), 2),
+        lots=rows,
+    )
+
+
 def list_quality_inspections(session: Session) -> QualityDataResponse:
     """유형별 합격·불합격 전체 집계와, 유형별 최신 기록을 모아 돌려준다.
 
@@ -411,21 +508,21 @@ def _build_inspection_response(
     )
 
 
+def _is_expired(expiry_date: date | None, reference_date: date) -> bool:
+    """유효기간 당일은 이미 쓸 수 없다 — 자재의 가용 조건과 같은 규칙이다."""
+    return expiry_date is not None and expiry_date <= reference_date
+
+
 def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> str:
-    """완제품 로트의 화면 상태. 요약의 다섯 수량과 1:1로 대응한다.
+    """완제품 로트의 화면 상태. 요약의 네 수량과 1:1로 대응한다.
 
-    만료 판정에 `<=` 를 쓰는 것은 자재의 가용 조건(`입고일 <= 날짜 < 유효기간`)과
-    같은 규칙이다 — 유효기간 당일은 이미 쓸 수 없다.
-
-    판정 순서가 곧 우선순위다. 만료를 먼저 보는 이유는, 만료된 로트가 완제품창고에
-    남아 있어도 출하할 수 없기 때문이다.
+    만료를 먼저 보는 이유는, 만료된 로트가 제품창고에 남아 있어도 출하할 수 없기
+    때문이다. 그 다음은 창고가 곧 검사 결과라 창고만 보면 된다.
     """
-    if lot.expiry_date is not None and lot.expiry_date <= reference_date:
+    if _is_expired(lot.expiry_date, reference_date):
         return "만료"
-    if lot.warehouse == FINISHED_GOODS_WAREHOUSE:
+    if lot.warehouse == PRODUCT_WAREHOUSE:
         return "출하 가능"
-    if lot.qc_status == QC_PASSED:
-        return "이관 대기"
     if lot.qc_status == QC_PENDING:
         return "검사 대기"
     return "불합격"
@@ -435,32 +532,10 @@ def _build_finished_goods_response(
     product: Product,
     reference_date: date,
 ) -> FinishedGoodsResponse:
-    # 출하가 소진하게 될 순서(유효기간 → 생산일)로 정렬한다. 자재 로트 목록과
-    # 같은 규칙이라 두 화면을 같은 눈으로 읽을 수 있다.
-    lots = sorted(
-        product.finished_goods_lots,
-        key=lambda lot: (
-            lot.expiry_date or date.max,
-            lot.produced_date,
-            lot.lot_number,
-        ),
-    )
+    lots = product.finished_goods_lots
     quantity_by_state: defaultdict[str, float] = defaultdict(float)
-    lot_responses: list[FinishedGoodsLotResponse] = []
     for lot in lots:
-        state = _finished_goods_lot_state(lot, reference_date)
-        quantity_by_state[state] += lot.quantity
-        lot_responses.append(
-            FinishedGoodsLotResponse(
-                lot_number=lot.lot_number,
-                warehouse=lot.warehouse,
-                qc_status=lot.qc_status,
-                quantity=round(lot.quantity, 2),
-                produced_date=lot.produced_date,
-                expiry_date=lot.expiry_date,
-                state=state,
-            )
-        )
+        quantity_by_state[_finished_goods_lot_state(lot, reference_date)] += lot.quantity
 
     return FinishedGoodsResponse(
         product_id=product.id,
@@ -468,12 +543,10 @@ def _build_finished_goods_response(
         product_name=product.name,
         shelf_life_days=product.shelf_life_days,
         releasable_stock=round(quantity_by_state["출하 가능"], 2),
-        transfer_pending_stock=round(quantity_by_state["이관 대기"], 2),
         inspection_pending_stock=round(quantity_by_state["검사 대기"], 2),
         rejected_stock=round(quantity_by_state["불합격"], 2),
         expired_stock=round(quantity_by_state["만료"], 2),
         total_lot_quantity=round(sum(lot.quantity for lot in lots), 2),
-        lots=lot_responses,
     )
 
 

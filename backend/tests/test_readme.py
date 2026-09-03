@@ -23,6 +23,8 @@ def test_readme_documents_local_run_and_limitations() -> None:
         "LOT/FIFO",
         "완제품 로트와 출하검사",
         "품질관리",
+        "창고별 재고",
+        "제품창고",
         "유효기간 설정기간",
         "OQC",
         "설비",

@@ -247,14 +247,14 @@ def test_the_same_lot_number_can_repeat_across_different_materials(
 def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
     session: Session,
 ) -> None:
-    # 완제품창고에는 완제품이 들어간다(FinishedGoodsLot). 상수와 Literal 은
+    # 제품창고에는 완제품이 들어간다(FinishedGoodsLot). 상수와 Literal 은
     # 저장을 막지 못하므로 저장 제약으로 막는다.
     material = Material(code="RM-06", name="가상 원자재 F", safety_stock=50)
     session.add(
         MaterialLot(
             material=material,
             lot_number="LOT-RM-06-01",
-            warehouse="완제품창고",
+            warehouse="제품창고",
             quantity=10,
             received_date=date.today(),
         )
@@ -268,7 +268,7 @@ def _finished_goods_lot(product: Product, **overrides: Any) -> FinishedGoodsLot:
     values: dict[str, Any] = {
         "product": product,
         "lot_number": "LOT-FG-01-260901",
-        "warehouse": "완제품창고",
+        "warehouse": "제품창고",
         "qc_status": "합격",
         "quantity": 100,
         "produced_date": date.today(),
@@ -286,11 +286,11 @@ def test_finished_goods_lot_rejects_a_material_warehouse(session: Session) -> No
         session.commit()
 
 
-def test_finished_goods_lot_in_the_release_warehouse_must_have_passed_oqc(
+def test_the_product_warehouse_holds_only_lots_that_passed_inspection(
     session: Session,
 ) -> None:
-    """완제품창고 = 출하 대기 재고다. 검사 대기·불합격이 섞이면 출하 가능
-    수량이 실제보다 많아 보인다."""
+    """제품창고 = 출하 대기 재고다. 검사 대기·불합격이 섞이면 출하 가능 수량이
+    실제보다 많아 보인다."""
     product = Product(code="FG-02", name="가상 제품 B")
     session.add(_finished_goods_lot(product, qc_status="검사 대기"))
 
@@ -298,13 +298,27 @@ def test_finished_goods_lot_in_the_release_warehouse_must_have_passed_oqc(
         session.commit()
 
 
-def test_finished_goods_lot_may_wait_in_the_production_warehouse_after_passing(
+def test_a_lot_that_passed_inspection_cannot_stay_in_the_production_warehouse(
     session: Session,
 ) -> None:
-    """합격이 곧 이동은 아니다 — 이관 대기 상태를 표현할 수 있어야 한다."""
+    """창고와 검사 결과는 서로를 결정한다.
+
+    한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는 상태가 생겨, 생산창고가
+    검사 대기·불합격만 담는다는 규칙이 깨진다.
+    """
     product = Product(code="FG-03", name="가상 제품 C")
     session.add(
         _finished_goods_lot(product, warehouse="생산창고", qc_status="합격")
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_rejected_lot_stays_in_the_production_warehouse(session: Session) -> None:
+    product = Product(code="FG-10", name="가상 제품 J")
+    session.add(
+        _finished_goods_lot(product, warehouse="생산창고", qc_status="불합격")
     )
     session.commit()
 

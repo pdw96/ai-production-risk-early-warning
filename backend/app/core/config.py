@@ -15,7 +15,7 @@ WARNING_BUFFER_DAYS = 1
 
 RAW_MATERIAL_WAREHOUSE = "원재료창고"
 PRODUCTION_WAREHOUSE = "생산창고"
-FINISHED_GOODS_WAREHOUSE = "완제품창고"
+PRODUCT_WAREHOUSE = "제품창고"
 
 # 자재 로트의 보관 창고. 두 창고 재고는 모두 생산에 가용한 것으로 본다.
 # 생산창고 재고를 가용에서 빼면 라인 옆에 대 놓은 자재 때문에 정상 상황이
@@ -24,8 +24,22 @@ MATERIAL_WAREHOUSES = (RAW_MATERIAL_WAREHOUSE, PRODUCTION_WAREHOUSE)
 
 # 완제품 로트의 보관 창고. 생산창고가 두 목록에 모두 들어가는 것은 라인 옆에
 # 투입 대기 자재와 갓 생산된 완제품이 같이 있기 때문이다. 목록을 하나로 합치면
-# 자재를 완제품창고에, 완제품을 원재료창고에 넣는 것을 막을 수 없다.
-FINISHED_GOODS_WAREHOUSES = (PRODUCTION_WAREHOUSE, FINISHED_GOODS_WAREHOUSE)
+# 자재를 제품창고에, 완제품을 원재료창고에 넣는 것을 막을 수 없다.
+FINISHED_GOODS_WAREHOUSES = (PRODUCTION_WAREHOUSE, PRODUCT_WAREHOUSE)
+
+# 창고는 셋이며 담는 것이 정해져 있다.
+#   원재료창고 — 입고된 자재
+#   생산창고   — 원재료창고에서 이동한 자재, 그리고 검사 대기·불합격 완제품
+#   제품창고   — 출하검사 합격 완제품만
+WAREHOUSES = (RAW_MATERIAL_WAREHOUSE, PRODUCTION_WAREHOUSE, PRODUCT_WAREHOUSE)
+
+# 화면·API 주소에 쓰는 창고 코드. 한글 창고명을 URL 에 넣지 않기 위한 것이며,
+# 이 사전이 유일한 대응표다.
+WAREHOUSE_SLUGS: dict[str, str] = {
+    "raw": RAW_MATERIAL_WAREHOUSE,
+    "production": PRODUCTION_WAREHOUSE,
+    "products": PRODUCT_WAREHOUSE,
+}
 
 # 완제품 로트의 출하검사(OQC) 상태. 검사 기록이 없는 로트가 `검사 대기`다.
 QC_PENDING = "검사 대기"

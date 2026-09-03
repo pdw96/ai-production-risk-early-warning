@@ -14,13 +14,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.config import (
-    FINISHED_GOODS_WAREHOUSE,
     FINISHED_GOODS_WAREHOUSES,
     INCOMING_INSPECTION,
     INSPECTION_RESULTS,
     INSPECTION_TYPES,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
+    PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
     QC_PASSED,
     QC_STATUSES,
@@ -170,7 +170,7 @@ class MaterialLot(Base):
     자재까지 넣어야, 공급사가 부여한 번호를 그대로 쓰는 단계에서 서로 다른
     자재가 같은 번호를 들고 와도 충돌하지 않는다.
 
-    창고는 `원재료창고`/`생산창고` 둘로 제한한다. 완제품창고에는 자재가 아니라
+    창고는 `원재료창고`/`생산창고` 둘로 제한한다. 제품창고에는 자재가 아니라
     완제품이 들어가므로(`FinishedGoodsLot`) 이 목록에서 뺀다.
     """
 
@@ -212,9 +212,9 @@ class FinishedGoodsLot(Base):
 
     로트 행은 삭제하지 않는다. 유효기간이 지나도 `만료` 로 표시할 뿐 남긴다.
 
-    창고는 `생산창고`/`완제품창고` 둘이며, **완제품창고에 있으려면 OQC 합격이어야
-    한다.** 갓 생산된 로트는 생산창고에서 검사를 기다리고, 합격분만 완제품창고로
-    이동한다. 출하는 완제품창고 재고에 한해 일어난다(후속: 출하 리스크).
+    창고는 `생산창고`/`제품창고` 둘이고, **어디에 있는지가 곧 검사 결과다.**
+    생산창고에는 검사 대기와 불합격만 있고, 합격하면 제품창고로 옮겨진다.
+    출하는 제품창고 재고에 한해 일어난다(후속: 출하 리스크).
     """
 
     __tablename__ = "finished_goods_lots"
@@ -233,11 +233,12 @@ class FinishedGoodsLot(Base):
             f"qc_status IN ({_ALLOWED_QC_STATUSES_SQL})",
             name="ck_finished_goods_lot_qc_status",
         ),
-        # 완제품창고 = 출하 대기 재고다. 검사 대기·불합격 로트가 여기 섞이면
-        # 출하 가능 수량이 실제보다 많아 보인다.
+        # 창고와 검사 결과는 서로를 결정한다 — 제품창고에는 합격만 있고, 합격은
+        # 제품창고에만 있다. 한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는
+        # 상태가 생겨, 생산창고가 검사 대기·불합격만 담는다는 규칙이 깨진다.
         CheckConstraint(
-            f"warehouse <> '{FINISHED_GOODS_WAREHOUSE}' OR qc_status = '{QC_PASSED}'",
-            name="ck_finished_goods_lot_release_requires_pass",
+            f"(warehouse = '{PRODUCT_WAREHOUSE}') = (qc_status = '{QC_PASSED}')",
+            name="ck_finished_goods_lot_warehouse_matches_qc",
         ),
     )
 

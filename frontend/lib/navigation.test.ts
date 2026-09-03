@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { navigation_groups } from "./navigation";
+import { flatten_navigation_links, navigation_groups } from "./navigation";
 
 describe("navigation_groups", () => {
   it("keeps the cross-cutting alert screens out of the ERP modules", () => {
@@ -24,19 +24,40 @@ describe("navigation_groups", () => {
     ]);
   });
 
-  it("reuses the existing routes so old links keep working", () => {
-    const routes = Object.fromEntries(
-      navigation_groups.flatMap((group) => group.items).map((item) => [item.label, item.href]),
+  it("nests the three warehouses under 재고관리 · 창고별 재고", () => {
+    const inventory = navigation_groups[1].items.find(
+      (item) => item.label === "재고관리",
     );
 
-    expect(routes["재고관리"]).toBe("/materials");
+    // 모듈 자체는 링크가 아니라 하위를 묶는 이름표다.
+    expect(inventory?.href).toBeUndefined();
+    expect(inventory?.children?.map((child) => child.label)).toEqual([
+      "재고현황",
+      "창고별 재고",
+    ]);
+
+    const warehouses = inventory?.children?.[1];
+    expect(warehouses?.href).toBeUndefined();
+    expect(warehouses?.children).toEqual([
+      { href: "/materials/warehouses/raw", label: "원재료창고" },
+      { href: "/materials/warehouses/production", label: "생산창고" },
+      { href: "/materials/warehouses/products", label: "제품창고" },
+    ]);
+  });
+
+  it("reuses the existing routes so old links keep working", () => {
+    const routes = Object.fromEntries(
+      flatten_navigation_links().map((item) => [item.label, item.href]),
+    );
+
+    expect(routes["재고현황"]).toBe("/materials");
     expect(routes["생산관리"]).toBe("/orders");
     expect(routes["리스크 보드"]).toBe("/risks");
     expect(routes["품질관리"]).toBe("/quality");
   });
 
   it("has no duplicate routes", () => {
-    const hrefs = navigation_groups.flatMap((group) => group.items).map((item) => item.href);
+    const hrefs = flatten_navigation_links().map((item) => item.href);
 
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
