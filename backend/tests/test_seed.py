@@ -10,11 +10,13 @@ from app.db import base as db_base
 from app.db.models import (
     BomRequirement,
     DailyProduction,
+    FinishedGoodsLot,
     Material,
     MaterialLot,
     Order,
     Product,
     PurchaseReceipt,
+    QualityInspection,
 )
 from app.seed import (
     RECENT_OUTPUT_VARIANCE_CYCLE,
@@ -195,16 +197,35 @@ def test_seeded_materials_include_a_shortage_caused_by_expiring_lots(
     assert all("유효기간" in material.reason for material in expiry_driven)
 
 
-def test_seeded_purchase_receipts_carry_an_expiry_date(
+def test_seeded_purchase_receipts_derive_their_expiry_from_the_item_master(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
+    """예정 입고의 유효기간은 도착일 + 자재의 설정기간이다.
+
+    설정기간이 없는(무기한) 자재는 유효기간도 없다. 유효기간을 로트마다 따로
+    박아 넣던 이전 방식에서는 이 대응이 성립하지 않았다.
+    """
     reset_database(date(2026, 8, 31))
 
     with seeded_session_factory() as session:
         receipts = session.query(PurchaseReceipt).all()
+        shelf_life_by_material = {
+            material.id: material.shelf_life_days
+            for material in session.query(Material).all()
+        }
 
     assert receipts
-    assert all(receipt.expiry_date is not None for receipt in receipts)
+    for receipt in receipts:
+        shelf_life_days = shelf_life_by_material[receipt.material_id]
+        if shelf_life_days is None:
+            assert receipt.expiry_date is None
+        else:
+            assert receipt.expiry_date == receipt.scheduled_date + timedelta(
+                days=shelf_life_days
+            )
+    # 무기한 자재와 유효기간이 있는 자재가 둘 다 있어야 두 경로가 다 검증된다.
+    assert any(receipt.expiry_date is None for receipt in receipts)
+    assert any(receipt.expiry_date is not None for receipt in receipts)
 
 
 def test_recent_output_series_keeps_the_seven_day_total_exact() -> None:
@@ -296,3 +317,170 @@ def test_master_data_counts_a_split_lot_as_one_held_lot(
     )
     for material_id, code in materials.items():
         assert counts_by_code[code] == len(distinct_lot_numbers[material_id])
+
+
+def test_seeded_material_lots_derive_their_expiry_from_the_item_master(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        lots = session.query(MaterialLot).all()
+        shelf_life_by_material = {
+            material.id: material.shelf_life_days
+            for material in session.query(Material).all()
+        }
+
+    assert lots
+    for lot in lots:
+        shelf_life_days = shelf_life_by_material[lot.material_id]
+        if shelf_life_days is None:
+            assert lot.expiry_date is None
+        else:
+            assert lot.expiry_date == lot.received_date + timedelta(
+                days=shelf_life_days
+            )
+    assert any(lot.expiry_date is None for lot in lots)
+
+
+def test_finished_goods_lot_quantity_equals_the_recorded_production(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """완제품 로트는 생산 실적에서 파생되며 실적이 진실이다.
+
+    PQC 불합격 기록이 있어도 이 등식은 흔들리지 않는다 — 이번 범위에서
+    검사 결과가 수량을 바꾸는 것은 OQC 의 창고 이동뿐이다.
+    """
+    reference_date = date(2026, 8, 31)
+
+    reset_database(reference_date)
+
+    with seeded_session_factory() as session:
+        lot_total = sum(lot.quantity for lot in session.query(FinishedGoodsLot).all())
+        actual_total = sum(
+            production.actual_quantity
+            for production in session.query(DailyProduction).all()
+            if production.work_date <= reference_date
+        )
+        failed_pqc = [
+            inspection
+            for inspection in session.query(QualityInspection).all()
+            if inspection.inspection_type == "PQC" and inspection.result == "불합격"
+        ]
+
+    assert round(lot_total, 2) == round(actual_total, 2)
+    assert failed_pqc
+
+
+def test_finished_goods_lots_derive_their_expiry_from_the_product_master(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        lots = session.query(FinishedGoodsLot).all()
+        shelf_life_by_product = {
+            product.id: product.shelf_life_days
+            for product in session.query(Product).all()
+        }
+
+    assert lots
+    for lot in lots:
+        shelf_life_days = shelf_life_by_product[lot.product_id]
+        if shelf_life_days is None:
+            assert lot.expiry_date is None
+        else:
+            assert lot.expiry_date == lot.produced_date + timedelta(
+                days=shelf_life_days
+            )
+
+
+def test_finished_goods_qc_status_agrees_with_the_oqc_record(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """로트의 qc_status 는 OQC 기록의 캐시다. 기록이 없으면 검사 대기다."""
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        results_by_lot = {
+            inspection.finished_goods_lot_id: inspection.result
+            for inspection in session.query(QualityInspection).all()
+            if inspection.inspection_type == "OQC"
+        }
+        statuses = set()
+        for lot in session.query(FinishedGoodsLot).all():
+            assert lot.qc_status == results_by_lot.get(lot.id, "검사 대기")
+            statuses.add(lot.qc_status)
+
+    assert statuses == {"검사 대기", "합격", "불합격"}
+
+
+def test_seeded_incoming_inspections_are_one_per_physical_lot(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """수입검사는 물리적 로트 단위로 한 번이다.
+
+    한 로트가 두 창고에 나뉘어 있어도 입고 시점에 한 번 검사한 것이다. 행마다
+    기록을 남기면 같은 검사가 두 건으로 불어나 IQC 집계가 부풀고, 화면에는
+    구분되지 않는 중복 행이 나온다. 기준정보가 보유 로트를 로트번호로 세는
+    것과 같은 규칙이다.
+
+    창고에 있는 자재는 검사를 통과했다는 뜻이므로 전건 합격이다.
+    """
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        lots_by_id = {lot.id: lot for lot in session.query(MaterialLot).all()}
+        physical_lots = {
+            (lot.material_id, lot.lot_number) for lot in lots_by_id.values()
+        }
+        incoming = [
+            inspection
+            for inspection in session.query(QualityInspection).all()
+            if inspection.inspection_type == "IQC"
+        ]
+        inspected = [
+            (
+                lots_by_id[inspection.material_lot_id].material_id,
+                lots_by_id[inspection.material_lot_id].lot_number,
+            )
+            for inspection in incoming
+        ]
+
+    # 데모에는 두 창고에 나뉜 로트가 반드시 하나 있다(행 수 > 물리적 로트 수).
+    assert len(lots_by_id) > len(physical_lots)
+    assert sorted(inspected) == sorted(physical_lots)
+    assert all(inspection.result == "합격" for inspection in incoming)
+
+
+def test_reset_database_is_deterministic_for_finished_goods_and_inspections(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    reference_date = date(2026, 8, 31)
+
+    def snapshot() -> tuple[list, list]:
+        with seeded_session_factory() as session:
+            lots = [
+                (lot.lot_number, lot.warehouse, lot.qc_status, lot.quantity)
+                for lot in session.query(FinishedGoodsLot).order_by(
+                    FinishedGoodsLot.lot_number
+                )
+            ]
+            inspections = [
+                (
+                    inspection.inspection_type,
+                    inspection.inspected_date,
+                    inspection.result,
+                    inspection.reason,
+                )
+                for inspection in session.query(QualityInspection).order_by(
+                    QualityInspection.id
+                )
+            ]
+        return lots, inspections
+
+    reset_database(reference_date)
+    first = snapshot()
+    reset_database(reference_date)
+
+    assert snapshot() == first

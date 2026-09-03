@@ -320,3 +320,25 @@ def test_a_scheduled_lot_does_not_share_a_discard_record_with_a_stored_lot() -> 
     result = calculate_material_risk([stored, scheduled], 10, {}, date(2026, 9, 1))
 
     assert result.discarded_by_lot == {("LOT-A-IN-01", "원재료창고", True): 60.0}
+
+
+def test_a_lot_without_an_expiry_date_is_issued_last() -> None:
+    """무기한 로트는 폐기되지 않으므로 가장 마지막에 쓴다.
+
+    무기한 품목을 기준정보에서 허용하는 한 이 분기는 살아 있어야 한다. 순서를
+    뒤집으면 유효기간이 있는 로트가 창고에 남아 그대로 폐기된다.
+    """
+    result = calculate_material_risk(
+        [
+            _lot(50, received_day=1, expiry_day=None, lot_number="LOT-FOREVER"),
+            _lot(50, received_day=1, expiry_day=4, lot_number="LOT-SOON"),
+        ],
+        10,
+        {date(2026, 9, 1): 50},
+        date(2026, 9, 1),
+    )
+
+    # 유효기간이 있는 LOT-SOON 이 먼저 나갔으므로 폐기가 없다.
+    assert result.expiring_quantity == 0
+    assert result.discarded_by_lot == {}
+    assert result.ending_stock == 50
