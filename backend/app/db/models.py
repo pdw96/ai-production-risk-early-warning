@@ -283,8 +283,10 @@ class QualityInspection(Base):
             name="ck_quality_inspection_target",
         ),
         # 불합격은 사유 없이 남기면 담당자가 무엇을 조치할지 알 수 없다.
+        # 빈 문자열도 사유가 없는 것이므로 NULL 검사만으로는 부족하다 — 화면은
+        # 그 빈 칸을 그대로 그려 사유 없는 불합격 행을 만든다.
         CheckConstraint(
-            f"result = '{QC_PASSED}' OR reason IS NOT NULL",
+            f"result = '{QC_PASSED}' OR (reason IS NOT NULL AND trim(reason) <> '')",
             name="ck_quality_inspection_failure_reason",
         ),
     )

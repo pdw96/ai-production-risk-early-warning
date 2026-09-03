@@ -384,3 +384,45 @@ def test_a_failed_inspection_must_carry_a_reason(session: Session) -> None:
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_a_failed_inspection_reason_cannot_be_blank(session: Session) -> None:
+    """빈 문자열도 사유가 없는 것이다. NULL 검사만으로는 화면에 사유 없는
+    불합격 행이 그대로 그려진다."""
+    product = Product(code="FG-08", name="가상 제품 H")
+    session.add(
+        QualityInspection(
+            inspection_type="OQC",
+            inspected_date=date.today(),
+            result="불합격",
+            reason="   ",
+            finished_goods_lot=_finished_goods_lot(
+                product, warehouse="생산창고", qc_status="불합격"
+            ),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_an_inspection_cannot_point_at_a_target_that_does_not_exist(
+    session: Session,
+) -> None:
+    """SQLite 는 기본적으로 외래키를 검사하지 않는다. 강제를 켜지 않으면 대상이
+    없는 기록이 저장되고, 조회할 때 모든 관계가 None 이라 대상 표기를 만드는
+    코드가 터진다."""
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "INSERT INTO quality_inspections"
+                " (inspection_type, inspected_date, result, reason, material_lot_id)"
+                " VALUES ('IQC', '2026-09-01', '합격', NULL, 999)"
+            )
+        )
+
+
+def test_sqlite_foreign_key_enforcement_is_on_for_every_connection(
+    session: Session,
+) -> None:
+    assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
