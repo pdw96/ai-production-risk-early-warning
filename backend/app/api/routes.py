@@ -5,12 +5,14 @@ from app.db.base import get_session
 from app.schemas.contracts import (
     DashboardResponse,
     Envelope,
+    FinishedGoodsResponse,
     MasterDataResponse,
     MaterialResponse,
     OrderDetailResponse,
     OrderResponse,
     ProductionResultResponse,
     PurchaseReceiptResponse,
+    QualityDataResponse,
     RiskResponse,
     RiskStatusUpdate,
 )
@@ -73,6 +75,20 @@ def get_purchases(
     session: Session = Depends(get_session),
 ) -> Envelope[list[PurchaseReceiptResponse]]:
     return Envelope(data=briefing.list_purchase_receipts(session))
+
+
+@router.get("/finished-goods", response_model=Envelope[list[FinishedGoodsResponse]])
+def get_finished_goods(
+    session: Session = Depends(get_session),
+) -> Envelope[list[FinishedGoodsResponse]]:
+    return Envelope(data=briefing.list_finished_goods(session))
+
+
+@router.get("/quality-inspections", response_model=Envelope[QualityDataResponse])
+def get_quality_inspections(
+    session: Session = Depends(get_session),
+) -> Envelope[QualityDataResponse]:
+    return Envelope(data=briefing.list_quality_inspections(session))
 
 
 @router.get("/risks", response_model=Envelope[list[RiskResponse]])

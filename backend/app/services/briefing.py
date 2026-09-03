@@ -6,20 +6,35 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import PRODUCTION_WAREHOUSE, RAW_MATERIAL_WAREHOUSE
+from app.core.config import (
+    FINISHED_GOODS_WAREHOUSE,
+    INCOMING_INSPECTION,
+    OUTGOING_INSPECTION,
+    PROCESS_INSPECTION,
+    PRODUCTION_WAREHOUSE,
+    QC_FAILED,
+    QC_PASSED,
+    QC_PENDING,
+    RAW_MATERIAL_WAREHOUSE,
+)
 from app.db.models import (
     BomRequirement,
     DailyProduction,
+    FinishedGoodsLot,
     Material,
+    MaterialLot,
     Order,
     Product,
     PurchaseReceipt,
+    QualityInspection,
     RiskStatus,
 )
 from app.schemas.contracts import (
     BomRequirementResponse,
     DashboardKpis,
     DashboardResponse,
+    FinishedGoodsLotResponse,
+    FinishedGoodsResponse,
     MasterDataResponse,
     MasterItemResponse,
     MaterialLotResponse,
@@ -30,6 +45,9 @@ from app.schemas.contracts import (
     ProductionResultResponse,
     ProductTrend,
     PurchaseReceiptResponse,
+    QualityDataResponse,
+    QualityInspectionResponse,
+    QualityInspectionSummary,
     RiskResponse,
     RiskWorkflowStatus,
 )
@@ -160,7 +178,10 @@ def get_master_data(session: Session) -> MasterDataResponse:
     """기준정보관리 화면용 품목 마스터와 BOM을 만든다."""
     products = session.scalars(
         select(Product)
-        .options(selectinload(Product.bom_requirements))
+        .options(
+            selectinload(Product.bom_requirements),
+            selectinload(Product.finished_goods_lots),
+        )
         .order_by(Product.code)
     ).all()
     materials = session.scalars(
@@ -174,8 +195,11 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="제품",
             item_code=product.code,
             item_name=product.name,
+            # 안전재고는 자재만 관리한다.
             safety_stock=None,
-            lot_count=None,
+            # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
+            lot_count=len({lot.lot_number for lot in product.finished_goods_lots}),
+            shelf_life_days=product.shelf_life_days,
             linked_item_count=len(product.bom_requirements),
         )
         for product in products
@@ -187,6 +211,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             safety_stock=round(material.safety_stock, 2),
             # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
             lot_count=len({lot.lot_number for lot in material.lots}),
+            shelf_life_days=material.shelf_life_days,
             linked_item_count=len(material.bom_requirements),
         )
         for material in materials
@@ -237,6 +262,163 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
         )
         for receipt in receipts
     ]
+
+
+def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
+    reference_date = get_reference_date(session)
+    products = session.scalars(
+        select(Product)
+        .options(selectinload(Product.finished_goods_lots))
+        .order_by(Product.code)
+    ).all()
+    return [
+        _build_finished_goods_response(product, reference_date)
+        for product in products
+    ]
+
+
+def list_quality_inspections(session: Session) -> QualityDataResponse:
+    """IQC·PQC·OQC 기록을 최신순으로 모으고 유형별 합격·불합격을 센다."""
+    inspections = session.scalars(
+        select(QualityInspection)
+        .options(
+            selectinload(QualityInspection.material_lot).selectinload(
+                MaterialLot.material
+            ),
+            selectinload(QualityInspection.daily_production)
+            .selectinload(DailyProduction.order)
+            .selectinload(Order.product),
+            selectinload(QualityInspection.finished_goods_lot).selectinload(
+                FinishedGoodsLot.product
+            ),
+        )
+        .order_by(
+            QualityInspection.inspected_date.desc(),
+            QualityInspection.id.desc(),
+        )
+    ).all()
+
+    rows = [_build_inspection_response(inspection) for inspection in inspections]
+    summaries = [
+        QualityInspectionSummary(
+            inspection_type=inspection_type,
+            total_count=len(of_type),
+            passed_count=sum(1 for row in of_type if row.result == QC_PASSED),
+            failed_count=sum(1 for row in of_type if row.result == QC_FAILED),
+        )
+        for inspection_type, of_type in (
+            (
+                inspection_type,
+                [row for row in rows if row.inspection_type == inspection_type],
+            )
+            for inspection_type in (
+                INCOMING_INSPECTION,
+                PROCESS_INSPECTION,
+                OUTGOING_INSPECTION,
+            )
+        )
+    ]
+    return QualityDataResponse(summaries=summaries, inspections=rows)
+
+
+def _build_inspection_response(
+    inspection: QualityInspection,
+) -> QualityInspectionResponse:
+    """검사 대상이 유형마다 다르므로 화면이 쓸 품목·대상 표기로 풀어 준다."""
+    if inspection.material_lot is not None:
+        target_type = "자재 로트"
+        item_code = inspection.material_lot.material.code
+        item_name = inspection.material_lot.material.name
+        target_label = inspection.material_lot.lot_number
+    elif inspection.daily_production is not None:
+        order = inspection.daily_production.order
+        target_type = "생산 실적"
+        item_code = order.product.code
+        item_name = order.product.name
+        target_label = order.order_number
+    else:
+        target_type = "완제품 로트"
+        item_code = inspection.finished_goods_lot.product.code
+        item_name = inspection.finished_goods_lot.product.name
+        target_label = inspection.finished_goods_lot.lot_number
+
+    return QualityInspectionResponse(
+        inspection_id=inspection.id,
+        inspection_type=inspection.inspection_type,
+        inspected_date=inspection.inspected_date,
+        result=inspection.result,
+        reason=inspection.reason,
+        target_type=target_type,
+        item_code=item_code,
+        item_name=item_name,
+        target_label=target_label,
+    )
+
+
+def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> str:
+    """완제품 로트의 화면 상태. 요약의 다섯 수량과 1:1로 대응한다.
+
+    만료 판정에 `<=` 를 쓰는 것은 자재의 가용 조건(`입고일 <= 날짜 < 유효기간`)과
+    같은 규칙이다 — 유효기간 당일은 이미 쓸 수 없다.
+
+    판정 순서가 곧 우선순위다. 만료를 먼저 보는 이유는, 만료된 로트가 완제품창고에
+    남아 있어도 출하할 수 없기 때문이다.
+    """
+    if lot.expiry_date is not None and lot.expiry_date <= reference_date:
+        return "만료"
+    if lot.warehouse == FINISHED_GOODS_WAREHOUSE:
+        return "출하 가능"
+    if lot.qc_status == QC_PASSED:
+        return "이관 대기"
+    if lot.qc_status == QC_PENDING:
+        return "검사 대기"
+    return "불합격"
+
+
+def _build_finished_goods_response(
+    product: Product,
+    reference_date: date,
+) -> FinishedGoodsResponse:
+    # 출하가 소진하게 될 순서(유효기간 → 생산일)로 정렬한다. 자재 로트 목록과
+    # 같은 규칙이라 두 화면을 같은 눈으로 읽을 수 있다.
+    lots = sorted(
+        product.finished_goods_lots,
+        key=lambda lot: (
+            lot.expiry_date or date.max,
+            lot.produced_date,
+            lot.lot_number,
+        ),
+    )
+    quantity_by_state: defaultdict[str, float] = defaultdict(float)
+    lot_responses: list[FinishedGoodsLotResponse] = []
+    for lot in lots:
+        state = _finished_goods_lot_state(lot, reference_date)
+        quantity_by_state[state] += lot.quantity
+        lot_responses.append(
+            FinishedGoodsLotResponse(
+                lot_number=lot.lot_number,
+                warehouse=lot.warehouse,
+                qc_status=lot.qc_status,
+                quantity=round(lot.quantity, 2),
+                produced_date=lot.produced_date,
+                expiry_date=lot.expiry_date,
+                state=state,
+            )
+        )
+
+    return FinishedGoodsResponse(
+        product_id=product.id,
+        product_code=product.code,
+        product_name=product.name,
+        shelf_life_days=product.shelf_life_days,
+        releasable_stock=round(quantity_by_state["출하 가능"], 2),
+        transfer_pending_stock=round(quantity_by_state["이관 대기"], 2),
+        inspection_pending_stock=round(quantity_by_state["검사 대기"], 2),
+        rejected_stock=round(quantity_by_state["불합격"], 2),
+        expired_stock=round(quantity_by_state["만료"], 2),
+        total_lot_quantity=round(sum(lot.quantity for lot in lots), 2),
+        lots=lot_responses,
+    )
 
 
 def list_risks(session: Session) -> list[RiskResponse]:

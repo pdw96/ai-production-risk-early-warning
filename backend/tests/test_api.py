@@ -301,22 +301,42 @@ def test_master_data_lists_product_and_material_item_codes(client: TestClient) -
     assert {item["item_type"] for item in items} == {"제품", "자재"}
     assert len([item for item in items if item["item_type"] == "제품"]) == 5
     assert len([item for item in items if item["item_type"] == "자재"]) == 15
-    assert {"item_type", "item_code", "item_name", "safety_stock", "lot_count", "linked_item_count"} <= set(
-        items[0]
-    )
+    assert {
+        "item_type",
+        "item_code",
+        "item_name",
+        "safety_stock",
+        "lot_count",
+        "shelf_life_days",
+        "linked_item_count",
+    } <= set(items[0])
 
 
-def test_master_data_leaves_stock_fields_empty_for_products(client: TestClient) -> None:
-    """제품에는 안전재고와 로트 개념이 없다."""
+def test_master_data_leaves_safety_stock_empty_for_products(client: TestClient) -> None:
+    """안전재고는 자재만 관리한다. 로트는 제품도 갖는다(완제품 로트)."""
     items = client.get("/api/master-data").json()["data"]["items"]
 
     products = [item for item in items if item["item_type"] == "제품"]
     materials = [item for item in items if item["item_type"] == "자재"]
 
-    assert all(item["safety_stock"] is None and item["lot_count"] is None for item in products)
+    assert all(item["safety_stock"] is None for item in products)
+    assert all(item["lot_count"] > 0 for item in products)
     assert all(
         item["safety_stock"] is not None and item["lot_count"] is not None
         for item in materials
+    )
+
+
+def test_master_data_publishes_the_shelf_life_setting_for_every_item(
+    client: TestClient,
+) -> None:
+    """유효기간 설정기간은 기준정보에서 관리한다. 무기한 품목은 값이 없다."""
+    items = client.get("/api/master-data").json()["data"]["items"]
+
+    assert any(item["shelf_life_days"] is None for item in items)
+    assert all(
+        item["shelf_life_days"] is None or item["shelf_life_days"] > 0
+        for item in items
     )
 
 
@@ -359,7 +379,16 @@ def test_purchases_expose_the_inbound_schedule_with_horizon_flag(
     assert [item["scheduled_date"] for item in receipts] == sorted(
         item["scheduled_date"] for item in receipts
     )
-    assert all(receipt["expiry_date"] is not None for receipt in receipts)
+    # 유효기간은 기준정보의 설정기간에서 파생되므로, 무기한 자재의 예정 입고만
+    # 유효기간이 없다.
+    shelf_life_by_code = {
+        item["item_code"]: item["shelf_life_days"]
+        for item in client.get("/api/master-data").json()["data"]["items"]
+    }
+    for receipt in receipts:
+        has_expiry = receipt["expiry_date"] is not None
+        assert has_expiry is (shelf_life_by_code[receipt["material_code"]] is not None)
+    assert any(receipt["expiry_date"] is not None for receipt in receipts)
 
 
 def test_purchase_horizon_flag_matches_the_fourteen_day_window(
@@ -500,3 +529,154 @@ def test_every_product_stays_selectable_in_the_trend_even_without_recent_output(
     trends = client.get("/api/dashboard").json()["data"]["product_trends"]
 
     assert {trend["product_code"] for trend in trends} == product_codes
+
+
+def test_finished_goods_expose_stock_by_state_for_every_product(
+    client: TestClient,
+) -> None:
+    products = client.get("/api/finished-goods").json()["data"]
+
+    assert len(products) == 5
+    assert {
+        "product_id",
+        "product_code",
+        "product_name",
+        "shelf_life_days",
+        "releasable_stock",
+        "transfer_pending_stock",
+        "inspection_pending_stock",
+        "rejected_stock",
+        "expired_stock",
+        "total_lot_quantity",
+        "lots",
+    } <= set(products[0])
+    assert [item["product_code"] for item in products] == sorted(
+        item["product_code"] for item in products
+    )
+
+
+def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
+    client: TestClient,
+) -> None:
+    """다섯 수량은 서로 겹치지 않고 합이 로트 행 합계와 같아야 한다.
+
+    겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보인다.
+    """
+    products = client.get("/api/finished-goods").json()["data"]
+
+    for product in products:
+        buckets = (
+            product["releasable_stock"]
+            + product["transfer_pending_stock"]
+            + product["inspection_pending_stock"]
+            + product["rejected_stock"]
+            + product["expired_stock"]
+        )
+        assert round(buckets, 2) == product["total_lot_quantity"]
+        assert round(sum(lot["quantity"] for lot in product["lots"]), 2) == round(
+            product["total_lot_quantity"], 2
+        )
+
+
+def test_releasable_stock_counts_only_unexpired_lots_in_the_release_warehouse(
+    client: TestClient,
+) -> None:
+    products = client.get("/api/finished-goods").json()["data"]
+
+    for product in products:
+        releasable = sum(
+            lot["quantity"]
+            for lot in product["lots"]
+            if lot["state"] == "출하 가능"
+        )
+        assert round(releasable, 2) == product["releasable_stock"]
+        assert all(
+            lot["warehouse"] == "완제품창고" and lot["qc_status"] == "합격"
+            for lot in product["lots"]
+            if lot["state"] == "출하 가능"
+        )
+
+
+def test_expired_finished_goods_stay_in_the_list_but_leave_the_releasable_stock(
+    client: TestClient,
+) -> None:
+    """로트는 영구 기록이다. 만료돼도 목록에서 사라지지 않는다."""
+    products = client.get("/api/finished-goods").json()["data"]
+
+    expired = [
+        (product, lot)
+        for product in products
+        for lot in product["lots"]
+        if lot["state"] == "만료"
+    ]
+
+    assert expired
+    for product, lot in expired:
+        assert lot["expiry_date"] is not None
+        assert product["expired_stock"] > 0
+
+
+def test_quality_inspections_cover_all_three_types_with_a_summary(
+    client: TestClient,
+) -> None:
+    data = client.get("/api/quality-inspections").json()["data"]
+
+    assert [summary["inspection_type"] for summary in data["summaries"]] == [
+        "IQC",
+        "PQC",
+        "OQC",
+    ]
+    for summary in data["summaries"]:
+        assert summary["total_count"] > 0
+        assert summary["passed_count"] + summary["failed_count"] == summary["total_count"]
+
+    inspections = data["inspections"]
+    assert {inspection["inspection_type"] for inspection in inspections} == {
+        "IQC",
+        "PQC",
+        "OQC",
+    }
+    assert {
+        "inspection_id",
+        "inspection_type",
+        "inspected_date",
+        "result",
+        "reason",
+        "target_type",
+        "item_code",
+        "item_name",
+        "target_label",
+    } <= set(inspections[0])
+    # 최신순이라 화면이 앞에서 잘라 써도 최근 기록이 남는다.
+    assert [inspection["inspected_date"] for inspection in inspections] == sorted(
+        (inspection["inspected_date"] for inspection in inspections),
+        reverse=True,
+    )
+
+
+def test_every_failed_inspection_states_a_reason(client: TestClient) -> None:
+    inspections = client.get("/api/quality-inspections").json()["data"]["inspections"]
+
+    failed = [item for item in inspections if item["result"] == "불합격"]
+    assert failed
+    assert all(item["reason"] for item in failed)
+    assert all(item["reason"] is None for item in inspections if item["result"] == "합격")
+
+
+def test_inspection_targets_match_their_type(client: TestClient) -> None:
+    inspections = client.get("/api/quality-inspections").json()["data"]["inspections"]
+
+    expected_targets = {"IQC": "자재 로트", "PQC": "생산 실적", "OQC": "완제품 로트"}
+    for inspection in inspections:
+        assert inspection["target_type"] == expected_targets[inspection["inspection_type"]]
+        assert inspection["item_code"]
+        assert inspection["target_label"]
+
+
+def test_risk_types_are_unchanged_by_the_finished_goods_work(
+    client: TestClient,
+) -> None:
+    """출하 리스크는 이번 범위가 아니다. 리스크 타입은 납기·자재 둘뿐이다."""
+    risks = client.get("/api/risks").json()["data"]
+
+    assert {risk["risk_type"] for risk in risks} <= {"납기", "자재"}

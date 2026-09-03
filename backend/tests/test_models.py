@@ -11,11 +11,13 @@ from app.db.base import Base
 from app.db.models import (
     BomRequirement,
     DailyProduction,
+    FinishedGoodsLot,
     Material,
     MaterialLot,
     Order,
     Product,
     PurchaseReceipt,
+    QualityInspection,
     RiskStatus,
 )
 
@@ -65,11 +67,13 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
     assert set(inspect(engine).get_table_names()) == {
         "bom_requirements",
         "daily_productions",
+        "finished_goods_lots",
         "material_lots",
         "materials",
         "orders",
         "products",
         "purchase_receipts",
+        "quality_inspections",
         "risk_statuses",
     }
 
@@ -243,8 +247,8 @@ def test_the_same_lot_number_can_repeat_across_different_materials(
 def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
     session: Session,
 ) -> None:
-    # 완제품창고는 이 모델의 범위가 아니다(후속 ②). 상수와 Literal 은 저장을
-    # 막지 못하므로 저장 제약으로 막는다.
+    # 완제품창고에는 완제품이 들어간다(FinishedGoodsLot). 상수와 Literal 은
+    # 저장을 막지 못하므로 저장 제약으로 막는다.
     material = Material(code="RM-06", name="가상 원자재 F", safety_stock=50)
     session.add(
         MaterialLot(
@@ -253,6 +257,128 @@ def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
             warehouse="완제품창고",
             quantity=10,
             received_date=date.today(),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def _finished_goods_lot(product: Product, **overrides: Any) -> FinishedGoodsLot:
+    values: dict[str, Any] = {
+        "product": product,
+        "lot_number": "LOT-FG-01-260901",
+        "warehouse": "완제품창고",
+        "qc_status": "합격",
+        "quantity": 100,
+        "produced_date": date.today(),
+    }
+    values.update(overrides)
+    return FinishedGoodsLot(**values)
+
+
+def test_finished_goods_lot_rejects_a_material_warehouse(session: Session) -> None:
+    """완제품은 원재료창고에 들어가지 않는다. 창고 목록이 자재와 다르다."""
+    product = Product(code="FG-01", name="가상 제품 A")
+    session.add(_finished_goods_lot(product, warehouse="원재료창고"))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_finished_goods_lot_in_the_release_warehouse_must_have_passed_oqc(
+    session: Session,
+) -> None:
+    """완제품창고 = 출하 대기 재고다. 검사 대기·불합격이 섞이면 출하 가능
+    수량이 실제보다 많아 보인다."""
+    product = Product(code="FG-02", name="가상 제품 B")
+    session.add(_finished_goods_lot(product, qc_status="검사 대기"))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_finished_goods_lot_may_wait_in_the_production_warehouse_after_passing(
+    session: Session,
+) -> None:
+    """합격이 곧 이동은 아니다 — 이관 대기 상태를 표현할 수 있어야 한다."""
+    product = Product(code="FG-03", name="가상 제품 C")
+    session.add(
+        _finished_goods_lot(product, warehouse="생산창고", qc_status="합격")
+    )
+    session.commit()
+
+    assert session.query(FinishedGoodsLot).one().warehouse == "생산창고"
+
+
+def test_the_same_finished_goods_lot_number_cannot_repeat_within_one_warehouse(
+    session: Session,
+) -> None:
+    product = Product(code="FG-04", name="가상 제품 D")
+    session.add_all(
+        [
+            _finished_goods_lot(product),
+            _finished_goods_lot(product, quantity=50),
+        ]
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_quality_inspection_rejects_a_target_that_does_not_match_its_type(
+    session: Session,
+) -> None:
+    """IQC 는 자재 로트를 본다. 완제품 로트를 가리키는 IQC 기록은 있을 수 없다."""
+    product = Product(code="FG-05", name="가상 제품 E")
+    session.add(
+        QualityInspection(
+            inspection_type="IQC",
+            inspected_date=date.today(),
+            result="합격",
+            finished_goods_lot=_finished_goods_lot(product),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_quality_inspection_rejects_two_targets_at_once(session: Session) -> None:
+    material = Material(code="RM-07", name="가상 원자재 G", safety_stock=10)
+    product = Product(code="FG-06", name="가상 제품 F")
+    session.add(
+        QualityInspection(
+            inspection_type="OQC",
+            inspected_date=date.today(),
+            result="합격",
+            finished_goods_lot=_finished_goods_lot(product),
+            material_lot=MaterialLot(
+                material=material,
+                lot_number="LOT-RM-07-01",
+                warehouse="원재료창고",
+                quantity=10,
+                received_date=date.today(),
+            ),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_failed_inspection_must_carry_a_reason(session: Session) -> None:
+    """사유 없는 불합격은 담당자가 무엇을 조치할지 알 수 없다."""
+    product = Product(code="FG-07", name="가상 제품 G")
+    session.add(
+        QualityInspection(
+            inspection_type="OQC",
+            inspected_date=date.today(),
+            result="불합격",
+            reason=None,
+            finished_goods_lot=_finished_goods_lot(
+                product, warehouse="생산창고", qc_status="불합격"
+            ),
         )
     )
 

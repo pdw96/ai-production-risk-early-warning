@@ -21,7 +21,11 @@ def test_readme_documents_local_run_and_limitations() -> None:
         "영업관리",
         "합성 데이터 기반 데모",
         "LOT/FIFO",
-        "품질·설비",
+        "완제품 로트와 출하검사",
+        "품질관리",
+        "유효기간 설정기간",
+        "OQC",
+        "설비",
         "AI 브리핑",
         "Docker",
     )

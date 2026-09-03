@@ -11,7 +11,7 @@ describe("navigation_groups", () => {
     expect(erp.label).toBe("ERP");
   });
 
-  it("lists the five ERP modules in department order", () => {
+  it("lists the six ERP modules in department order", () => {
     const erp = navigation_groups[1];
 
     expect(erp.items.map((item) => item.label)).toEqual([
@@ -19,6 +19,7 @@ describe("navigation_groups", () => {
       "구매관리",
       "재고관리",
       "생산관리",
+      "품질관리",
       "영업관리",
     ]);
   });
@@ -31,6 +32,7 @@ describe("navigation_groups", () => {
     expect(routes["재고관리"]).toBe("/materials");
     expect(routes["생산관리"]).toBe("/orders");
     expect(routes["리스크 보드"]).toBe("/risks");
+    expect(routes["품질관리"]).toBe("/quality");
   });
 
   it("has no duplicate routes", () => {
