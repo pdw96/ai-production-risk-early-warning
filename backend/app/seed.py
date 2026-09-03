@@ -435,6 +435,11 @@ def _seed_material_lots(
     for index, (material, target_stock) in enumerate(
         zip(materials, target_stocks, strict=True)
     ):
+        # 수입검사는 물리적 로트 단위로 한 번 한다. 한 로트가 두 창고에 나뉘어
+        # 있어도(원재료창고 60 / 생산창고 40) 입고 시점에 한 번 검사한 것이므로
+        # 행마다 기록을 남기면 같은 검사가 두 건으로 불어난다. 기준정보의 보유
+        # 로트 수도 같은 이유로 로트번호로 센다.
+        inspected_lot_numbers: set[str] = set()
         if index == EXPIRY_SHORTAGE_MATERIAL_INDEX:
             entries = _expiring_lot_plan(material, target_stock, reference_date)
         else:
@@ -455,6 +460,9 @@ def _seed_material_lots(
                 ),
             )
             session.add(lot)
+            if lot.lot_number in inspected_lot_numbers:
+                continue
+            inspected_lot_numbers.add(lot.lot_number)
             # IQC — 창고에 들어와 있는 자재는 수입검사를 통과했다는 뜻이므로
             # 보유 로트에는 합격 기록만 붙는다. 불합격분의 반품·격리는 자재
             # 가용 재고와 14일 판정을 바꾸는 일이라 이 범위 밖이다.

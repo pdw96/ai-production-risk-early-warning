@@ -3,38 +3,6 @@ import React from "react";
 import type { QualityInspection, QualityInspectionSummary } from "../lib/api";
 import { format_date } from "../lib/format";
 
-// 기록이 영구히 쌓이므로 한 화면에 다 그리면 읽을 수 없다. 잘라 보여주되,
-// 전체에서 최신순으로 자르면 IQC 가 한 건도 안 남는다 — IQC 의 검사일은 자재
-// 입고일이라 늘 PQC·OQC 보다 과거이기 때문이다. 그래서 유형별로 자른다.
-export const INSPECTION_DISPLAY_LIMIT_PER_TYPE = 20;
-
-/** 유형별 최신 기록만 남기고 다시 검사일 내림차순으로 되돌린다. */
-export function take_recent_by_type(
-  inspections: QualityInspection[],
-  limit: number = INSPECTION_DISPLAY_LIMIT_PER_TYPE,
-): QualityInspection[] {
-  const counts = new Map<string, number>();
-  const picked: QualityInspection[] = [];
-
-  // 입력이 이미 검사일 내림차순이라 앞에서부터 세면 유형별 최신이 남는다.
-  for (const inspection of inspections) {
-    const seen = counts.get(inspection.inspection_type) ?? 0;
-    if (seen >= limit) {
-      continue;
-    }
-    counts.set(inspection.inspection_type, seen + 1);
-    picked.push(inspection);
-  }
-
-  return picked.sort((left, right) =>
-    left.inspected_date === right.inspected_date
-      ? right.inspection_id - left.inspection_id
-      : right.inspected_date < left.inspected_date
-        ? -1
-        : 1,
-  );
-}
-
 const INSPECTION_LABELS: Record<string, string> = {
   IQC: "IQC 수입검사",
   OQC: "OQC 출하검사",
@@ -61,11 +29,14 @@ export function QualitySummaryCards({
   );
 }
 
+/**
+ * 목록은 API 가 이미 유형별 최신 기록만 잘라 검사일 내림차순으로 보내 준다.
+ * 화면에서 다시 자르지 않는다 — 어디까지 보여줄지는 응답 크기를 결정하는
+ * 문제라 서버가 진다.
+ */
 export function QualityInspectionTable({
   inspections,
 }: Readonly<{ inspections: QualityInspection[] }>) {
-  const visible = take_recent_by_type(inspections);
-
   return (
     <div className="data-table-shell">
       <table className="operation-table operation-table--quality">
@@ -80,7 +51,7 @@ export function QualityInspectionTable({
           </tr>
         </thead>
         <tbody>
-          {visible.map((inspection) => (
+          {inspections.map((inspection) => (
             <tr key={inspection.inspection_id}>
               <td>{inspection.inspection_type}</td>
               <td>{format_date(inspection.inspected_date)}</td>

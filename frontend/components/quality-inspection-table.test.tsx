@@ -3,11 +3,7 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 
 import type { QualityInspection, QualityInspectionSummary } from "../lib/api";
-import {
-  INSPECTION_DISPLAY_LIMIT_PER_TYPE,
-  QualityInspectionTable,
-  QualitySummaryCards,
-} from "./quality-inspection-table";
+import { QualityInspectionTable, QualitySummaryCards } from "./quality-inspection-table";
 
 const summaries: QualityInspectionSummary[] = [
   { failed_count: 0, inspection_type: "IQC", passed_count: 46, total_count: 46 },
@@ -68,36 +64,19 @@ describe("QualityInspectionTable", () => {
     expect(markup).toContain("—");
   });
 
-  it("caps the rendered rows per type so a permanent record does not flood the screen", () => {
-    const many = Array.from({ length: INSPECTION_DISPLAY_LIMIT_PER_TYPE + 5 }, (_, index) => ({
+  it("renders exactly what the API sent without dropping rows", () => {
+    // 어디까지 보여줄지는 응답 크기를 결정하는 문제라 서버가 진다. 화면이 또
+    // 자르면 요약 건수와 목록이 왜 다른지 설명할 자리가 두 곳이 된다.
+    const many = Array.from({ length: 60 }, (_, index) => ({
       ...inspections[1],
-      inspected_date: "2026-08-30",
       inspection_id: index + 100,
       target_label: `LOT-RM-99-${index}`,
     }));
 
     const markup = renderToStaticMarkup(<QualityInspectionTable inspections={many} />);
 
-    expect(markup).toContain(`LOT-RM-99-${INSPECTION_DISPLAY_LIMIT_PER_TYPE - 1}`);
-    expect(markup).not.toContain(`LOT-RM-99-${INSPECTION_DISPLAY_LIMIT_PER_TYPE}`);
-  });
-
-  it("keeps every inspection type on screen when one type is always older", () => {
-    // IQC 의 검사일은 자재 입고일이라 늘 PQC·OQC 보다 과거다. 전체에서 최신순으로
-    // 자르면 IQC 가 한 건도 안 남아, 세 유형을 다 기록한다는 말이 화면에서 거짓이 된다.
-    const recent = Array.from({ length: INSPECTION_DISPLAY_LIMIT_PER_TYPE + 10 }, (_, index) => ({
-      ...inspections[0],
-      inspected_date: "2026-08-31",
-      inspection_id: 500 + index,
-      target_label: `LOT-FG-01-${index}`,
-    }));
-    const old_incoming = { ...inspections[1], inspected_date: "2026-07-01" };
-
-    const markup = renderToStaticMarkup(
-      <QualityInspectionTable inspections={[...recent, old_incoming]} />,
-    );
-
-    expect(markup).toContain("LOT-RM-01-01");
-    expect(markup).toContain("자재 로트");
+    expect(markup).toContain("LOT-RM-99-0");
+    expect(markup).toContain("LOT-RM-99-59");
+    expect(markup.match(/<tr>/g)).toHaveLength(many.length + 1);
   });
 });

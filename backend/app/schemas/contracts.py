@@ -193,8 +193,10 @@ class QualityInspectionSummary(BaseModel):
 
 
 class QualityDataResponse(BaseModel):
+    # 잘라낸 기록까지 포함한 전체 집계다. 아래 목록 길이와 일치하지 않는다.
     summaries: list[QualityInspectionSummary]
-    # 검사일 내림차순. 화면은 이 중 최근 것부터 잘라 보여준다.
+    # 유형별 최신 기록만 담고 검사일 내림차순으로 정렬한다. 기록이 영구히
+    # 쌓이므로 전체를 싣지 않는다.
     inspections: list[QualityInspectionResponse]
 
 

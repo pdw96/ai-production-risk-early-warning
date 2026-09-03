@@ -395,7 +395,9 @@ def test_a_failed_inspection_reason_cannot_be_blank(session: Session) -> None:
             inspection_type="OQC",
             inspected_date=date.today(),
             result="불합격",
-            reason="   ",
+            # 공백만이 아니라 탭·개행도 사유가 아니다. SQLite 의 1인자 trim() 은
+            # 공백(0x20)만 지우므로 지울 문자를 명시해야 이것들이 걸린다.
+            reason=" \t\n\r ",
             finished_goods_lot=_finished_goods_lot(
                 product, warehouse="생산창고", qc_status="불합격"
             ),

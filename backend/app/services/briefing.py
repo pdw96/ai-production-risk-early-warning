@@ -58,6 +58,17 @@ from app.services.order_risk import calculate_order_risk
 HORIZON_DAYS = 14
 RISK_STATUS_NEW: RiskWorkflowStatus = "신규"
 
+# 검사 기록은 영구히 쌓이므로 조회에 상한을 둔다. 전체에서 최신순으로 자르면
+# IQC 가 한 건도 안 남는다 — IQC 의 검사일은 자재 입고일이라 늘 PQC·OQC 보다
+# 과거이기 때문이다. 그래서 유형별로 자른다. 요약 건수는 잘라낸 것까지 포함한
+# 전체를 세므로, 화면의 합격·불합격 집계는 목록 길이와 무관하게 정확하다.
+RECENT_INSPECTIONS_PER_TYPE = 20
+INSPECTION_TYPE_ORDER = (
+    INCOMING_INSPECTION,
+    PROCESS_INSPECTION,
+    OUTGOING_INSPECTION,
+)
+
 
 def get_reference_date(session: Session) -> date:
     """실적이 존재하는 가장 최근 날짜를 운영 기준일로 사용한다."""
@@ -278,47 +289,75 @@ def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
 
 
 def list_quality_inspections(session: Session) -> QualityDataResponse:
-    """IQC·PQC·OQC 기록을 최신순으로 모으고 유형별 합격·불합격을 센다."""
-    inspections = session.scalars(
-        select(QualityInspection)
-        .options(
-            selectinload(QualityInspection.material_lot).selectinload(
-                MaterialLot.material
-            ),
-            selectinload(QualityInspection.daily_production)
-            .selectinload(DailyProduction.order)
-            .selectinload(Order.product),
-            selectinload(QualityInspection.finished_goods_lot).selectinload(
-                FinishedGoodsLot.product
-            ),
-        )
-        .order_by(
-            QualityInspection.inspected_date.desc(),
-            QualityInspection.id.desc(),
-        )
-    ).all()
+    """유형별 합격·불합격 전체 집계와, 유형별 최신 기록을 모아 돌려준다.
 
-    rows = [_build_inspection_response(inspection) for inspection in inspections]
-    summaries = [
+    전체를 실어 보내지 않는 이유는 기록이 영구히 쌓이기 때문이다. 화면이 다
+    그리지도 못할 양을 직렬화하면 응답과 파싱 비용만 무한정 커진다. 대신 건수는
+    집계 질의로 세어 잘라낸 기록까지 반영한다.
+    """
+    summaries = _build_inspection_summaries(session)
+    rows = [
+        _build_inspection_response(inspection)
+        for inspection_type in INSPECTION_TYPE_ORDER
+        for inspection in _recent_inspections_of_type(session, inspection_type)
+    ]
+    # 유형별로 뽑았으므로 다시 검사일 내림차순으로 되돌린다.
+    rows.sort(key=lambda row: (row.inspected_date, row.inspection_id), reverse=True)
+    return QualityDataResponse(summaries=summaries, inspections=rows)
+
+
+def _build_inspection_summaries(session: Session) -> list[QualityInspectionSummary]:
+    """유형×판정 건수를 집계 질의로 센다(잘라낸 기록까지 포함한 전체)."""
+    counts: defaultdict[tuple[str, str], int] = defaultdict(int)
+    for inspection_type, result, count in session.execute(
+        select(
+            QualityInspection.inspection_type,
+            QualityInspection.result,
+            func.count(),
+        ).group_by(QualityInspection.inspection_type, QualityInspection.result)
+    ).all():
+        counts[(inspection_type, result)] = int(count)
+
+    return [
         QualityInspectionSummary(
             inspection_type=inspection_type,
-            total_count=len(of_type),
-            passed_count=sum(1 for row in of_type if row.result == QC_PASSED),
-            failed_count=sum(1 for row in of_type if row.result == QC_FAILED),
+            total_count=(
+                counts[(inspection_type, QC_PASSED)]
+                + counts[(inspection_type, QC_FAILED)]
+            ),
+            passed_count=counts[(inspection_type, QC_PASSED)],
+            failed_count=counts[(inspection_type, QC_FAILED)],
         )
-        for inspection_type, of_type in (
-            (
-                inspection_type,
-                [row for row in rows if row.inspection_type == inspection_type],
-            )
-            for inspection_type in (
-                INCOMING_INSPECTION,
-                PROCESS_INSPECTION,
-                OUTGOING_INSPECTION,
-            )
-        )
+        for inspection_type in INSPECTION_TYPE_ORDER
     ]
-    return QualityDataResponse(summaries=summaries, inspections=rows)
+
+
+def _recent_inspections_of_type(
+    session: Session,
+    inspection_type: str,
+) -> list[QualityInspection]:
+    return list(
+        session.scalars(
+            select(QualityInspection)
+            .options(
+                selectinload(QualityInspection.material_lot).selectinload(
+                    MaterialLot.material
+                ),
+                selectinload(QualityInspection.daily_production)
+                .selectinload(DailyProduction.order)
+                .selectinload(Order.product),
+                selectinload(QualityInspection.finished_goods_lot).selectinload(
+                    FinishedGoodsLot.product
+                ),
+            )
+            .where(QualityInspection.inspection_type == inspection_type)
+            .order_by(
+                QualityInspection.inspected_date.desc(),
+                QualityInspection.id.desc(),
+            )
+            .limit(RECENT_INSPECTIONS_PER_TYPE)
+        ).all()
+    )
 
 
 def _build_inspection_response(

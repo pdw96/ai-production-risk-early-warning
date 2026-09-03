@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import base as db_base
 from app.main import app
 from app.seed import reset_database
+from app.services.briefing import RECENT_INSPECTIONS_PER_TYPE
 
 
 @pytest.fixture
@@ -631,6 +632,9 @@ def test_quality_inspections_cover_all_three_types_with_a_summary(
         assert summary["passed_count"] + summary["failed_count"] == summary["total_count"]
 
     inspections = data["inspections"]
+    # IQC 의 검사일은 자재 입고일이라 늘 PQC·OQC 보다 과거다. 전체에서 최신순으로
+    # 자르면 IQC 가 한 건도 안 남아, 세 유형을 다 기록한다는 말이 화면에서
+    # 거짓이 된다. 그래서 유형별로 잘라야 한다.
     assert {inspection["inspection_type"] for inspection in inspections} == {
         "IQC",
         "PQC",
@@ -680,3 +684,41 @@ def test_risk_types_are_unchanged_by_the_finished_goods_work(
     risks = client.get("/api/risks").json()["data"]
 
     assert {risk["risk_type"] for risk in risks} <= {"납기", "자재"}
+
+
+def test_quality_inspection_list_is_bounded_per_type(client: TestClient) -> None:
+    """기록이 영구히 쌓이므로 목록에 상한을 둔다.
+
+    상한은 서버가 진다. 화면이 자르면 전체를 실어 보낸 뒤 대부분을 버리게 되어
+    응답 크기와 파싱 비용이 기록 수만큼 커진다.
+    """
+    data = client.get("/api/quality-inspections").json()["data"]
+
+    counts_by_type: dict[str, int] = {}
+    for inspection in data["inspections"]:
+        counts_by_type[inspection["inspection_type"]] = (
+            counts_by_type.get(inspection["inspection_type"], 0) + 1
+        )
+
+    assert counts_by_type
+    assert all(count <= RECENT_INSPECTIONS_PER_TYPE for count in counts_by_type.values())
+
+
+def test_quality_summary_counts_records_the_list_left_out(client: TestClient) -> None:
+    """요약은 잘라낸 기록까지 세야 한다.
+
+    목록만 세면 상한을 걸자마자 합격·불합격 건수가 조용히 줄어, 화면이 실제보다
+    적은 검사가 있었다고 말하게 된다.
+    """
+    data = client.get("/api/quality-inspections").json()["data"]
+
+    recorded = sum(summary["total_count"] for summary in data["summaries"])
+
+    assert recorded > len(data["inspections"])
+    for summary in data["summaries"]:
+        listed = [
+            inspection
+            for inspection in data["inspections"]
+            if inspection["inspection_type"] == summary["inspection_type"]
+        ]
+        assert summary["total_count"] >= len(listed)

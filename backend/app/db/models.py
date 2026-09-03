@@ -42,6 +42,10 @@ _ALLOWED_QC_STATUSES_SQL = _sql_value_list(QC_STATUSES)
 _ALLOWED_INSPECTION_TYPES_SQL = _sql_value_list(INSPECTION_TYPES)
 _ALLOWED_INSPECTION_RESULTS_SQL = _sql_value_list(INSPECTION_RESULTS)
 
+# SQLite 의 1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 통과해
+# 화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 2인자 형태를 쓴다.
+_BLANK_CHARACTERS_SQL = "' ' || char(9) || char(10) || char(13)"
+
 # 검사 유형마다 대상 테이블이 다르므로 nullable FK 를 셋 두고, "유형에 맞는
 # 대상 하나만 채워져 있음" 을 DB 가 강제하게 한다. 범용 (target_type,
 # target_id) 컬럼으로 두면 존재하지 않는 대상을 가리키는 기록을 막을 수 없다.
@@ -283,10 +287,11 @@ class QualityInspection(Base):
             name="ck_quality_inspection_target",
         ),
         # 불합격은 사유 없이 남기면 담당자가 무엇을 조치할지 알 수 없다.
-        # 빈 문자열도 사유가 없는 것이므로 NULL 검사만으로는 부족하다 — 화면은
-        # 그 빈 칸을 그대로 그려 사유 없는 불합격 행을 만든다.
+        # 빈 문자열과 공백뿐인 문자열도 사유가 없는 것이므로 NULL 검사만으로는
+        # 부족하다 — 화면은 그 빈 칸을 그대로 그려 사유 없는 불합격 행을 만든다.
         CheckConstraint(
-            f"result = '{QC_PASSED}' OR (reason IS NOT NULL AND trim(reason) <> '')",
+            f"result = '{QC_PASSED}' OR"
+            f" (reason IS NOT NULL AND trim(reason, {_BLANK_CHARACTERS_SQL}) <> '')",
             name="ck_quality_inspection_failure_reason",
         ),
     )

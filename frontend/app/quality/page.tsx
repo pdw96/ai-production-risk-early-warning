@@ -4,7 +4,6 @@ import React from "react";
 
 import { DataState } from "../../components/data-state";
 import {
-  INSPECTION_DISPLAY_LIMIT_PER_TYPE,
   QualityInspectionTable,
   QualitySummaryCards,
 } from "../../components/quality-inspection-table";
@@ -24,8 +23,13 @@ export default function QualityPage() {
     return <DataState state="empty" />;
   }
 
+  // 요약은 잘라낸 기록까지 포함한 전체 집계라 목록 길이와 다르다.
   const failed_count = quality.summaries.reduce(
     (total, summary) => total + summary.failed_count,
+    0,
+  );
+  const recorded_count = quality.summaries.reduce(
+    (total, summary) => total + summary.total_count,
     0,
   );
 
@@ -40,15 +44,14 @@ export default function QualityPage() {
             조치 대상입니다.
           </p>
         </div>
-        <span className="page-header__count">{quality.inspections.length} RECORDS</span>
+        <span className="page-header__count">{recorded_count} RECORDS</span>
       </header>
       <QualitySummaryCards summaries={quality.summaries} />
       <section className="page-panel">
         <div className="page-panel__header">
           <h2>검사 기록</h2>
           <span>
-            유형별 최신 {INSPECTION_DISPLAY_LIMIT_PER_TYPE}건 / 전체{" "}
-            {quality.inspections.length}건
+            유형별 최신 {quality.inspections.length}건 / 전체 {recorded_count}건
           </span>
         </div>
         <QualityInspectionTable inspections={quality.inspections} />

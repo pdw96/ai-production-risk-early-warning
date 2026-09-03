@@ -415,21 +415,41 @@ def test_finished_goods_qc_status_agrees_with_the_oqc_record(
     assert statuses == {"검사 대기", "합격", "불합격"}
 
 
-def test_seeded_incoming_inspections_cover_every_held_material_lot(
+def test_seeded_incoming_inspections_are_one_per_physical_lot(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
-    """창고에 있는 자재는 수입검사를 통과했다는 뜻이므로 전건 합격이다."""
+    """수입검사는 물리적 로트 단위로 한 번이다.
+
+    한 로트가 두 창고에 나뉘어 있어도 입고 시점에 한 번 검사한 것이다. 행마다
+    기록을 남기면 같은 검사가 두 건으로 불어나 IQC 집계가 부풀고, 화면에는
+    구분되지 않는 중복 행이 나온다. 기준정보가 보유 로트를 로트번호로 세는
+    것과 같은 규칙이다.
+
+    창고에 있는 자재는 검사를 통과했다는 뜻이므로 전건 합격이다.
+    """
     reset_database(date(2026, 8, 31))
 
     with seeded_session_factory() as session:
-        lot_ids = {lot.id for lot in session.query(MaterialLot).all()}
+        lots_by_id = {lot.id: lot for lot in session.query(MaterialLot).all()}
+        physical_lots = {
+            (lot.material_id, lot.lot_number) for lot in lots_by_id.values()
+        }
         incoming = [
             inspection
             for inspection in session.query(QualityInspection).all()
             if inspection.inspection_type == "IQC"
         ]
+        inspected = [
+            (
+                lots_by_id[inspection.material_lot_id].material_id,
+                lots_by_id[inspection.material_lot_id].lot_number,
+            )
+            for inspection in incoming
+        ]
 
-    assert {inspection.material_lot_id for inspection in incoming} == lot_ids
+    # 데모에는 두 창고에 나뉜 로트가 반드시 하나 있다(행 수 > 물리적 로트 수).
+    assert len(lots_by_id) > len(physical_lots)
+    assert sorted(inspected) == sorted(physical_lots)
     assert all(inspection.result == "합격" for inspection in incoming)
 
 
