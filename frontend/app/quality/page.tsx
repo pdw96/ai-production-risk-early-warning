@@ -51,10 +51,15 @@ export default function QualityPage() {
         <div className="page-panel__header">
           <h2>검사 기록</h2>
           <span>
-            유형별 최신 {quality.inspections.length}건 / 전체 {recorded_count}건
+            최신 {quality.inspections.length}건 표시 / 전체 {recorded_count}건 기록
           </span>
         </div>
         <QualityInspectionTable inspections={quality.inspections} />
+        <p className="page-panel__pending">
+          목록은 <strong>유형별로 최신 기록을 따로 잘라</strong> 담습니다. IQC의 검사일은
+          자재 입고일이라 늘 PQC·OQC보다 과거여서, 전체를 최신순으로 자르면 IQC가 한 건도
+          남지 않기 때문입니다. 위의 합격·불합격 건수는 잘라낸 기록까지 센 전체입니다.
+        </p>
         <p className="page-panel__pending">
           OQC 합격분만 완제품창고로 이관되어 출하 대상이 됩니다. IQC는 이미 입고된 자재의
           기록이라 전건 합격이며, PQC 불합격은 공정 이상 기록일 뿐 생산 수량을 바꾸지

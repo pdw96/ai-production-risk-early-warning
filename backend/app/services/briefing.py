@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import (
@@ -185,21 +185,38 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
     return results
 
 
+def _distinct_lot_counts(session: Session, owner_column, lot_number_column) -> dict[int, int]:
+    """품목별 물리적 로트 수. 한 로트가 두 창고에 나뉘어 있어도 한 건으로 센다."""
+    return {
+        owner_id: int(count)
+        for owner_id, count in session.execute(
+            select(owner_column, func.count(distinct(lot_number_column))).group_by(
+                owner_column
+            )
+        ).all()
+    }
+
+
 def get_master_data(session: Session) -> MasterDataResponse:
     """기준정보관리 화면용 품목 마스터와 BOM을 만든다."""
     products = session.scalars(
         select(Product)
-        .options(
-            selectinload(Product.bom_requirements),
-            selectinload(Product.finished_goods_lots),
-        )
+        .options(selectinload(Product.bom_requirements))
         .order_by(Product.code)
     ).all()
     materials = session.scalars(
         select(Material)
-        .options(selectinload(Material.bom_requirements), selectinload(Material.lots))
+        .options(selectinload(Material.bom_requirements))
         .order_by(Material.code)
     ).all()
+    # 로트는 영구 기록이라 계속 쌓인다. 화면이 쓰는 것은 품목당 정수 하나뿐이므로
+    # 행을 다 적재하지 않고 집계 질의로 센다.
+    finished_lot_counts = _distinct_lot_counts(
+        session, FinishedGoodsLot.product_id, FinishedGoodsLot.lot_number
+    )
+    material_lot_counts = _distinct_lot_counts(
+        session, MaterialLot.material_id, MaterialLot.lot_number
+    )
 
     items = [
         MasterItemResponse(
@@ -209,7 +226,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             # 안전재고는 자재만 관리한다.
             safety_stock=None,
             # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
-            lot_count=len({lot.lot_number for lot in product.finished_goods_lots}),
+            lot_count=finished_lot_counts.get(product.id, 0),
             shelf_life_days=product.shelf_life_days,
             linked_item_count=len(product.bom_requirements),
         )
@@ -221,7 +238,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_name=material.name,
             safety_stock=round(material.safety_stock, 2),
             # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
-            lot_count=len({lot.lot_number for lot in material.lots}),
+            lot_count=material_lot_counts.get(material.id, 0),
             shelf_life_days=material.shelf_life_days,
             linked_item_count=len(material.bom_requirements),
         )

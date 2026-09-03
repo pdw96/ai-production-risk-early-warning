@@ -428,3 +428,61 @@ def test_sqlite_foreign_key_enforcement_is_on_for_every_connection(
     session: Session,
 ) -> None:
     assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+
+
+def test_a_target_with_inspection_history_cannot_be_deleted(session: Session) -> None:
+    """검사 기록은 대상에 딸린 부속이 아니라 감사 기록이다.
+
+    `delete-orphan` 을 걸어 두면 대상을 지우는 것만으로 검사 기록이 조용히
+    사라져, API 요약이 세는 이력이 줄어든다. 지우려면 기록을 먼저 정리하라고
+    DB 가 막아야 한다.
+    """
+    material = Material(code="RM-08", name="가상 원자재 H", safety_stock=10)
+    lot = MaterialLot(
+        material=material,
+        lot_number="LOT-RM-08-01",
+        warehouse="원재료창고",
+        quantity=10,
+        received_date=date.today(),
+    )
+    lot.inspections.append(
+        QualityInspection(
+            inspection_type="IQC",
+            inspected_date=date.today(),
+            result="합격",
+        )
+    )
+    session.add(lot)
+    session.commit()
+
+    session.delete(lot)
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_detaching_an_inspection_from_its_target_does_not_delete_it(
+    session: Session,
+) -> None:
+    """대상 컬렉션에서 떼어내는 것만으로도 기록이 지워지면 안 된다."""
+    material = Material(code="RM-09", name="가상 원자재 I", safety_stock=10)
+    lot = MaterialLot(
+        material=material,
+        lot_number="LOT-RM-09-01",
+        warehouse="원재료창고",
+        quantity=10,
+        received_date=date.today(),
+    )
+    lot.inspections.append(
+        QualityInspection(
+            inspection_type="IQC",
+            inspected_date=date.today(),
+            result="합격",
+        )
+    )
+    session.add(lot)
+    session.commit()
+
+    lot.inspections.clear()
+    # 대상 없는 검사 기록은 존재할 수 없으므로 CHECK 제약이 막는다.
+    with pytest.raises(IntegrityError):
+        session.commit()

@@ -114,7 +114,7 @@ class DailyProduction(Base):
     order: Mapped[Order] = relationship(back_populates="daily_productions")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="daily_production",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -199,7 +199,7 @@ class MaterialLot(Base):
     material: Mapped[Material] = relationship(back_populates="lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="material_lot",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -257,7 +257,7 @@ class FinishedGoodsLot(Base):
     product: Mapped[Product] = relationship(back_populates="finished_goods_lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="finished_goods_lot",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -303,14 +303,18 @@ class QualityInspection(Base):
     # 불합격 사유. 합격이면 None 이다.
     reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
+    # 검사 기록은 대상에 딸린 부속이 아니라 감사 기록이다. 대상을 지운다고
+    # 함께 지워지면 안 되므로 `delete-orphan` 을 쓰지 않고, 검사 기록이 남아
+    # 있는 대상은 DB 가 삭제를 거부하게 한다(RESTRICT). 관계 쪽 대응은
+    # `passive_deletes=True` 로 넘겨 SQLAlchemy 가 대신 지우지 않게 한다.
     material_lot_id: Mapped[int | None] = mapped_column(
-        ForeignKey("material_lots.id"), nullable=True
+        ForeignKey("material_lots.id", ondelete="RESTRICT"), nullable=True
     )
     daily_production_id: Mapped[int | None] = mapped_column(
-        ForeignKey("daily_productions.id"), nullable=True
+        ForeignKey("daily_productions.id", ondelete="RESTRICT"), nullable=True
     )
     finished_goods_lot_id: Mapped[int | None] = mapped_column(
-        ForeignKey("finished_goods_lots.id"), nullable=True
+        ForeignKey("finished_goods_lots.id", ondelete="RESTRICT"), nullable=True
     )
 
     material_lot: Mapped[MaterialLot | None] = relationship(
