@@ -29,6 +29,14 @@ class Envelope(BaseModel, Generic[DataT]):
 
 
 class ProductionPoint(BaseModel):
+    """하루치 계획·실적 한 점.
+
+    **제품별 계열에서는 그 제품의 단위**이고, 전 제품 합계 추이에서는 여러 제품을
+    더한 값이다. 지금은 완제품이 전부 `EA` 라 그 합이 뜻을 갖는다 — 단위가 다른
+    완제품이 생기는 날 이 합은 무엇도 세지 않게 되며, 그것을 회귀 테스트가 잡는다
+    (`test_api.py::test_the_cross_product_totals_assume_one_counting_unit`).
+    """
+
     work_date: date
     planned_quantity: float
     actual_quantity: float
@@ -39,6 +47,8 @@ class OrderResponse(BaseModel):
     order_number: str
     product_code: str
     product_name: str
+    # 이 오더의 모든 수량이 쓰는 단위. 오더는 제품 하나를 가리키므로 값이 하나다.
+    stock_uom: str
     due_date: date
     planned_quantity: float
     actual_quantity: float
@@ -99,7 +109,11 @@ class ProductTrend(BaseModel):
 
 
 class ProductionResultResponse(BaseModel):
-    """생산관리 화면의 일자별 생산실적 한 줄."""
+    """생산관리 화면의 일자별 생산실적 한 줄.
+
+    수량은 그날 실적이 잡힌 **여러 제품을 더한 값**이라 단위가 하나로 정해지지
+    않는다. 지금은 완제품이 전부 `EA` 라 그 합이 뜻을 갖는다.
+    """
 
     work_date: date
     planned_quantity: float
@@ -154,6 +168,8 @@ class FinishedGoodsResponse(BaseModel):
     product_id: int
     product_code: str
     product_name: str
+    # 아래 모든 수량이 쓰는 단위. 제품 하나를 보는 응답이라 값이 하나다.
+    stock_uom: str
     shelf_life_days: int | None
     # 제품창고에 있고 만료되지 않은 재고. 출하는 여기서만 일어난다.
     releasable_stock: float
@@ -279,6 +295,9 @@ class RiskStatusUpdate(BaseModel):
 class DashboardKpis(BaseModel):
     due_risk_order_count: int
     material_shortage_count: int
+    # 아래 둘은 그날의 **전 제품 합계**라 단위가 하나로 정해지지 않는다. 지금은
+    # 완제품이 전부 `EA` 라 뜻을 갖는다 — 단위가 다른 완제품이 생기는 날
+    # 이 숫자와 추이 차트는 함께 손봐야 하고, 회귀 테스트가 그 순간을 잡는다.
     today_plan_quantity: float
     today_actual_quantity: float
 

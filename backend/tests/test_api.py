@@ -847,3 +847,29 @@ def test_every_quantity_screen_knows_the_unit_it_counts_in(client: TestClient) -
     # 양이므로, 상위의 단위를 적으면 뜻이 뒤집힌다.
     for requirement in master["bom_requirements"]:
         assert requirement["unit_quantity_uom"] == units[requirement["material_code"]]
+
+
+def test_the_cross_product_totals_assume_one_counting_unit(client: TestClient) -> None:
+    """제품을 넘어 더하는 숫자들은 **완제품 단위가 하나일 때만** 뜻을 갖는다.
+
+    대시보드 KPI(오늘 계획·실적) · 전 제품 합계 추이 · 생산관리의 일자별 실적은
+    여러 제품을 한 숫자로 더한다. 지금은 완제품이 전부 `EA` 라 그 합이 개수이고
+    화면의 「개」도 맞다.
+
+    단위가 다른 완제품이 하나라도 생기면 그 숫자들은 킬로그램과 개수를 더한 값이
+    되어 무엇도 세지 않는다. 그날 이 테스트가 먼저 깨지는 것이 목적이다 — 화면이
+    조용히 거짓말을 시작하는 것보다 CI 가 멈추는 편이 낫다. 깨지면 KPI · 추이 ·
+    일자별 실적을 단위별로 가르고, 이 테스트를 그 구조에 맞게 다시 쓴다.
+    """
+    finished = client.get("/api/finished-goods").json()["data"]
+    units = {product["stock_uom"] for product in finished}
+
+    assert units == {"EA"}, (
+        f"완제품 단위가 여럿이 됐습니다({sorted(units)}). 대시보드 KPI · 전 제품"
+        " 합계 추이 · 일자별 생산실적은 제품을 넘어 더하므로 지금 구조로는"
+        " 뜻을 잃습니다."
+    )
+
+    # 오더도 제품 하나를 가리키므로 단위를 든다.
+    for order in client.get("/api/orders").json()["data"]:
+        assert order["stock_uom"] == "EA"

@@ -38,11 +38,11 @@ export function OrderTable({ orders }: Readonly<{ orders: Order[] }>) {
                 <span className="table-secondary">{order.product_code}</span>
               </td>
               <td>{format_date(order.due_date)}</td>
-              <td className="numeric-cell">{format_quantity(order.planned_quantity)}</td>
-              <td className="numeric-cell">{format_quantity(order.actual_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(order.planned_quantity, order.stock_uom)}</td>
+              <td className="numeric-cell">{format_quantity(order.actual_quantity, order.stock_uom)}</td>
               <td className="numeric-cell">{format_percentage(order.completion_rate)}</td>
-              <td className="numeric-cell">{format_quantity(order.average_daily_output)}/일</td>
-              <td className="numeric-cell">{format_quantity(order.remaining_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(order.average_daily_output, order.stock_uom)}/일</td>
+              <td className="numeric-cell">{format_quantity(order.remaining_quantity, order.stock_uom)}</td>
               <td>{format_date(order.estimated_completion_date)}</td>
               <td><StatusBadge severity={order.severity} /></td>
               <td className="operation-table__reason">{order.reason}</td>

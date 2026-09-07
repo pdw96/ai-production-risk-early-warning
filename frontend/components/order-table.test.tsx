@@ -16,6 +16,7 @@ const sample_order: Order = {
   planned_quantity: 1000,
   product_code: "PRD-001",
   product_name: "가상 제품 A",
+  stock_uom: "EA",
   reason: "완료 예상일이 납기 안에 있습니다.",
   remaining_quantity: 200,
   severity: "정상",

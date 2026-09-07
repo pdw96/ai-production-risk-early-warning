@@ -12,6 +12,7 @@ const sample_product: FinishedGoods = {
   product_code: "FG-01",
   product_id: 1,
   product_name: "가상 제품 A",
+  stock_uom: "EA",
   rejected_stock: 20,
   releasable_stock: 110,
   shelf_life_days: 180,

@@ -21,6 +21,8 @@ export interface Order {
   order_number: string;
   product_code: string;
   product_name: string;
+  /** 이 오더의 모든 수량이 쓰는 단위. */
+  stock_uom: string;
   due_date: string;
   planned_quantity: number;
   actual_quantity: number;
@@ -100,6 +102,8 @@ export interface FinishedGoods {
   product_id: number;
   product_code: string;
   product_name: string;
+  /** 아래 모든 수량이 쓰는 단위. */
+  stock_uom: string;
   shelf_life_days: number | null;
   /** 제품창고에 있고 만료되지 않은 재고. 출하는 여기서만 일어난다. */
   releasable_stock: number;
