@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 import { DataState } from "../components/data-state";
 import { KpiCard } from "../components/kpi-card";
@@ -26,12 +26,24 @@ function format_date(value: string | null): string {
   return `${year}년 ${month}월 ${day}일`;
 }
 
+/**
+ * 데이터베이스에 아직 아무것도 없는가.
+ *
+ * 이 판단이 **한 번도 참이 될 수 없었다.** 추이는 실적이 없어도 7일치 0을 채워
+ * 보내므로 `production_trend` 는 언제나 7이고, 권고도 위험이 없으면 「현재 주요
+ * 위험이 없습니다」 한 줄이 들어가 0이 되지 않는다. 그래서 표가 비어 있는
+ * 데이터베이스(운영 기본값은 자동 시드를 켜지 않는다)에서 화면은 **아무 문제
+ * 없는 공장**처럼 보였다 — 0으로 채운 차트와 「위험 없음」이 그렇게 읽힌다.
+ *
+ * 대신 **제품이 하나라도 있는가**를 본다. 제품별 계열은 실적과 무관하게 완제품
+ * 마스터에서 나오므로, 그것이 비어 있다는 것은 기준정보가 아직 없다는 뜻이다.
+ * 정상적으로 도는 공장에서는 위험이 없어도 이 목록이 차 있다.
+ */
 function is_empty_dashboard(dashboard: Dashboard): boolean {
   return (
-    dashboard.production_trend.length === 0 &&
+    dashboard.product_trends.length === 0 &&
     dashboard.top_order_risks.length === 0 &&
-    dashboard.top_material_risks.length === 0 &&
-    dashboard.recommended_actions.length === 0
+    dashboard.top_material_risks.length === 0
   );
 }
 

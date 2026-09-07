@@ -8,12 +8,28 @@ set -eu
 # 세 조건을 모두 통과할 때만 시드한다.
 
 # ── 0. SQLite 로 떨어질 때는 파일이 앉을 자리를 먼저 만든다 ──────────────
-# DATABASE_URL 이 없으면 SQLite 파일로 떨어진다(app.core.config). 그 파일의 상위
-# 디렉터리가 없으면 마이그레이션이 첫 줄에서 `unable to open database file` 로
-# 죽는다 — 판단이 세 조건으로 바뀌면서 옛 entrypoint 의 이 mkdir 이 빠져 있었다.
+# 상위 디렉터리가 없으면 첫 접속이 `unable to open database file` 로 죽고,
+# 기동은 마이그레이션까지 가지도 못한다.
+#
+# 길이 둘이다. `DATABASE_URL` 이 없으면 `DATABASE_PATH`(또는 기본값)로 떨어지고
+# (app.core.config), 있으면서 `sqlite:` 로 시작하면 **그 주소 안에 경로가 있다.**
+# 앞의 것만 보면 `sqlite:////data/new/db.sqlite` 같은 주소가 그냥 죽는다.
 if [ -z "${DATABASE_URL:-}" ]; then
   database_path="${DATABASE_PATH:-/app/production_risk.db}"
   mkdir -p "$(dirname "$database_path")"
+else
+  case "${DATABASE_URL}" in
+    sqlite:*)
+      # `sqlite:///상대경로` 와 `sqlite:////절대경로` 를 함께 다룬다. 방언
+      # 접미(`sqlite+pysqlite:`)와 `?mode=ro` 같은 질의 문자열도 걷어낸다.
+      database_path="${DATABASE_URL#*://}"
+      database_path="${database_path%%\?*}"
+      # 메모리 데이터베이스에는 앉을 자리가 없다.
+      if [ -n "$database_path" ]; then
+        mkdir -p "$(dirname "$database_path")"
+      fi
+      ;;
+  esac
 fi
 
 # ── 0.5 옛 데이터베이스인지 먼저 본다 ───────────────────────────────────

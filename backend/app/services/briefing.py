@@ -729,14 +729,27 @@ def get_dashboard(session: Session) -> DashboardResponse:
     if not actions:
         actions = ["현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."]
 
-    # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 완제품 단위가
-    # 갈리면 None 이고, 그때 화면은 「개」라고 적는 대신 혼재를 말한다.
-    finished_units = session.scalars(
-        select(Item.stock_uom).where(Item.item_type == FINISHED_ITEM)
+    # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 갈리면 None 이고,
+    # 그때 화면은 「개」라고 적는 대신 혼재를 말한다.
+    #
+    # 묻는 것은 **그 합에 실제로 들어간 제품들의 단위**다. 완제품 마스터를 전부
+    # 보면, 최근 7일에 생산이 하나도 없는 m² 제품 때문에 개수만 더한 합이
+    # 「혼재」로 표시된다 — 더해지지도 않은 것이 합의 단위를 바꾸는 셈이다.
+    contributing_units = session.scalars(
+        select(Item.stock_uom)
+        .join(Order, Order.item_id == Item.id)
+        .join(DailyProduction, DailyProduction.order_id == Order.id)
+        .where(
+            DailyProduction.work_date.between(
+                reference_date - timedelta(days=6),
+                reference_date,
+            )
+        )
+        .distinct()
     ).all()
 
     return DashboardResponse(
-        quantity_uom=_single_uom(finished_units),
+        quantity_uom=_single_uom(contributing_units),
         kpis=DashboardKpis(
             due_risk_order_count=sum(
                 order.severity == "위험" for order in orders

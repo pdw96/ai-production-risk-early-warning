@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Generator
-from datetime import date
+from datetime import date, timedelta
 
 warnings.filterwarnings(
     "ignore",
@@ -11,15 +11,20 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import base as db_base
 from app.main import app
 from app.seed import reset_database
+from app.db.models import DailyProduction, Order
 from tests.factories import finished_item
 from app.services.briefing import RECENT_INSPECTIONS_PER_TYPE
+
+
+# 시드가 쓰는 기준일. 테스트가 그날에 실적을 얹으려면 같은 값을 알아야 한다.
+REFERENCE_DATE = date(2026, 8, 31)
 
 
 @pytest.fixture
@@ -34,7 +39,7 @@ def client(
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     monkeypatch.setattr(db_base, "engine", engine)
     monkeypatch.setattr(db_base, "SessionLocal", session_factory)
-    reset_database(date(2026, 8, 31))
+    reset_database(REFERENCE_DATE)
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()
@@ -887,14 +892,75 @@ def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> 
     assert {row["quantity_uom"] for row in results if row["active_order_count"]} == {"EA"}
 
     # m² 로 세는 완제품을 하나 들인다. 시트·필름 공장에서 이상한 품목이 아니다.
+    # **생산 실적까지 넣는 것이 요점이다** — 합계에 들어가지 않은 품목은 그 합의
+    # 단위를 바꾸지 않아야 하고, 아래에서 그 순서를 나누어 확인한다.
     with db_base.SessionLocal() as session:
+        product = finished_item(code="FG-99", name="가상 광학필름", stock_uom="m2")
+        session.add(product)
+        session.flush()
+        order = Order(
+            order_number="MO-999",
+            item=product,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(order)
+        session.commit()
+
+    # 아직 실적이 없다. 합계에 들어가지 않았으므로 단위도 바뀌지 않는다.
+    assert client.get("/api/dashboard").json()["data"]["quantity_uom"] == "EA"
+
+    with db_base.SessionLocal() as session:
+        saved_order = session.scalars(
+            select(Order).where(Order.order_number == "MO-999")
+        ).one()
         session.add(
-            finished_item(code="FG-99", name="가상 광학필름", stock_uom="m2")
+            DailyProduction(
+                order_id=saved_order.id,
+                work_date=REFERENCE_DATE,
+                planned_quantity=20,
+                actual_quantity=18,
+            )
         )
         session.commit()
 
     dashboard = client.get("/api/dashboard").json()["data"]
     assert dashboard["quantity_uom"] is None, (
-        "완제품 단위가 갈렸는데도 합계가 단위를 주장합니다 —"
-        " 킬로그램과 개수를 더한 숫자에는 붙일 단위가 없습니다."
+        "합계에 m² 가 실제로 섞였는데도 단위를 주장합니다 —"
+        " 제곱미터와 개수를 더한 숫자에는 붙일 단위가 없습니다."
     )
+    today = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == REFERENCE_DATE.isoformat()
+    )
+    assert today["quantity_uom"] is None
+
+
+def test_an_unseeded_database_does_not_look_like_a_healthy_factory(
+    client: TestClient,
+) -> None:
+    """표만 있고 행이 없는 상태를 화면이 구별할 수 있어야 한다.
+
+    운영 기본값은 자동 시드를 켜지 않으므로(`SEED_SAMPLE_DATA` 미설정) 마이그레이션만
+    돈 데이터베이스가 정상 상태다. 그때 대시보드는 7일치 0 추이와 「현재 주요 위험이
+    없습니다」를 돌려주는데, 그 둘만 보면 **아무 문제 없는 공장**과 구별되지 않는다.
+
+    구별되는 자리는 제품별 계열이다 — 실적과 무관하게 완제품 마스터에서 나오므로,
+    비어 있다는 것은 기준정보가 아직 없다는 뜻이다. 화면의 빈 상태 판단이 이것을
+    쓴다.
+    """
+    db_base.drop_all()
+    db_base.create_all()
+
+    data = client.get("/api/dashboard").json()["data"]
+
+    # 이 둘만으로는 빈 데이터베이스를 알아볼 수 없다.
+    assert len(data["production_trend"]) == 7
+    assert data["recommended_actions"] == [
+        "현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."
+    ]
+    # 알아볼 수 있는 자리.
+    assert data["product_trends"] == []
+    assert data["top_order_risks"] == []
+    assert data["top_material_risks"] == []
