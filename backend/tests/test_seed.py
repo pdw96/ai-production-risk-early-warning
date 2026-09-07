@@ -6,15 +6,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.config import FINISHED_ITEM, RAW_ITEM
 from app.db import base as db_base
 from app.db.models import (
-    BomRequirement,
+    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
-    Material,
+    Item,
     MaterialLot,
     Order,
-    Product,
     PurchaseReceipt,
     QualityInspection,
 )
@@ -46,10 +46,10 @@ def test_reset_database_creates_required_synthetic_operational_records(
     reset_database(reference_date)
 
     with seeded_session_factory() as session:
-        assert session.query(Product).count() == 5
+        assert session.query(Item).filter_by(item_type=FINISHED_ITEM).count() == 5
         assert session.query(Order).count() == 30
-        assert session.query(Material).count() == 15
-        assert session.query(BomRequirement).count() == 15
+        assert session.query(Item).filter_by(item_type=RAW_ITEM).count() == 15
+        assert session.query(BomComponent).count() == 15
         assert session.query(PurchaseReceipt).count() == 15
         assert session.query(DailyProduction).filter(
             DailyProduction.work_date == reference_date - timedelta(days=29)
@@ -67,14 +67,14 @@ def test_reset_database_is_deterministic_for_the_same_reference_date(
     reset_database(reference_date)
     with seeded_session_factory() as session:
         first_snapshot = [
-            (order.order_number, order.product.code, order.due_date, order.planned_quantity)
+            (order.order_number, order.item.code, order.due_date, order.planned_quantity)
             for order in session.query(Order).order_by(Order.order_number)
         ]
 
     reset_database(reference_date)
     with seeded_session_factory() as session:
         second_snapshot = [
-            (order.order_number, order.product.code, order.due_date, order.planned_quantity)
+            (order.order_number, order.item.code, order.due_date, order.planned_quantity)
             for order in session.query(Order).order_by(Order.order_number)
         ]
 
@@ -142,7 +142,7 @@ def test_available_stock_equals_the_sum_of_received_and_unexpired_lots(
         lot_row_counts = {
             material_id: count
             for material_id, count in (
-                (lot.material_id, 1) for lot in session.query(MaterialLot).all()
+                (lot.item_id, 1) for lot in session.query(MaterialLot).all()
             )
         }
 
@@ -211,12 +211,12 @@ def test_seeded_purchase_receipts_derive_their_expiry_from_the_item_master(
         receipts = session.query(PurchaseReceipt).all()
         shelf_life_by_material = {
             material.id: material.shelf_life_days
-            for material in session.query(Material).all()
+            for material in session.query(Item).filter_by(item_type=RAW_ITEM).all()
         }
 
     assert receipts
     for receipt in receipts:
-        shelf_life_days = shelf_life_by_material[receipt.material_id]
+        shelf_life_days = shelf_life_by_material[receipt.item_id]
         if shelf_life_days is None:
             assert receipt.expiry_date is None
         else:
@@ -297,12 +297,12 @@ def test_master_data_counts_a_split_lot_as_one_held_lot(
         distinct_lot_numbers: dict[int, set[str]] = {}
         lot_row_counts: dict[int, int] = {}
         for lot in session.query(MaterialLot).all():
-            distinct_lot_numbers.setdefault(lot.material_id, set()).add(lot.lot_number)
-            lot_row_counts[lot.material_id] = lot_row_counts.get(lot.material_id, 0) + 1
+            distinct_lot_numbers.setdefault(lot.item_id, set()).add(lot.lot_number)
+            lot_row_counts[lot.item_id] = lot_row_counts.get(lot.item_id, 0) + 1
 
         materials = {
             material.id: material.code
-            for material in session.query(Material).all()
+            for material in session.query(Item).filter_by(item_type=RAW_ITEM).all()
         }
         counts_by_code = {
             item.item_code: item.lot_count
@@ -328,12 +328,12 @@ def test_seeded_material_lots_derive_their_expiry_from_the_item_master(
         lots = session.query(MaterialLot).all()
         shelf_life_by_material = {
             material.id: material.shelf_life_days
-            for material in session.query(Material).all()
+            for material in session.query(Item).filter_by(item_type=RAW_ITEM).all()
         }
 
     assert lots
     for lot in lots:
-        shelf_life_days = shelf_life_by_material[lot.material_id]
+        shelf_life_days = shelf_life_by_material[lot.item_id]
         if shelf_life_days is None:
             assert lot.expiry_date is None
         else:
@@ -381,12 +381,12 @@ def test_finished_goods_lots_derive_their_expiry_from_the_product_master(
         lots = session.query(FinishedGoodsLot).all()
         shelf_life_by_product = {
             product.id: product.shelf_life_days
-            for product in session.query(Product).all()
+            for product in session.query(Item).filter_by(item_type=FINISHED_ITEM).all()
         }
 
     assert lots
     for lot in lots:
-        shelf_life_days = shelf_life_by_product[lot.product_id]
+        shelf_life_days = shelf_life_by_product[lot.item_id]
         if shelf_life_days is None:
             assert lot.expiry_date is None
         else:
@@ -432,7 +432,7 @@ def test_seeded_incoming_inspections_are_one_per_physical_lot(
     with seeded_session_factory() as session:
         lots_by_id = {lot.id: lot for lot in session.query(MaterialLot).all()}
         physical_lots = {
-            (lot.material_id, lot.lot_number) for lot in lots_by_id.values()
+            (lot.item_id, lot.lot_number) for lot in lots_by_id.values()
         }
         incoming = [
             inspection
@@ -441,7 +441,7 @@ def test_seeded_incoming_inspections_are_one_per_physical_lot(
         ]
         inspected = [
             (
-                lots_by_id[inspection.material_lot_id].material_id,
+                lots_by_id[inspection.material_lot_id].item_id,
                 lots_by_id[inspection.material_lot_id].lot_number,
             )
             for inspection in incoming

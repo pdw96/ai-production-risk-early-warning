@@ -7,7 +7,10 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from app.core.config import (
+    FINISHED_ITEM,
     INCOMING_INSPECTION,
+    LAMINATING_PROCESS,
+    MASS_PRODUCTION_PHASE,
     OUTGOING_INSPECTION,
     PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
@@ -15,17 +18,18 @@ from app.core.config import (
     QC_FAILED,
     QC_PASSED,
     QC_PENDING,
+    RAW_ITEM,
     RAW_MATERIAL_WAREHOUSE,
+    INCOMING_PROCESS,
 )
 from app.db import base as db_base
 from app.db.models import (
-    BomRequirement,
+    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
-    Material,
+    Item,
     MaterialLot,
     Order,
-    Product,
     PurchaseReceipt,
     QualityInspection,
 )
@@ -70,6 +74,35 @@ MATERIAL_SHELF_LIFE_DAYS: tuple[int | None, ...] = (
     240, 300, 180, None, 44, 200, 365, 150, None, 280, 320, 190, 260, 210, 400,
 )
 
+# 자재의 재고 단위(지적 ㉛). 시드 품목이 세 무리로 갈리고 무리마다 세는 방법이
+# 다르다 — 분체 다섯은 달고(kg), 액상·수지 여섯은 되며(L), 시트·필름 넷은
+# 넓이로 잰다(m²). 세라믹 분말을 EA 로 셀 수 없다는 것이 이 칸이 필요한 이유다.
+# rng 를 쓰지 않는 이유는 위 주기 상수들과 같다 — 난수 시퀀스를 흔들면 납기
+# 정상·주의·위험 시나리오가 통째로 바뀐다.
+MATERIAL_STOCK_UOMS: tuple[str, ...] = (
+    "L",    # 폴리머 베이스
+    "kg",   # 세라믹 분말
+    "kg",   # 광학 안료
+    "m2",   # 보강 섬유
+    "L",    # 접착 수지
+    "kg",   # 방열 첨가제
+    "m2",   # 차단 필름
+    "L",    # 표면 코팅제
+    "kg",   # 미세 충전재
+    "L",    # 유연 가소제
+    "m2",   # 보호 라이너
+    "L",    # 안정화 첨가제
+    "L",    # 전도성 페이스트
+    "kg",   # 기능성 염료
+    "m2",   # 포장 라미네이트
+)
+
+# 완제품의 리드타임 계수 둘(지적 ⑬). 리드타임은 품목의 값이 아니라 오더마다
+# 다른 계산 결과이고, 품목이 갖는 것은 이 계수 둘뿐이다 —
+# 소요 시간 = 준비시간 + 개당 시간 × 수량.
+PRODUCT_SETUP_HOURS: tuple[float, ...] = (4.0, 3.5, 5.0, 4.5, 6.0)
+PRODUCT_HOURS_PER_UNIT: tuple[float, ...] = (0.2, 0.15, 0.25, 0.18, 0.3)
+
 # 생산 당일과 그 전날 생산분은 아직 OQC 를 받지 않은 것으로 둔다.
 OQC_PENDING_DAYS = 1
 # 검사 표본과 불합격을 고르는 고정 주기. 위와 같은 이유로 rng 를 쓰지 않는다.
@@ -97,10 +130,21 @@ def reset_database(reference_date: date | None = None) -> None:
     db_base.create_all()
 
     products = [
-        Product(
+        Item(
             code=f"FG-{index:02d}",
             name=name,
+            item_type=FINISHED_ITEM,
+            # 완제품은 적층·경화 공정에서 나온다. 공정이 검사 항목을 고르는
+            # 라벨이므로 품목마다 명시한다(지적 ⑯).
+            process=LAMINATING_PROCESS,
+            stock_uom="EA",
+            phase=MASS_PRODUCTION_PHASE,
             shelf_life_days=PRODUCT_SHELF_LIFE_DAYS[index - 1],
+            # 완제품 안전재고 칸은 통합으로 **생겼을 뿐** 아직 정한 사람이 없다.
+            # 없는 값을 지어내면 화면이 있는 것처럼 보인다.
+            safety_stock=None,
+            setup_hours=PRODUCT_SETUP_HOURS[index - 1],
+            hours_per_unit=PRODUCT_HOURS_PER_UNIT[index - 1],
         )
         for index, name in enumerate(
             ("아크솔 시트", "노바필름", "루멘코트", "벨로스랩", "테라패널"),
@@ -108,11 +152,16 @@ def reset_database(reference_date: date | None = None) -> None:
         )
     ]
     materials = [
-        Material(
+        Item(
             code=f"RM-{index:02d}",
             name=name,
-            safety_stock=float(rng.randrange(180, 361)),
+            item_type=RAW_ITEM,
+            # 자재는 수입검사 공정에서 기준을 끌어온다.
+            process=INCOMING_PROCESS,
+            stock_uom=MATERIAL_STOCK_UOMS[index - 1],
+            phase=MASS_PRODUCTION_PHASE,
             shelf_life_days=MATERIAL_SHELF_LIFE_DAYS[index - 1],
+            safety_stock=float(rng.randrange(180, 361)),
         )
         for index, name in enumerate(
             (
@@ -147,9 +196,12 @@ def reset_database(reference_date: date | None = None) -> None:
         for product_index, product in enumerate(products):
             for material in materials[product_index * 3 : product_index * 3 + 3]:
                 session.add(
-                    BomRequirement(
-                        product=product,
-                        material=material,
+                    BomComponent(
+                        parent_item=product,
+                        child_item=material,
+                        # 반제품이 없는 동안 BOM 은 완제품 ← 원자재 한 단이다.
+                        # 반제품 오더가 생기는 5단계에서 이 줄이 두 단으로 갈린다.
+                        level=1,
                         unit_quantity=round(rng.uniform(0.8, 2.4), 2),
                     )
                 )
@@ -162,7 +214,7 @@ def reset_database(reference_date: date | None = None) -> None:
             scheduled_date = effective_reference_date + timedelta(days=scheduled_offset)
             session.add(
                 PurchaseReceipt(
-                    material=material,
+                    item=material,
                     scheduled_date=scheduled_date,
                     scheduled_quantity=float(rng.randrange(180, 521)),
                     # 도착분도 로트가 되므로 유효기간을 갖는다. 도착일에 자재의
@@ -196,7 +248,7 @@ def reset_database(reference_date: date | None = None) -> None:
 
             order = Order(
                 order_number=f"MO-{effective_reference_date:%Y%m%d}-{order_index + 1:03d}",
-                product=products[order_index % len(products)],
+                item=products[order_index % len(products)],
                 due_date=due_date,
                 planned_quantity=completed_quantity + remaining_quantity,
             )
@@ -326,7 +378,7 @@ def _expiry_date(shelf_life_days: int | None, start_date: date) -> date | None:
 
 def _seed_finished_goods_lots(
     session,
-    products: list[Product],
+    products: list[Item],
     reference_date: date,
 ) -> None:
     """생산 실적에서 완제품 로트와 OQC 기록을 파생한다.
@@ -345,7 +397,7 @@ def _seed_finished_goods_lots(
     products_by_id = {product.id: product for product in products}
     rows = session.execute(
         select(
-            Order.product_id,
+            Order.item_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.actual_quantity),
         )
@@ -354,8 +406,8 @@ def _seed_finished_goods_lots(
             DailyProduction.work_date <= reference_date,
             DailyProduction.actual_quantity > 0,
         )
-        .group_by(Order.product_id, DailyProduction.work_date)
-        .order_by(Order.product_id, DailyProduction.work_date)
+        .group_by(Order.item_id, DailyProduction.work_date)
+        .order_by(Order.item_id, DailyProduction.work_date)
     ).all()
 
     for index, (product_id, work_date, quantity) in enumerate(rows):
@@ -368,7 +420,7 @@ def _seed_finished_goods_lots(
             qc_status = QC_PASSED
 
         lot = FinishedGoodsLot(
-            product=product,
+            item=product,
             lot_number=f"LOT-{product.code}-{work_date:%y%m%d}",
             # 창고는 검사 결과가 정한다. 합격이면 제품창고, 아니면 생산창고다.
             warehouse=(
@@ -416,7 +468,7 @@ def _recent_output_series(daily_output: float) -> list[float]:
 
 def _seed_material_lots(
     session,
-    materials: list[Material],
+    materials: list[Item],
     target_stocks: list[float],
     reference_date: date,
     rng: random.Random,
@@ -439,7 +491,7 @@ def _seed_material_lots(
 
         for entry in entries:
             lot = MaterialLot(
-                material=material,
+                item=material,
                 lot_number=f"LOT-{material.code}-{entry['lot_sequence']:02d}",
                 warehouse=entry["warehouse"],
                 quantity=entry["quantity"],
@@ -501,7 +553,7 @@ def _regular_lot_plan(
 
 
 def _expiring_lot_plan(
-    material: Material,
+    material: Item,
     target_stock: float,
     reference_date: date,
 ) -> list[dict]:

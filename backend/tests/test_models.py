@@ -9,17 +9,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db import base as db_base
 from app.db.base import Base
 from app.db.models import (
-    BomRequirement,
+    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
-    Material,
+    Item,
     MaterialLot,
     Order,
-    Product,
     PurchaseReceipt,
     QualityInspection,
     RiskStatus,
 )
+from tests.factories import finished_item, raw_item, semi_finished_item
 
 
 @pytest.fixture
@@ -32,10 +32,10 @@ def session() -> Session:
 
 
 def test_order_has_product_and_daily_productions(session: Session) -> None:
-    product = Product(code="FG-01", name="가상 소재 A")
+    product = finished_item(code="FG-01", name="가상 소재 A")
     order = Order(
         order_number="MO-001",
-        product=product,
+        item=product,
         due_date=date.today(),
         planned_quantity=100,
     )
@@ -50,7 +50,7 @@ def test_order_has_product_and_daily_productions(session: Session) -> None:
     session.commit()
 
     saved_order = session.query(Order).one()
-    assert saved_order.product.code == "FG-01"
+    assert saved_order.item.code == "FG-01"
     assert saved_order.daily_productions[0].actual_quantity == 18
 
 
@@ -65,28 +65,27 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
     db_base.create_all()
 
     assert set(inspect(engine).get_table_names()) == {
-        "bom_requirements",
+        "bom_components",
         "daily_productions",
         "finished_goods_lots",
+        "items",
         "material_lots",
-        "materials",
         "orders",
-        "products",
         "purchase_receipts",
         "quality_inspections",
         "risk_statuses",
     }
 
     with db_base.SessionLocal() as database_session:
-        product = Product(code="FG-02", name="가상 소재 B")
-        material = Material(
+        product = finished_item(code="FG-02", name="가상 소재 B")
+        material = raw_item(
             code="RM-01",
             name="가상 원자재 A",
             safety_stock=100,
         )
         order = Order(
             order_number="MO-002",
-            product=product,
+            item=product,
             due_date=date.today(),
             planned_quantity=200,
         )
@@ -96,18 +95,19 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
             planned_quantity=50,
             actual_quantity=45,
         )
-        bom_requirement = BomRequirement(
-            product=product,
-            material=material,
+        bom_component = BomComponent(
+            parent_item=product,
+            child_item=material,
+            level=1,
             unit_quantity=2.5,
         )
         purchase_receipt = PurchaseReceipt(
-            material=material,
+            item=material,
             scheduled_date=date.today(),
             scheduled_quantity=300,
         )
         material_lot = MaterialLot(
-            material=material,
+            item=material,
             lot_number="LOT-RM-01-01",
             warehouse="원재료창고",
             quantity=500,
@@ -118,7 +118,7 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
         database_session.add_all(
             [
                 daily_production,
-                bom_requirement,
+                bom_component,
                 purchase_receipt,
                 material_lot,
                 risk_status,
@@ -126,11 +126,65 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
         )
         database_session.commit()
 
-        assert database_session.query(Product).one().bom_requirements[0].unit_quantity == 2.5
-        assert database_session.query(Material).one().purchase_receipts[0].scheduled_quantity == 300
-        assert database_session.query(Material).one().lots[0].quantity == 500
+        assert database_session.query(Item).filter_by(code="FG-02").one().components[0].unit_quantity == 2.5
+        assert database_session.query(Item).filter_by(code="RM-01").one().purchase_receipts[0].scheduled_quantity == 300
+        assert database_session.query(Item).filter_by(code="RM-01").one().material_lots[0].quantity == 500
         assert database_session.query(Order).one().daily_productions[0].actual_quantity == 45
         assert database_session.query(RiskStatus).one().status == "신규"
+
+
+def test_a_semi_finished_item_finally_has_a_seat(session: Session) -> None:
+    """반제품은 만들어지면서 쓰인다 — 표가 둘일 때는 어느 쪽에도 속하지 못했다.
+
+    한 표가 되면서 반제품이 상위이면서 하위인 BOM 두 줄을 동시에 가질 수 있다.
+    그것이 2단 BOM 이고, 통합 없이는 표현할 방법이 아예 없었다.
+    """
+    product = finished_item(code="FG-20", name="가상 제품 T")
+    semi = semi_finished_item(code="SF-01", name="가상 반제품 A")
+    material = raw_item(code="RM-20", name="가상 원자재 T", safety_stock=10)
+    session.add_all(
+        [
+            BomComponent(parent_item=product, child_item=semi, level=1, unit_quantity=1),
+            BomComponent(parent_item=semi, child_item=material, level=2, unit_quantity=2),
+        ]
+    )
+    session.commit()
+
+    saved = session.query(Item).filter_by(code="SF-01").one()
+    assert [row.child_item.code for row in saved.components] == ["RM-20"]
+    assert [row.parent_item.code for row in saved.used_in] == ["FG-20"]
+
+
+def test_a_semi_finished_item_cannot_carry_a_shelf_life(session: Session) -> None:
+    """「반제품은 유효기간을 두지 않고 제품만 유효기간을 정한다」(발화).
+
+    표가 하나여서 이 규칙을 처음으로 제약에 적을 수 있게 됐다.
+    """
+    session.add(semi_finished_item(code="SF-02", name="가상 반제품 B", shelf_life_days=30))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_the_item_code_prefix_must_match_the_item_type(session: Session) -> None:
+    """접두는 유형과 유일성만 맡는다(지적 ⑯). 한 표가 되면서 접두가 유일하게
+    유형을 가리키므로, 어긋난 접두는 표 전체의 읽기를 망가뜨린다."""
+    session.add(finished_item(code="RM-99", name="접두가 어긋난 제품"))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_bom_levels_stop_at_two(session: Session) -> None:
+    """「단계」 열 하나가 재귀를 막는다 — 전개가 두 번으로 고정된다."""
+    product = finished_item(code="FG-21", name="가상 제품 U")
+    material = raw_item(code="RM-21", name="가상 원자재 U", safety_stock=10)
+    session.add(
+        BomComponent(parent_item=product, child_item=material, level=3, unit_quantity=1)
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
 
 
 def test_get_session_yields_a_usable_session_and_closes_it(
@@ -163,18 +217,18 @@ def test_get_session_yields_a_usable_session_and_closes_it(
 
 def test_the_same_lot_number_may_exist_in_both_warehouses(session: Session) -> None:
     """원재료창고 100EA 중 40EA를 생산창고로 옮긴 상태를 표현할 수 있어야 한다."""
-    material = Material(code="RM-02", name="가상 원자재 B", safety_stock=50)
+    material = raw_item(code="RM-02", name="가상 원자재 B", safety_stock=50)
     session.add_all(
         [
             MaterialLot(
-                material=material,
+                item=material,
                 lot_number="LOT-RM-02-01",
                 warehouse="원재료창고",
                 quantity=60,
                 received_date=date.today(),
             ),
             MaterialLot(
-                material=material,
+                item=material,
                 lot_number="LOT-RM-02-01",
                 warehouse="생산창고",
                 quantity=40,
@@ -184,26 +238,26 @@ def test_the_same_lot_number_may_exist_in_both_warehouses(session: Session) -> N
     )
     session.commit()
 
-    saved = session.query(Material).one()
-    assert sum(lot.quantity for lot in saved.lots) == 100
-    assert {lot.warehouse for lot in saved.lots} == {"원재료창고", "생산창고"}
+    saved = session.query(Item).one()
+    assert sum(lot.quantity for lot in saved.material_lots) == 100
+    assert {lot.warehouse for lot in saved.material_lots} == {"원재료창고", "생산창고"}
 
 
 def test_the_same_lot_number_cannot_repeat_within_one_warehouse(
     session: Session,
 ) -> None:
-    material = Material(code="RM-03", name="가상 원자재 C", safety_stock=50)
+    material = raw_item(code="RM-03", name="가상 원자재 C", safety_stock=50)
     session.add_all(
         [
             MaterialLot(
-                material=material,
+                item=material,
                 lot_number="LOT-RM-03-01",
                 warehouse="원재료창고",
                 quantity=10,
                 received_date=date.today(),
             ),
             MaterialLot(
-                material=material,
+                item=material,
                 lot_number="LOT-RM-03-01",
                 warehouse="원재료창고",
                 quantity=20,
@@ -224,14 +278,14 @@ def test_the_same_lot_number_can_repeat_across_different_materials(
     session.add_all(
         [
             MaterialLot(
-                material=Material(code="RM-04", name="가상 원자재 D", safety_stock=50),
+                item=raw_item(code="RM-04", name="가상 원자재 D", safety_stock=50),
                 lot_number="SUP-2026-0001",
                 warehouse="원재료창고",
                 quantity=10,
                 received_date=date.today(),
             ),
             MaterialLot(
-                material=Material(code="RM-05", name="가상 원자재 E", safety_stock=50),
+                item=raw_item(code="RM-05", name="가상 원자재 E", safety_stock=50),
                 lot_number="SUP-2026-0001",
                 warehouse="원재료창고",
                 quantity=20,
@@ -249,10 +303,10 @@ def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
 ) -> None:
     # 제품창고에는 완제품이 들어간다(FinishedGoodsLot). 상수와 Literal 은
     # 저장을 막지 못하므로 저장 제약으로 막는다.
-    material = Material(code="RM-06", name="가상 원자재 F", safety_stock=50)
+    material = raw_item(code="RM-06", name="가상 원자재 F", safety_stock=50)
     session.add(
         MaterialLot(
-            material=material,
+            item=material,
             lot_number="LOT-RM-06-01",
             warehouse="제품창고",
             quantity=10,
@@ -264,9 +318,9 @@ def test_material_lot_rejects_a_warehouse_outside_the_allowed_set(
         session.commit()
 
 
-def _finished_goods_lot(product: Product, **overrides: Any) -> FinishedGoodsLot:
+def _finished_goods_lot(product: Item, **overrides: Any) -> FinishedGoodsLot:
     values: dict[str, Any] = {
-        "product": product,
+        "item": product,
         "lot_number": "LOT-FG-01-260901",
         "warehouse": "제품창고",
         "qc_status": "합격",
@@ -279,7 +333,7 @@ def _finished_goods_lot(product: Product, **overrides: Any) -> FinishedGoodsLot:
 
 def test_finished_goods_lot_rejects_a_material_warehouse(session: Session) -> None:
     """완제품은 원재료창고에 들어가지 않는다. 창고 목록이 자재와 다르다."""
-    product = Product(code="FG-01", name="가상 제품 A")
+    product = finished_item(code="FG-01", name="가상 제품 A")
     session.add(_finished_goods_lot(product, warehouse="원재료창고"))
 
     with pytest.raises(IntegrityError):
@@ -291,7 +345,7 @@ def test_the_product_warehouse_holds_only_lots_that_passed_inspection(
 ) -> None:
     """제품창고 = 출하 대기 재고다. 검사 대기·불합격이 섞이면 출하 가능 수량이
     실제보다 많아 보인다."""
-    product = Product(code="FG-02", name="가상 제품 B")
+    product = finished_item(code="FG-02", name="가상 제품 B")
     session.add(_finished_goods_lot(product, qc_status="검사 대기"))
 
     with pytest.raises(IntegrityError):
@@ -306,7 +360,7 @@ def test_a_lot_that_passed_inspection_cannot_stay_in_the_production_warehouse(
     한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는 상태가 생겨, 생산창고가
     검사 대기·불합격만 담는다는 규칙이 깨진다.
     """
-    product = Product(code="FG-03", name="가상 제품 C")
+    product = finished_item(code="FG-03", name="가상 제품 C")
     session.add(
         _finished_goods_lot(product, warehouse="생산창고", qc_status="합격")
     )
@@ -316,7 +370,7 @@ def test_a_lot_that_passed_inspection_cannot_stay_in_the_production_warehouse(
 
 
 def test_a_rejected_lot_stays_in_the_production_warehouse(session: Session) -> None:
-    product = Product(code="FG-10", name="가상 제품 J")
+    product = finished_item(code="FG-10", name="가상 제품 J")
     session.add(
         _finished_goods_lot(product, warehouse="생산창고", qc_status="불합격")
     )
@@ -328,7 +382,7 @@ def test_a_rejected_lot_stays_in_the_production_warehouse(session: Session) -> N
 def test_the_same_finished_goods_lot_number_cannot_repeat_within_one_warehouse(
     session: Session,
 ) -> None:
-    product = Product(code="FG-04", name="가상 제품 D")
+    product = finished_item(code="FG-04", name="가상 제품 D")
     session.add_all(
         [
             _finished_goods_lot(product),
@@ -344,7 +398,7 @@ def test_quality_inspection_rejects_a_target_that_does_not_match_its_type(
     session: Session,
 ) -> None:
     """IQC 는 자재 로트를 본다. 완제품 로트를 가리키는 IQC 기록은 있을 수 없다."""
-    product = Product(code="FG-05", name="가상 제품 E")
+    product = finished_item(code="FG-05", name="가상 제품 E")
     session.add(
         QualityInspection(
             inspection_type="IQC",
@@ -359,8 +413,8 @@ def test_quality_inspection_rejects_a_target_that_does_not_match_its_type(
 
 
 def test_quality_inspection_rejects_two_targets_at_once(session: Session) -> None:
-    material = Material(code="RM-07", name="가상 원자재 G", safety_stock=10)
-    product = Product(code="FG-06", name="가상 제품 F")
+    material = raw_item(code="RM-07", name="가상 원자재 G", safety_stock=10)
+    product = finished_item(code="FG-06", name="가상 제품 F")
     session.add(
         QualityInspection(
             inspection_type="OQC",
@@ -368,7 +422,7 @@ def test_quality_inspection_rejects_two_targets_at_once(session: Session) -> Non
             result="합격",
             finished_goods_lot=_finished_goods_lot(product),
             material_lot=MaterialLot(
-                material=material,
+                item=material,
                 lot_number="LOT-RM-07-01",
                 warehouse="원재료창고",
                 quantity=10,
@@ -383,7 +437,7 @@ def test_quality_inspection_rejects_two_targets_at_once(session: Session) -> Non
 
 def test_a_failed_inspection_must_carry_a_reason(session: Session) -> None:
     """사유 없는 불합격은 담당자가 무엇을 조치할지 알 수 없다."""
-    product = Product(code="FG-07", name="가상 제품 G")
+    product = finished_item(code="FG-07", name="가상 제품 G")
     session.add(
         QualityInspection(
             inspection_type="OQC",
@@ -403,7 +457,7 @@ def test_a_failed_inspection_must_carry_a_reason(session: Session) -> None:
 def test_a_failed_inspection_reason_cannot_be_blank(session: Session) -> None:
     """빈 문자열도 사유가 없는 것이다. NULL 검사만으로는 화면에 사유 없는
     불합격 행이 그대로 그려진다."""
-    product = Product(code="FG-08", name="가상 제품 H")
+    product = finished_item(code="FG-08", name="가상 제품 H")
     session.add(
         QualityInspection(
             inspection_type="OQC",
@@ -451,9 +505,9 @@ def test_a_target_with_inspection_history_cannot_be_deleted(session: Session) ->
     사라져, API 요약이 세는 이력이 줄어든다. 지우려면 기록을 먼저 정리하라고
     DB 가 막아야 한다.
     """
-    material = Material(code="RM-08", name="가상 원자재 H", safety_stock=10)
+    material = raw_item(code="RM-08", name="가상 원자재 H", safety_stock=10)
     lot = MaterialLot(
-        material=material,
+        item=material,
         lot_number="LOT-RM-08-01",
         warehouse="원재료창고",
         quantity=10,
@@ -478,9 +532,9 @@ def test_detaching_an_inspection_from_its_target_does_not_delete_it(
     session: Session,
 ) -> None:
     """대상 컬렉션에서 떼어내는 것만으로도 기록이 지워지면 안 된다."""
-    material = Material(code="RM-09", name="가상 원자재 I", safety_stock=10)
+    material = raw_item(code="RM-09", name="가상 원자재 I", safety_stock=10)
     lot = MaterialLot(
-        material=material,
+        item=material,
         lot_number="LOT-RM-09-01",
         warehouse="원재료창고",
         quantity=10,

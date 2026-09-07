@@ -6,7 +6,8 @@
 
 from datetime import date
 
-from app.db.models import Material, MaterialLot, PurchaseReceipt
+from app.db.models import Item, MaterialLot, PurchaseReceipt
+from tests.factories import raw_item
 from app.services.briefing import _build_material_response
 
 
@@ -18,10 +19,10 @@ def _material(
     safety_stock: float,
     lots: list[MaterialLot] | None = None,
     receipts: list[PurchaseReceipt] | None = None,
-) -> Material:
-    material = Material(code="RM-01", name="가상 원자재 A", safety_stock=safety_stock)
+) -> Item:
+    material = raw_item(code="RM-01", name="가상 원자재 A", safety_stock=safety_stock)
     material.id = 1
-    material.lots = lots or []
+    material.material_lots = lots or []
     material.purchase_receipts = receipts or []
     return material
 

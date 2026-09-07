@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import (
     FINISHED_GOODS_WAREHOUSES,
+    FINISHED_ITEM,
     INCOMING_INSPECTION,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
@@ -17,17 +18,17 @@ from app.core.config import (
     QC_FAILED,
     QC_PASSED,
     QC_PENDING,
+    RAW_ITEM,
     RAW_MATERIAL_WAREHOUSE,
     WAREHOUSE_SLUGS,
 )
 from app.db.models import (
-    BomRequirement,
+    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
-    Material,
+    Item,
     MaterialLot,
     Order,
-    Product,
     PurchaseReceipt,
     QualityInspection,
     RiskStatus,
@@ -97,7 +98,7 @@ def list_orders(session: Session) -> list[OrderResponse]:
     reference_date = get_reference_date(session)
     orders = session.scalars(
         select(Order)
-        .options(selectinload(Order.product), selectinload(Order.daily_productions))
+        .options(selectinload(Order.item), selectinload(Order.daily_productions))
         .order_by(Order.due_date, Order.id)
     ).all()
     return [_build_order_response(order, reference_date) for order in orders]
@@ -108,7 +109,7 @@ def get_order(session: Session, order_id: int) -> OrderDetailResponse | None:
     order = session.scalar(
         select(Order)
         .where(Order.id == order_id)
-        .options(selectinload(Order.product), selectinload(Order.daily_productions))
+        .options(selectinload(Order.item), selectinload(Order.daily_productions))
     )
     if order is None:
         return None
@@ -136,13 +137,14 @@ def get_order(session: Session, order_id: int) -> OrderDetailResponse | None:
 def list_materials(session: Session) -> list[MaterialResponse]:
     reference_date = get_reference_date(session)
     materials = session.scalars(
-        select(Material)
+        select(Item)
+        .where(Item.item_type == RAW_ITEM)
         .options(
-            selectinload(Material.bom_requirements),
-            selectinload(Material.purchase_receipts),
-            selectinload(Material.lots),
+            selectinload(Item.used_in),
+            selectinload(Item.purchase_receipts),
+            selectinload(Item.material_lots),
         )
-        .order_by(Material.code)
+        .order_by(Item.code)
     ).all()
     planned_by_product_day = _planned_quantities_by_product_day(
         session,
@@ -213,22 +215,24 @@ def _distinct_lot_counts(session: Session, owner_column, lot_number_column) -> d
 def get_master_data(session: Session) -> MasterDataResponse:
     """기준정보관리 화면용 품목 마스터와 BOM을 만든다."""
     products = session.scalars(
-        select(Product)
-        .options(selectinload(Product.bom_requirements))
-        .order_by(Product.code)
+        select(Item)
+        .where(Item.item_type == FINISHED_ITEM)
+        .options(selectinload(Item.components))
+        .order_by(Item.code)
     ).all()
     materials = session.scalars(
-        select(Material)
-        .options(selectinload(Material.bom_requirements))
-        .order_by(Material.code)
+        select(Item)
+        .where(Item.item_type == RAW_ITEM)
+        .options(selectinload(Item.used_in))
+        .order_by(Item.code)
     ).all()
     # 로트는 영구 기록이라 계속 쌓인다. 화면이 쓰는 것은 품목당 정수 하나뿐이므로
     # 행을 다 적재하지 않고 집계 질의로 센다.
     finished_lot_counts = _distinct_lot_counts(
-        session, FinishedGoodsLot.product_id, FinishedGoodsLot.lot_number
+        session, FinishedGoodsLot.item_id, FinishedGoodsLot.lot_number
     )
     material_lot_counts = _distinct_lot_counts(
-        session, MaterialLot.material_id, MaterialLot.lot_number
+        session, MaterialLot.item_id, MaterialLot.lot_number
     )
 
     items = [
@@ -241,7 +245,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
             lot_count=finished_lot_counts.get(product.id, 0),
             shelf_life_days=product.shelf_life_days,
-            linked_item_count=len(product.bom_requirements),
+            linked_item_count=len(product.components),
         )
         for product in products
     ] + [
@@ -249,28 +253,30 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="자재",
             item_code=material.code,
             item_name=material.name,
-            safety_stock=round(material.safety_stock, 2),
+            safety_stock=(
+                None if material.safety_stock is None else round(material.safety_stock, 2)
+            ),
             # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
             lot_count=material_lot_counts.get(material.id, 0),
             shelf_life_days=material.shelf_life_days,
-            linked_item_count=len(material.bom_requirements),
+            linked_item_count=len(material.used_in),
         )
         for material in materials
     ]
 
     bom_rows = session.scalars(
-        select(BomRequirement).options(
-            selectinload(BomRequirement.product),
-            selectinload(BomRequirement.material),
+        select(BomComponent).options(
+            selectinload(BomComponent.parent_item),
+            selectinload(BomComponent.child_item),
         )
     ).all()
     bom_requirements = sorted(
         (
             BomRequirementResponse(
-                product_code=row.product.code,
-                product_name=row.product.name,
-                material_code=row.material.code,
-                material_name=row.material.name,
+                product_code=row.parent_item.code,
+                product_name=row.parent_item.name,
+                material_code=row.child_item.code,
+                material_name=row.child_item.name,
                 unit_quantity=round(row.unit_quantity, 2),
             )
             for row in bom_rows
@@ -286,15 +292,15 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
     horizon_end = reference_date + timedelta(days=HORIZON_DAYS - 1)
     receipts = session.scalars(
         select(PurchaseReceipt)
-        .options(selectinload(PurchaseReceipt.material))
+        .options(selectinload(PurchaseReceipt.item))
         .order_by(PurchaseReceipt.scheduled_date, PurchaseReceipt.id)
     ).all()
 
     return [
         PurchaseReceiptResponse(
             receipt_id=receipt.id,
-            material_code=receipt.material.code,
-            material_name=receipt.material.name,
+            material_code=receipt.item.code,
+            material_name=receipt.item.name,
             scheduled_date=receipt.scheduled_date,
             scheduled_quantity=round(receipt.scheduled_quantity, 2),
             expiry_date=receipt.expiry_date,
@@ -308,9 +314,10 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
 def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
     reference_date = get_reference_date(session)
     products = session.scalars(
-        select(Product)
-        .options(selectinload(Product.finished_goods_lots))
-        .order_by(Product.code)
+        select(Item)
+        .where(Item.item_type == FINISHED_ITEM)
+        .options(selectinload(Item.finished_goods_lots))
+        .order_by(Item.code)
     ).all()
     return [
         _build_finished_goods_response(product, reference_date)
@@ -343,14 +350,14 @@ def get_warehouse_stock(
     if warehouse in MATERIAL_WAREHOUSES:
         material_lots = session.scalars(
             select(MaterialLot)
-            .options(selectinload(MaterialLot.material))
+            .options(selectinload(MaterialLot.item))
             .where(MaterialLot.warehouse == warehouse)
         ).all()
         rows.extend(
             WarehouseLotResponse(
                 item_type="자재",
-                item_code=lot.material.code,
-                item_name=lot.material.name,
+                item_code=lot.item.code,
+                item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
                 stocked_date=lot.received_date,
@@ -365,14 +372,14 @@ def get_warehouse_stock(
     if warehouse in FINISHED_GOODS_WAREHOUSES:
         product_lots = session.scalars(
             select(FinishedGoodsLot)
-            .options(selectinload(FinishedGoodsLot.product))
+            .options(selectinload(FinishedGoodsLot.item))
             .where(FinishedGoodsLot.warehouse == warehouse)
         ).all()
         rows.extend(
             WarehouseLotResponse(
                 item_type="제품",
-                item_code=lot.product.code,
-                item_name=lot.product.name,
+                item_code=lot.item.code,
+                item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
                 stocked_date=lot.produced_date,
@@ -455,13 +462,13 @@ def _recent_inspections_of_type(
             select(QualityInspection)
             .options(
                 selectinload(QualityInspection.material_lot).selectinload(
-                    MaterialLot.material
+                    MaterialLot.item
                 ),
                 selectinload(QualityInspection.daily_production)
                 .selectinload(DailyProduction.order)
-                .selectinload(Order.product),
+                .selectinload(Order.item),
                 selectinload(QualityInspection.finished_goods_lot).selectinload(
-                    FinishedGoodsLot.product
+                    FinishedGoodsLot.item
                 ),
             )
             .where(QualityInspection.inspection_type == inspection_type)
@@ -480,19 +487,19 @@ def _build_inspection_response(
     """검사 대상이 유형마다 다르므로 화면이 쓸 품목·대상 표기로 풀어 준다."""
     if inspection.material_lot is not None:
         target_type = "자재 로트"
-        item_code = inspection.material_lot.material.code
-        item_name = inspection.material_lot.material.name
+        item_code = inspection.material_lot.item.code
+        item_name = inspection.material_lot.item.name
         target_label = inspection.material_lot.lot_number
     elif inspection.daily_production is not None:
         order = inspection.daily_production.order
         target_type = "생산 실적"
-        item_code = order.product.code
-        item_name = order.product.name
+        item_code = order.item.code
+        item_name = order.item.name
         target_label = order.order_number
     else:
         target_type = "완제품 로트"
-        item_code = inspection.finished_goods_lot.product.code
-        item_name = inspection.finished_goods_lot.product.name
+        item_code = inspection.finished_goods_lot.item.code
+        item_name = inspection.finished_goods_lot.item.name
         target_label = inspection.finished_goods_lot.lot_number
 
     return QualityInspectionResponse(
@@ -529,7 +536,7 @@ def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> st
 
 
 def _build_finished_goods_response(
-    product: Product,
+    product: Item,
     reference_date: date,
 ) -> FinishedGoodsResponse:
     lots = product.finished_goods_lots
@@ -709,11 +716,13 @@ def _build_product_trends(
     # 실적이 한 줄도 없는 제품이 선택지에서 통째로 사라진다.
     names: dict[int, tuple[str, str]] = {
         product.id: (product.code, product.name)
-        for product in session.scalars(select(Product).order_by(Product.code)).all()
+        for product in session.scalars(
+            select(Item).where(Item.item_type == FINISHED_ITEM).order_by(Item.code)
+        ).all()
     }
     rows = session.execute(
         select(
-            Order.product_id,
+            Order.item_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.planned_quantity),
             func.sum(DailyProduction.actual_quantity),
@@ -725,7 +734,7 @@ def _build_product_trends(
                 reference_date,
             )
         )
-        .group_by(Order.product_id, DailyProduction.work_date)
+        .group_by(Order.item_id, DailyProduction.work_date)
     ).all()
 
     totals: dict[int, dict[date, tuple[float, float]]] = defaultdict(dict)
@@ -778,8 +787,8 @@ def _build_order_response(order: Order, reference_date: date) -> OrderResponse:
     return OrderResponse(
         order_id=order.id,
         order_number=order.order_number,
-        product_code=order.product.code,
-        product_name=order.product.name,
+        product_code=order.item.code,
+        product_name=order.item.name,
         due_date=order.due_date,
         planned_quantity=round(order.planned_quantity, 2),
         actual_quantity=round(actual_quantity, 2),
@@ -799,13 +808,13 @@ def _planned_quantities_by_product_day(
     horizon_end = reference_date + timedelta(days=HORIZON_DAYS - 1)
     rows = session.execute(
         select(
-            Order.product_id,
+            Order.item_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.planned_quantity),
         )
         .join(Order, DailyProduction.order_id == Order.id)
         .where(DailyProduction.work_date.between(reference_date, horizon_end))
-        .group_by(Order.product_id, DailyProduction.work_date)
+        .group_by(Order.item_id, DailyProduction.work_date)
     ).all()
     return {
         (product_id, work_date): float(quantity or 0)
@@ -814,16 +823,16 @@ def _planned_quantities_by_product_day(
 
 
 def _build_material_response(
-    material: Material,
+    material: Item,
     reference_date: date,
     planned_by_product_day: dict[tuple[int, date], float],
 ) -> MaterialResponse:
     daily_demands: defaultdict[date, float] = defaultdict(float)
-    for requirement in material.bom_requirements:
+    for requirement in material.used_in:
         for offset in range(HORIZON_DAYS):
             day = reference_date + timedelta(days=offset)
             daily_demands[day] += (
-                planned_by_product_day.get((requirement.product_id, day), 0)
+                planned_by_product_day.get((requirement.parent_item_id, day), 0)
                 * requirement.unit_quantity
             )
 
@@ -836,7 +845,7 @@ def _build_material_response(
             received_date=lot.received_date,
             expiry_date=lot.expiry_date,
         )
-        for lot in material.lots
+        for lot in material.material_lots
     ]
     # 예정 입고는 도착하면 원재료창고의 로트가 된다.
     scheduled_lots = [

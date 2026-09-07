@@ -14,16 +14,23 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.config import (
+    BOM_LEVELS,
     FINISHED_GOODS_WAREHOUSES,
     INCOMING_INSPECTION,
     INSPECTION_RESULTS,
     INSPECTION_TYPES,
+    ITEM_CODE_PREFIXES,
+    ITEM_PHASES,
+    ITEM_TYPES,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
+    PROCESSES,
     PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
     QC_PASSED,
     QC_STATUSES,
+    SEMI_FINISHED_ITEM,
+    UNITS_OF_MEASURE,
 )
 from app.db.base import Base
 
@@ -41,6 +48,19 @@ _ALLOWED_FINISHED_GOODS_WAREHOUSES_SQL = _sql_value_list(FINISHED_GOODS_WAREHOUS
 _ALLOWED_QC_STATUSES_SQL = _sql_value_list(QC_STATUSES)
 _ALLOWED_INSPECTION_TYPES_SQL = _sql_value_list(INSPECTION_TYPES)
 _ALLOWED_INSPECTION_RESULTS_SQL = _sql_value_list(INSPECTION_RESULTS)
+_ALLOWED_ITEM_TYPES_SQL = _sql_value_list(ITEM_TYPES)
+_ALLOWED_PROCESSES_SQL = _sql_value_list(PROCESSES)
+_ALLOWED_UNITS_OF_MEASURE_SQL = _sql_value_list(UNITS_OF_MEASURE)
+_ALLOWED_ITEM_PHASES_SQL = _sql_value_list(ITEM_PHASES)
+_ALLOWED_BOM_LEVELS_SQL = ", ".join(str(level) for level in BOM_LEVELS)
+
+# 접두는 유형과 유일성만 맡는다(지적 ⑯). 유형과 접두는 정의상 서로를 결정하므로
+# 양방향으로 건다 — 창고와 검사 결과처럼 나중에 갈라질 수 있는 두 사실이 아니라,
+# 접두가 곧 유형의 표기이기 때문이다.
+_ITEM_CODE_PREFIX_SQL = " AND ".join(
+    f"((item_type = '{item_type}') = (code LIKE '{prefix}%'))"
+    for item_type, prefix in ITEM_CODE_PREFIXES.items()
+)
 
 # SQLite 의 1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 통과해
 # 화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 2인자 형태를 쓴다.
@@ -68,21 +88,130 @@ _INSPECTION_TARGET_SQL = " OR ".join(
 )
 
 
-class Product(Base):
-    __tablename__ = "products"
+class Item(Base):
+    """전사 기준정보의 품목 한 표(지적 ⑧).
+
+    `products` 와 `materials` 를 하나로 모은 표다. 두 표가 `shelf_life_days`
+    라는 같은 이름의 칸을 각자 들고 있었다는 것 자체가 표가 하나여야 한다는
+    신호였고, 반제품은 **만들어지면서 쓰이므로** 두 표 어느 쪽에도 온전히
+    속하지 못해 앉을 자리가 아예 없었다.
+
+    한 표가 되면서 안전재고 · 유효기간 · 리드타임 계수가 한 곳에 모인다.
+    유형에 따라 비는 칸이 생기는 것은 통합의 부작용이 아니라 **정상**이다 —
+    한 표라야 「이 유형에는 해당 없음」이라고 말할 수 있다.
+    """
+
+    __tablename__ = "items"
+    __table_args__ = (
+        CheckConstraint(
+            f"item_type IN ({_ALLOWED_ITEM_TYPES_SQL})",
+            name="ck_item_type",
+        ),
+        CheckConstraint(_ITEM_CODE_PREFIX_SQL, name="ck_item_code_prefix"),
+        CheckConstraint(
+            f"process IS NULL OR process IN ({_ALLOWED_PROCESSES_SQL})",
+            name="ck_item_process",
+        ),
+        CheckConstraint(
+            f"stock_uom IN ({_ALLOWED_UNITS_OF_MEASURE_SQL})",
+            name="ck_item_stock_uom",
+        ),
+        CheckConstraint(
+            f"phase IN ({_ALLOWED_ITEM_PHASES_SQL})",
+            name="ck_item_phase",
+        ),
+        # 「반제품은 유효기간을 두지 않고 제품만 유효기간을 정한다」(발화). 표가
+        # 하나여서 이 규칙을 제약으로 적을 수 있게 됐다.
+        CheckConstraint(
+            f"item_type <> '{SEMI_FINISHED_ITEM}' OR shelf_life_days IS NULL",
+            name="ck_item_semi_finished_has_no_shelf_life",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
+    item_type: Mapped[str] = mapped_column(String(20), index=True)
+    # 검사 기준을 끌어오는 라벨(지적 ⑯). 접두가 아니라 명시적인 열이어야
+    # 공정이 바뀔 때 품목 코드를 바꾸지 않는다.
+    process: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 재고 단위(지적 ㉛). 모든 수량이 이 단위로 저장된다 — 잔량을 수불의 합으로
+    # 내린 이상 합할 수 있으려면 단위가 하나여야 하기 때문이다.
+    stock_uom: Mapped[str] = mapped_column(String(10))
+    # 초기 · 양산. 게이트와 지표가 다르다(Ppk 1.67 / Cpk 1.33).
+    phase: Mapped[str] = mapped_column(String(10))
     # 사내 프로세스가 정한 유효기간 설정기간(일). 로트의 유효기간은 이 값에서
     # 파생된다. None 이면 무기한 품목이다.
     shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 통합의 이득이 그대로 드러나는 칸이다 — 자재에만 있던 것이 완제품에도
+    # 생겼다. 아직 값을 정한 사람이 없는 품목은 None 이다.
+    safety_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 리드타임은 품목의 값이 아니라 오더마다 다른 **계산 결과**다. 품목이 갖는
+    # 것은 계수 둘이고, 소요 시간 = 준비시간 + 개당 시간 × 수량이다.
+    # 상수로 두면 100개와 1000개가 같은 시각에 착수한다.
+    setup_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hours_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    orders: Mapped[list[Order]] = relationship(back_populates="product")
-    bom_requirements: Mapped[list[BomRequirement]] = relationship(back_populates="product")
-    finished_goods_lots: Mapped[list[FinishedGoodsLot]] = relationship(
-        back_populates="product",
+    orders: Mapped[list[Order]] = relationship(back_populates="item")
+    # BOM 이 상위·하위로 넓어지면서 한 품목이 두 방향의 관계를 갖는다.
+    components: Mapped[list[BomComponent]] = relationship(
+        back_populates="parent_item",
+        foreign_keys="BomComponent.parent_item_id",
+    )
+    used_in: Mapped[list[BomComponent]] = relationship(
+        back_populates="child_item",
+        foreign_keys="BomComponent.child_item_id",
+    )
+    purchase_receipts: Mapped[list[PurchaseReceipt]] = relationship(back_populates="item")
+    material_lots: Mapped[list[MaterialLot]] = relationship(
+        back_populates="item",
         cascade="all, delete-orphan",
+    )
+    finished_goods_lots: Mapped[list[FinishedGoodsLot]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+    )
+
+
+class BomComponent(Base):
+    """2단 고정 BOM 한 줄 — 상위품목이 하위품목을 얼마나 쓰는가.
+
+    제품 ↔ 자재 직결이던 것을 상위 ↔ 하위로 넓힌다. 「단계」 열 하나가 재귀를
+    막아 전개가 두 번으로 고정되므로, 계산이 단순하고 테스트할 경우의 수가
+    유한하다.
+    """
+
+    __tablename__ = "bom_components"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_item_id",
+            "child_item_id",
+            name="uq_bom_component_parent_child",
+        ),
+        CheckConstraint(
+            f"level IN ({_ALLOWED_BOM_LEVELS_SQL})",
+            name="ck_bom_component_level",
+        ),
+        CheckConstraint(
+            "parent_item_id <> child_item_id",
+            name="ck_bom_component_not_self_referencing",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    child_item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    # 1단 — 완제품 ← 반제품 · 2단 — 반제품 ← 원자재
+    level: Mapped[int] = mapped_column(Integer)
+    unit_quantity: Mapped[float] = mapped_column(Float)
+
+    parent_item: Mapped[Item] = relationship(
+        back_populates="components",
+        foreign_keys=[parent_item_id],
+    )
+    child_item: Mapped[Item] = relationship(
+        back_populates="used_in",
+        foreign_keys=[child_item_id],
     )
 
 
@@ -91,11 +220,11 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     due_date: Mapped[date] = mapped_column(Date)
     planned_quantity: Mapped[float] = mapped_column(Float)
 
-    product: Mapped[Product] = relationship(back_populates="orders")
+    item: Mapped[Item] = relationship(back_populates="orders")
     daily_productions: Mapped[list[DailyProduction]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",
@@ -118,47 +247,17 @@ class DailyProduction(Base):
     )
 
 
-class Material(Base):
-    __tablename__ = "materials"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(200))
-    safety_stock: Mapped[float] = mapped_column(Float)
-    # 제품과 같은 의미의 설정기간(일). None 이면 무기한 품목이다.
-    shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    bom_requirements: Mapped[list[BomRequirement]] = relationship(back_populates="material")
-    purchase_receipts: Mapped[list[PurchaseReceipt]] = relationship(back_populates="material")
-    lots: Mapped[list[MaterialLot]] = relationship(
-        back_populates="material",
-        cascade="all, delete-orphan",
-    )
-
-
-class BomRequirement(Base):
-    __tablename__ = "bom_requirements"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
-    unit_quantity: Mapped[float] = mapped_column(Float)
-
-    product: Mapped[Product] = relationship(back_populates="bom_requirements")
-    material: Mapped[Material] = relationship(back_populates="bom_requirements")
-
-
 class PurchaseReceipt(Base):
     __tablename__ = "purchase_receipts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     scheduled_date: Mapped[date] = mapped_column(Date)
     scheduled_quantity: Mapped[float] = mapped_column(Float)
     # 도착하면 로트가 되므로 예정 입고도 유효기간을 가진다. 도착지는 원재료창고다.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    material: Mapped[Material] = relationship(back_populates="purchase_receipts")
+    item: Mapped[Item] = relationship(back_populates="purchase_receipts")
 
 
 class MaterialLot(Base):
@@ -177,7 +276,7 @@ class MaterialLot(Base):
     __tablename__ = "material_lots"
     __table_args__ = (
         UniqueConstraint(
-            "material_id",
+            "item_id",
             "lot_number",
             "warehouse",
             name="uq_material_lot_warehouse",
@@ -189,14 +288,14 @@ class MaterialLot(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     quantity: Mapped[float] = mapped_column(Float)
     received_date: Mapped[date] = mapped_column(Date)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    material: Mapped[Material] = relationship(back_populates="lots")
+    item: Mapped[Item] = relationship(back_populates="material_lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="material_lot",
         passive_deletes=True,
@@ -220,7 +319,7 @@ class FinishedGoodsLot(Base):
     __tablename__ = "finished_goods_lots"
     __table_args__ = (
         UniqueConstraint(
-            "product_id",
+            "item_id",
             "lot_number",
             "warehouse",
             name="uq_finished_goods_lot_warehouse",
@@ -243,7 +342,7 @@ class FinishedGoodsLot(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     # OQC 판정의 캐시다. 진실은 `QualityInspection` 의 OQC 기록이며, 기록이
@@ -255,7 +354,7 @@ class FinishedGoodsLot(Base):
     # 제품의 설정기간에서 파생해 저장한다. 무기한 품목이면 None 이다.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    product: Mapped[Product] = relationship(back_populates="finished_goods_lots")
+    item: Mapped[Item] = relationship(back_populates="finished_goods_lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="finished_goods_lot",
         passive_deletes=True,

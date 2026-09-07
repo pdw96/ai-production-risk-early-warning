@@ -54,3 +54,55 @@ PROCESS_INSPECTION = "PQC"
 OUTGOING_INSPECTION = "OQC"
 INSPECTION_TYPES = (INCOMING_INSPECTION, PROCESS_INSPECTION, OUTGOING_INSPECTION)
 INSPECTION_RESULTS = (QC_PASSED, QC_FAILED)
+
+# ── 품목 (지적 ⑧ · ⑯ · ㉛) ────────────────────────────────────────────────
+# 품목 표가 하나가 되면서 「무엇인가」를 유형이 말한다. 반제품은 만들어지면서
+# 쓰이므로 표가 둘일 때는 앉을 자리가 없었다.
+FINISHED_ITEM = "완제품"
+SEMI_FINISHED_ITEM = "반제품"
+RAW_ITEM = "원자재"
+ITEM_TYPES = (FINISHED_ITEM, SEMI_FINISHED_ITEM, RAW_ITEM)
+
+# 코드 접두는 유형과 유일성만 맡는다(지적 ⑯). 공정은 접두가 아니라 별도 열이다 —
+# 접두에 공정을 담으면 공정이 바뀔 때 코드를 바꿔야 하는데, 코드는 바뀌지 않는
+# 것이어야 하기 때문이다.
+ITEM_CODE_PREFIXES: dict[str, str] = {
+    FINISHED_ITEM: "FG-",
+    SEMI_FINISHED_ITEM: "SF-",
+    RAW_ITEM: "RM-",
+}
+
+# 공정 다섯(PROCESS). 이 설계에서 공정은 검사 항목을 고르기 위한 라벨이며
+# 설비도 라우팅도 아니다. 설비가 들어오는 날 이 목록의 성격이 바뀐다.
+INCOMING_PROCESS = "수입"
+BLENDING_PROCESS = "배합"
+COATING_PROCESS = "코팅"
+LAMINATING_PROCESS = "적층경화"
+SHIPPING_PROCESS = "출하"
+PROCESSES = (
+    INCOMING_PROCESS,
+    BLENDING_PROCESS,
+    COATING_PROCESS,
+    LAMINATING_PROCESS,
+    SHIPPING_PROCESS,
+)
+
+# 재고 단위(지적 ㉛). 잔량을 「수불의 합」으로 내린 이상 합할 수 있으려면 단위가
+# 하나여야 한다. 품목에 재고 단위를 못박고 모든 수량을 그것으로 저장하며,
+# 구매 단위와의 환산은 공급사별 품목에서 경계 한 번만 한다.
+UNITS_OF_MEASURE = ("EA", "kg", "L", "m2")
+
+# 품목단계(ITEM_PHASE). 게이트와 지표가 다르다 — 초기는 Ppk 1.67, 양산은 Cpk 1.33.
+INITIAL_PHASE = "초기"
+MASS_PRODUCTION_PHASE = "양산"
+ITEM_PHASES = (INITIAL_PHASE, MASS_PRODUCTION_PHASE)
+
+# BOM 은 2단으로 고정한다. 「단계」 열 하나가 재귀를 막아 전개가 두 번으로
+# 고정되므로 계산이 단순하고 테스트할 경우의 수가 유한하다.
+#   1단 — 완제품 ← 반제품
+#   2단 — 반제품 ← 원자재
+BOM_LEVELS = (1, 2)
+BOM_PARENT_ITEM_TYPES: dict[int, str] = {
+    1: FINISHED_ITEM,
+    2: SEMI_FINISHED_ITEM,
+}
