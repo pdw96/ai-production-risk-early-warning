@@ -7,6 +7,14 @@ describe("operation formatters", () => {
     expect(format_quantity(1234.5)).toBe("1,234.5개");
   });
 
+  it("writes the item's own unit, and counts EA as 개", () => {
+    // 자재는 kg · L · m2 로 갈린다. 단위를 적지 않으면 320kg 이 「320개」가 된다.
+    expect(format_quantity(320, "kg")).toBe("320 kg");
+    expect(format_quantity(1234.5, "L")).toBe("1,234.5 L");
+    // EA 와 개는 같은 것이다. 코드값을 그대로 적으면 창고 화면만 다른 말을 쓴다.
+    expect(format_quantity(80, "EA")).toBe("80개");
+  });
+
   it("formats percentages to one decimal place", () => {
     expect(format_percentage(81.25)).toBe("81.3%");
   });

@@ -141,6 +141,7 @@ def test_local_frontend_origin_is_allowed_by_cors(client: TestClient) -> None:
                 "material_id",
                 "material_code",
                 "material_name",
+                "stock_uom",
                 "current_stock",
                 "raw_warehouse_stock",
                 "production_warehouse_stock",
@@ -770,3 +771,46 @@ def test_quality_summary_counts_records_the_list_left_out(client: TestClient) ->
             if inspection["inspection_type"] == summary["inspection_type"]
         ]
         assert summary["total_count"] >= len(listed)
+
+
+def test_material_quantities_carry_the_unit_they_are_counted_in(client: TestClient) -> None:
+    """수량 옆에 단위가 없으면 화면은 전부 「개」로 적는다.
+
+    자재는 kg · L · m2 로 갈린다. 저장은 품목의 재고 단위를 지키는데(지적 ㉛)
+    표시가 지키지 않으면 320kg 이 「320개」로 나가고, 단위를 못박은 뜻이
+    없어진다.
+    """
+    materials = client.get("/api/materials").json()["data"]
+    units = {row["material_code"]: row["stock_uom"] for row in materials}
+
+    # 시드가 실제로 여러 단위를 쓴다 — 하나뿐이면 이 검사가 아무것도 지키지 않는다.
+    assert len(set(units.values())) > 1
+
+    # 창고 줄도 자기 단위를 들고 나간다. 창고에는 kg 와 L 이 나란히 쌓인다.
+    for slug in ("raw", "production", "products"):
+        warehouse = client.get(f"/api/warehouses/{slug}").json()["data"]
+        for lot in warehouse["lots"]:
+            assert lot["stock_uom"]
+            if lot["item_type"] == "자재":
+                assert lot["stock_uom"] == units[lot["item_code"]]
+
+
+def test_the_warehouse_material_total_is_only_meaningful_within_one_unit(
+    client: TestClient,
+) -> None:
+    """단위를 넘어 더한 합은 뜻이 없다 — 화면이 쓰지 않는 이유를 고정한다.
+
+    칸을 지우면 응답 모양이 깨지므로 남겨 두지만, 원재료창고처럼 kg 와 L 이
+    함께 있는 창고에서는 이 숫자가 무엇도 세지 않는다. 화면은 `lots` 에서
+    단위별 합을 직접 낸다.
+    """
+    raw = client.get("/api/warehouses/raw").json()["data"]
+    material_units = {
+        lot["stock_uom"] for lot in raw["lots"] if lot["item_type"] == "자재"
+    }
+
+    assert len(material_units) > 1
+    assert raw["material_quantity"] == pytest.approx(
+        sum(lot["quantity"] for lot in raw["lots"] if lot["item_type"] == "자재"),
+        abs=0.05,
+    )

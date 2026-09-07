@@ -73,7 +73,8 @@ RECENT_INSPECTIONS_PER_TYPE = 20
 WAREHOUSE_DESCRIPTIONS = {
     RAW_MATERIAL_WAREHOUSE: "입고된 자재를 보관합니다.",
     PRODUCTION_WAREHOUSE: (
-        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격한 완제품이 있습니다."
+        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격했거나"
+        " 합격했지만 아직 제품창고로 옮겨지지 않은 완제품이 있습니다."
     ),
     PRODUCT_WAREHOUSE: "출하검사에 합격한 완제품만 적재됩니다. 출하는 여기서만 일어납니다.",
 }
@@ -360,6 +361,7 @@ def get_warehouse_stock(
                 item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
+                stock_uom=lot.item.stock_uom,
                 stocked_date=lot.received_date,
                 expiry_date=lot.expiry_date,
                 # 자재의 수입검사는 입고 시점에 이미 끝나 있다.
@@ -382,6 +384,7 @@ def get_warehouse_stock(
                 item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
+                stock_uom=lot.item.stock_uom,
                 stocked_date=lot.produced_date,
                 expiry_date=lot.expiry_date,
                 qc_status=lot.qc_status,
@@ -940,6 +943,7 @@ def _build_material_response(
         material_id=material.id,
         material_code=material.code,
         material_name=material.name,
+        stock_uom=material.stock_uom,
         current_stock=round(result.available_stock, 2),
         raw_warehouse_stock=round(
             result.stock_by_warehouse.get(RAW_MATERIAL_WAREHOUSE, 0.0), 2

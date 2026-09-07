@@ -15,6 +15,7 @@ const lots: WarehouseLot[] = [
     lot_number: "LOT-RM-01-01",
     qc_status: null,
     quantity: 320,
+    stock_uom: "L",
     stocked_date: "2026-08-01",
   },
   {
@@ -26,6 +27,7 @@ const lots: WarehouseLot[] = [
     lot_number: "LOT-FG-02-260801",
     qc_status: "합격",
     quantity: 80,
+    stock_uom: "EA",
     stocked_date: "2026-08-01",
   },
   {
@@ -37,6 +39,7 @@ const lots: WarehouseLot[] = [
     lot_number: "LOT-FG-03-260901",
     qc_status: "불합격",
     quantity: 15,
+    stock_uom: "EA",
     stocked_date: "2026-09-01",
   },
 ];
@@ -45,7 +48,8 @@ describe("WarehouseStockTable", () => {
   it("puts materials and products side by side with their lot numbers", () => {
     const markup = renderToStaticMarkup(<WarehouseStockTable lots={lots} />);
 
-    ["자재", "제품", "LOT-RM-01-01", "LOT-FG-02-260801", "320개", "80개"].forEach(
+    // 창고에는 단위가 다른 로트가 나란히 쌓인다 — 줄마다 자기 단위로 적힌다.
+    ["자재", "제품", "LOT-RM-01-01", "LOT-FG-02-260801", "320 L", "80개"].forEach(
       (expected) => expect(markup).toContain(expected),
     );
   });

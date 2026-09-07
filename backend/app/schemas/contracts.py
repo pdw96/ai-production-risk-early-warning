@@ -67,6 +67,10 @@ class MaterialResponse(BaseModel):
     material_id: int
     material_code: str
     material_name: str
+    # 아래 모든 수량의 단위(지적 ㉛). 자재는 kg · L · m2 로 갈리므로 이 칸이
+    # 없으면 화면이 320kg 을 「320개」로 적는다 — 저장이 단위를 지키는데 표시가
+    # 지키지 않으면 단위를 못박은 뜻이 없어진다.
+    stock_uom: str
     # 기준일에 도착했고 만료되지 않은 로트의 합(두 창고 합산). 입고를 수요
     # 차감보다 먼저 반영하므로 기준일 당일 도착하는 예정 입고분이 포함되며,
     # 그래서 `material_lots` 행 합계와 다를 수 있다.
@@ -175,6 +179,8 @@ class WarehouseLotResponse(BaseModel):
     item_name: str
     lot_number: str
     quantity: float
+    # 수량의 단위. 창고에는 kg 와 L 이 나란히 쌓이므로 줄마다 필요하다.
+    stock_uom: str
     # 자재는 입고일, 완제품은 생산일이다.
     stocked_date: date
     expiry_date: date | None
@@ -192,6 +198,9 @@ class WarehouseStockResponse(BaseModel):
     # 이 창고가 무엇을 담는지 — 화면 설명에 그대로 쓴다.
     description: str
     material_lot_count: int
+    # **단위를 넘어 더한 값이다.** 창고에 kg 와 L 이 함께 있으면 이 숫자는
+    # 뜻이 없다. 칸을 지우면 응답 모양이 깨지므로 남겨 두되, 화면은 이것을
+    # 쓰지 않고 `lots` 의 단위별 합을 직접 낸다.
     material_quantity: float
     product_lot_count: int
     product_quantity: float

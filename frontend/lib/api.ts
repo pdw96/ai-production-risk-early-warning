@@ -49,6 +49,8 @@ export interface Material {
   material_id: number;
   material_code: string;
   material_name: string;
+  /** 아래 모든 수량의 단위. 자재는 kg · L · m2 로 갈린다. */
+  stock_uom: string;
   /** 로트 합계에서 파생된 기준일 가용 재고(만료분 제외, 두 창고 합산) */
   current_stock: number;
   raw_warehouse_stock: number;
@@ -122,6 +124,8 @@ export interface WarehouseLot {
   item_name: string;
   lot_number: string;
   quantity: number;
+  /** 수량의 단위. 창고에는 kg 와 L 이 나란히 쌓인다. */
+  stock_uom: string;
   /** 자재는 입고일, 완제품은 생산일 */
   stocked_date: string;
   expiry_date: string | null;
@@ -135,6 +139,10 @@ export interface WarehouseStock {
   warehouse_slug: string;
   description: string;
   material_lot_count: number;
+  /**
+   * **단위를 넘어 더한 값이다.** 창고에 kg 와 L 이 함께 있으면 뜻이 없으므로
+   * 화면은 이것을 쓰지 않고 `lots` 에서 단위별 합을 낸다.
+   */
   material_quantity: number;
   product_lot_count: number;
   product_quantity: number;
