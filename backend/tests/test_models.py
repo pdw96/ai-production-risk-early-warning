@@ -21,7 +21,12 @@ from app.db.models import (
     RiskStatus,
     _reject_overlapping_prefixes,
 )
-from tests.factories import finished_item, raw_item, semi_finished_item
+from tests.factories import (
+    finished_item,
+    raw_item,
+    seed_referenced_codes,
+    semi_finished_item,
+)
 
 
 @pytest.fixture
@@ -30,6 +35,9 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     with session_factory() as database_session:
+        # 공정과 재고 단위는 공통코드를 가리킨다. 코드가 먼저 있어야 품목이
+        # 들어간다 — 시드도 공통코드부터 넣는다.
+        seed_referenced_codes(database_session)
         yield database_session
 
 
@@ -94,6 +102,7 @@ def test_create_all_builds_every_table_from_both_model_modules(
     }
 
     with db_base.SessionLocal() as database_session:
+        seed_referenced_codes(database_session)
         product = finished_item(code="FG-02", name="가상 소재 B")
         material = raw_item(
             code="RM-01",

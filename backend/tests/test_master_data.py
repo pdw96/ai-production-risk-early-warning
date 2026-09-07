@@ -16,9 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import codes
 from app.core.config import (
+    INCOMING_PROCESS,
     ITEM_PHASES,
     ITEM_TYPES,
+    MASS_PRODUCTION_PHASE,
     PROCESSES,
+    RAW_ITEM,
     STOCK_TYPES,
     UNITS_OF_MEASURE,
     WAREHOUSES,
@@ -37,6 +40,7 @@ from app.db.master_data import (
     TxnTypeAttribute,
 )
 from app.db.master_data_loader import load_master_data, statements
+from app.db.models import Item
 
 
 @pytest.fixture
@@ -106,11 +110,9 @@ def test_groups_that_the_program_branches_on_are_marked_fixed(
         (codes.STOCK_TYPE, STOCK_TYPES),
         (codes.ITEM_TYPE, ITEM_TYPES),
         (codes.ITEM_PHASE, ITEM_PHASES),
-        (codes.PROCESS, PROCESSES),
-        (codes.UOM, UNITS_OF_MEASURE),
     ),
 )
-def test_the_code_values_agree_with_the_constants_the_program_uses(
+def test_the_fixed_code_values_agree_with_the_constants_the_program_uses(
     session: Session,
     group_code: str,
     constants: tuple[str, ...],
@@ -118,9 +120,86 @@ def test_the_code_values_agree_with_the_constants_the_program_uses(
     """같은 목록이 파이썬 상수와 SQL 에 따로 있으면 반드시 갈린다.
 
     CHECK 제약은 상수에서 구워지고 드롭다운은 공통코드에서 나오므로, 둘이
-    어긋나면 화면에는 뜨는데 저장은 거부되는 값이 생긴다.
+    어긋나면 화면에는 뜨는데 저장은 거부되는 값이 생긴다. 여기 있는 넷은 **값이
+    고정된 그룹**이라 양쪽이 정확히 같아야 한다 — 값마다 프로그램이 다른 일을
+    하므로 코드만 늘어나면 그것을 처리할 코드가 없다.
     """
     assert _codes_of(session, group_code) == set(constants)
+
+
+@pytest.mark.parametrize(
+    ("group_code", "constants"),
+    (
+        (codes.PROCESS, PROCESSES),
+        (codes.UOM, UNITS_OF_MEASURE),
+    ),
+)
+def test_the_extensible_groups_only_have_to_contain_what_the_program_names(
+    session: Session,
+    group_code: str,
+    constants: tuple[str, ...],
+) -> None:
+    """공정과 단위는 **늘 수 있다**(`value_fixed=False`). 같기를 요구하면 안 된다.
+
+    프로그램이 이름으로 부르는 값(시드가 쓰는 공정, 품목의 단위)은 있어야 하므로
+    포함은 요구한다. 그러나 운영자가 코드를 하나 더했을 때 이 테스트가 깨진다면,
+    「늘어도 아무것도 고장 나지 않는다」는 선언이 거짓이 된다 — 값을 늘리는 데
+    파이썬 수정이 함께 필요해지기 때문이다. 품목은 상수가 아니라 이 표를 복합
+    외래키로 가리키므로, 더해진 코드는 곧바로 쓸 수 있어야 한다.
+    """
+    assert set(constants) <= _codes_of(session, group_code)
+
+
+def test_an_item_may_use_a_unit_that_only_the_code_table_knows(
+    session: Session,
+) -> None:
+    """운영자가 더한 단위를 품목이 곧바로 쓸 수 있어야 한다.
+
+    허용값이 파이썬 상수에서 구워진 CHECK 였을 때는 그러지 못했다 — 단위 하나를
+    더하는 데 파이썬 수정과 마이그레이션이 함께 필요했고, 그동안 드롭다운에는
+    뜨는데 저장은 거부되는 값이 있었다. 늘 수 있다고 선언한 그룹이 실제로는
+    얼어 있던 것이다.
+    """
+    session.add(
+        CommonCode(group_code=codes.UOM, code="m3", name="세제곱미터", sort_order=99)
+    )
+    session.flush()
+
+    session.add(
+        Item(
+            code="RM-99",
+            name="가상 원자재 Z",
+            item_type=RAW_ITEM,
+            process=INCOMING_PROCESS,
+            stock_uom="m3",
+            phase=MASS_PRODUCTION_PHASE,
+            safety_stock=10.0,
+        )
+    )
+    session.flush()
+
+    saved = session.scalars(select(Item).where(Item.code == "RM-99")).one()
+    assert saved.stock_uom == "m3"
+    # 짝의 왼쪽 절반은 데이터가 아니라 구조다 — 언제나 그 그룹을 가리킨다.
+    assert saved.stock_uom_group == codes.UOM
+
+
+def test_an_item_cannot_use_a_unit_that_no_code_row_defines(session: Session) -> None:
+    """없는 코드는 여전히 막혀야 한다. 제약을 푼 것이 아니라 **옮긴** 것이다."""
+    session.add(
+        Item(
+            code="RM-98",
+            name="가상 원자재 Y",
+            item_type=RAW_ITEM,
+            process=INCOMING_PROCESS,
+            stock_uom="되",
+            phase=MASS_PRODUCTION_PHASE,
+            safety_stock=10.0,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
 
 
 def test_the_ledger_knows_twelve_transaction_types_and_every_one_has_attributes(

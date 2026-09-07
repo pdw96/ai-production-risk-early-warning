@@ -11,7 +11,6 @@ from sqlalchemy import func, select, text
 
 from app.core.config import (
     BACKEND_DIRECTORY,
-    DATABASE_URL,
     DEFECTIVE_STOCK,
     is_sqlite,
     FINISHED_ITEM,
@@ -128,8 +127,15 @@ def _stamp_at_head() -> None:
     못 쓰게 만들면 안 된다.
     """
     config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
-    command.stamp(config, "head")
+    # **주소가 아니라 연결을 넘긴다.** 위의 `drop_all` · `create_all` 은
+    # `db_base.engine` 으로 돌았는데, 여기서만 설정의 `DATABASE_URL` 로 새
+    # 접속을 열면 **다른 데이터베이스에 버전을 찍는다** — 엔진을 갈아 끼운
+    # 테스트가 메모리에 표를 만들어 놓고 개발자의 진짜 파일에 `alembic_version`
+    # 만 남기는 일이 그것이다. 그렇게 찍힌 파일은 표가 없는데 head 로 보이고,
+    # 옛 스키마가 든 파일이었다면 「최신」으로 굳어 마이그레이션을 건너뛴다.
+    with db_base.engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
 
 
 def seed_if_empty(reference_date: date | None = None) -> bool:

@@ -44,12 +44,13 @@ export default function SalesPage() {
       <section className="page-panel">
         <div className="page-panel__header">
           <h2>이 화면을 읽는 법</h2>
-          <span>네 수량은 서로 겹치지 않으며 합이 보유 합계와 같습니다</span>
+          <span>다섯 수량은 서로 겹치지 않으며 합이 보유 합계와 같습니다</span>
         </div>
         <p className="page-panel__pending">
           <strong>출하 가능</strong>은 제품창고에 있고 만료되지 않은 재고입니다. 출하검사에
           합격해야 제품창고로 옮겨지므로, 검사 대기와 불합격은 생산창고에 남아 출하 가능
-          재고에서 빠집니다. 만료분도 창고에는 남지만 내보낼 수 없습니다 — 로트는 지우지
+          재고에서 빠집니다. <strong>입고 대기</strong>는 합격했지만 아직 제품창고로
+          옮겨지지 않은 재고입니다 — 판정은 끝났고 출하는 아직 못 합니다. 만료분도 창고에는 남지만 내보낼 수 없습니다 — 로트는 지우지
           않는 영구 기록이기 때문입니다.
         </p>
         <p className="page-panel__pending">

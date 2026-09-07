@@ -8,13 +8,14 @@ import { FinishedGoodsTable } from "./finished-goods-table";
 const sample_product: FinishedGoods = {
   expired_stock: 40,
   inspection_pending_stock: 30,
+  intake_pending_stock: 15,
   product_code: "FG-01",
   product_id: 1,
   product_name: "가상 제품 A",
   rejected_stock: 20,
   releasable_stock: 110,
   shelf_life_days: 180,
-  total_lot_quantity: 200,
+  total_lot_quantity: 215,
 };
 
 describe("FinishedGoodsTable", () => {
@@ -23,7 +24,18 @@ describe("FinishedGoodsTable", () => {
       <FinishedGoodsTable finishedGoods={[sample_product]} />,
     );
 
-    ["FG-01", "ID 1", "가상 제품 A", "180일", "110개", "30개", "20개", "40개", "200개"].forEach(
+    [
+      "FG-01",
+      "ID 1",
+      "가상 제품 A",
+      "180일",
+      "110개",
+      "30개",
+      "20개",
+      "15개",
+      "40개",
+      "215개",
+    ].forEach(
       (expected) => {
         expect(markup).toContain(expected);
       },

@@ -69,31 +69,6 @@ def upgrade() -> None:
     sa.Column('description', sa.String(length=300), nullable=False),
     sa.PrimaryKeyConstraint('group_code')
     )
-    op.create_table('items',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('code', sa.String(length=50), nullable=False),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('item_type', sa.String(length=20), nullable=False),
-    sa.Column('process', sa.String(length=20), nullable=True),
-    sa.Column('stock_uom', sa.String(length=10), nullable=False),
-    sa.Column('phase', sa.String(length=10), nullable=False),
-    sa.Column('shelf_life_days', sa.Integer(), nullable=True),
-    sa.Column('safety_stock', sa.Float(), nullable=True),
-    sa.Column('setup_hours', sa.Float(), nullable=True),
-    sa.Column('hours_per_unit', sa.Float(), nullable=True),
-    sa.CheckConstraint("((item_type = '완제품') = (substr(code, 1, 3) = 'FG-')) AND ((item_type = '반제품') = (substr(code, 1, 3) = 'SF-')) AND ((item_type = '원자재') = (substr(code, 1, 3) = 'RM-'))", name='ck_item_code_prefix'),
-    sa.CheckConstraint("item_type <> '반제품' OR shelf_life_days IS NULL", name='ck_item_semi_finished_has_no_shelf_life'),
-    sa.CheckConstraint("item_type <> '원자재' OR safety_stock IS NOT NULL", name='ck_item_raw_has_safety_stock'),
-    sa.CheckConstraint("item_type IN ('완제품', '반제품', '원자재')", name='ck_item_type'),
-    sa.CheckConstraint("phase IN ('초기', '양산')", name='ck_item_phase'),
-    sa.CheckConstraint("process IS NULL OR process IN ('수입', '배합', '코팅', '적층경화', '출하')", name='ck_item_process'),
-    sa.CheckConstraint("stock_uom IN ('EA', 'kg', 'L', 'm2')", name='ck_item_stock_uom'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('items', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_items_code'), ['code'], unique=True)
-        batch_op.create_index(batch_op.f('ix_items_item_type'), ['item_type'], unique=False)
-
     op.create_table('non_working_periods',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('starts_at', sa.DateTime(), nullable=False),
@@ -124,6 +99,135 @@ def upgrade() -> None:
     with op.batch_alter_table('risk_statuses', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_risk_statuses_risk_key'), ['risk_key'], unique=True)
 
+    op.create_table('common_codes',
+    sa.Column('group_code', sa.String(length=20), nullable=False),
+    sa.Column('code', sa.String(length=30), nullable=False),
+    sa.Column('name', sa.String(length=100), nullable=False),
+    sa.Column('description', sa.String(length=300), nullable=True),
+    sa.Column('sort_order', sa.Integer(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.ForeignKeyConstraint(['group_code'], ['code_groups.group_code'], ),
+    sa.PrimaryKeyConstraint('group_code', 'code')
+    )
+    op.create_table('items',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('code', sa.String(length=50), nullable=False),
+    sa.Column('name', sa.String(length=200), nullable=False),
+    sa.Column('item_type', sa.String(length=20), nullable=False),
+    sa.Column('process', sa.String(length=20), nullable=True),
+    sa.Column('process_group', sa.String(length=20), server_default='PROCESS', nullable=False),
+    sa.Column('stock_uom', sa.String(length=10), nullable=False),
+    sa.Column('stock_uom_group', sa.String(length=20), server_default='UOM', nullable=False),
+    sa.Column('phase', sa.String(length=10), nullable=False),
+    sa.Column('shelf_life_days', sa.Integer(), nullable=True),
+    sa.Column('safety_stock', sa.Float(), nullable=True),
+    sa.Column('setup_hours', sa.Float(), nullable=True),
+    sa.Column('hours_per_unit', sa.Float(), nullable=True),
+    sa.CheckConstraint("((item_type = '완제품') = (substr(code, 1, 3) = 'FG-')) AND ((item_type = '반제품') = (substr(code, 1, 3) = 'SF-')) AND ((item_type = '원자재') = (substr(code, 1, 3) = 'RM-'))", name='ck_item_code_prefix'),
+    sa.CheckConstraint("item_type <> '반제품' OR shelf_life_days IS NULL", name='ck_item_semi_finished_has_no_shelf_life'),
+    sa.CheckConstraint("item_type <> '원자재' OR safety_stock IS NOT NULL", name='ck_item_raw_has_safety_stock'),
+    sa.CheckConstraint("item_type IN ('완제품', '반제품', '원자재')", name='ck_item_type'),
+    sa.CheckConstraint("phase IN ('초기', '양산')", name='ck_item_phase'),
+    sa.CheckConstraint("process_group = 'PROCESS'", name='ck_item_process_group'),
+    sa.CheckConstraint("stock_uom_group = 'UOM'", name='ck_item_stock_uom_group'),
+    sa.ForeignKeyConstraint(['process_group', 'process'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['stock_uom_group', 'stock_uom'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('items', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_items_code'), ['code'], unique=True)
+        batch_op.create_index(batch_op.f('ix_items_item_type'), ['item_type'], unique=False)
+
+    op.create_table('nonconformity_attributes',
+    sa.Column('group_code', sa.String(length=20), nullable=False),
+    sa.Column('code', sa.String(length=30), nullable=False),
+    sa.Column('measure_kind', sa.String(length=10), nullable=False),
+    sa.Column('inspection_item_group', sa.String(length=20), nullable=True),
+    sa.Column('inspection_item_code', sa.String(length=30), nullable=True),
+    sa.CheckConstraint("group_code = 'NC_REASON'", name='ck_nc_reason_group'),
+    sa.CheckConstraint("inspection_item_group IS NULL OR inspection_item_group = 'INSP_ITEM'", name='ck_nonconformity_item_group'),
+    sa.CheckConstraint("measure_kind <> '계량' OR inspection_item_code IS NOT NULL", name='ck_nonconformity_measured_needs_item'),
+    sa.CheckConstraint("measure_kind IN ('계량', '계수')", name='ck_nonconformity_measure_kind'),
+    sa.CheckConstraint('(inspection_item_group IS NULL) = (inspection_item_code IS NULL)', name='ck_nonconformity_item_reference_is_whole'),
+    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['inspection_item_group', 'inspection_item_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('group_code', 'code')
+    )
+    op.create_table('nonconformity_stage_rules',
+    sa.Column('reason_group', sa.String(length=20), nullable=False),
+    sa.Column('reason_code', sa.String(length=30), nullable=False),
+    sa.Column('stage_group', sa.String(length=20), nullable=False),
+    sa.Column('stage_code', sa.String(length=30), nullable=False),
+    sa.Column('disposition', sa.String(length=20), nullable=False),
+    sa.Column('special_acceptance_allowed', sa.Boolean(), nullable=False),
+    sa.CheckConstraint("disposition IN ('반품', '환불', '재작업', '폐기', '등급 하향')", name='ck_stage_rule_disposition'),
+    sa.CheckConstraint("reason_group = 'NC_REASON'", name='ck_stage_rule_reason_group'),
+    sa.CheckConstraint("stage_group = 'INSP_STAGE'", name='ck_stage_rule_stage_group'),
+    sa.ForeignKeyConstraint(['reason_group', 'reason_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['stage_group', 'stage_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('reason_group', 'reason_code', 'stage_group', 'stage_code')
+    )
+    op.create_table('process_inspection_standards',
+    sa.Column('process_group', sa.String(length=20), nullable=False),
+    sa.Column('process_code', sa.String(length=30), nullable=False),
+    sa.Column('item_group', sa.String(length=20), nullable=False),
+    sa.Column('item_code', sa.String(length=30), nullable=False),
+    sa.Column('upper_spec_limit', sa.Float(), nullable=True),
+    sa.Column('lower_spec_limit', sa.Float(), nullable=True),
+    sa.Column('center_line', sa.Float(), nullable=True),
+    sa.Column('warning_ratio', sa.Float(), nullable=False),
+    sa.Column('sigma', sa.Float(), nullable=True),
+    sa.Column('sigma_source', sa.String(length=10), nullable=False),
+    sa.Column('time_variant', sa.Boolean(), nullable=False),
+    sa.Column('unit', sa.String(length=20), nullable=True),
+    sa.CheckConstraint("(sigma IS NULL) = (sigma_source = '미정')", name='ck_standard_sigma_matches_source'),
+    sa.CheckConstraint("item_group = 'INSP_ITEM'", name='ck_standard_item_group'),
+    sa.CheckConstraint("process_group = 'PROCESS'", name='ck_standard_process_group'),
+    sa.CheckConstraint("sigma_source IN ('미정', '임의', '실측')", name='ck_standard_sigma_source'),
+    sa.CheckConstraint('(upper_spec_limit IS NULL AND lower_spec_limit IS NULL AND center_line IS NULL) OR (upper_spec_limit IS NOT NULL AND lower_spec_limit IS NOT NULL AND center_line IS NOT NULL)', name='ck_standard_spec_is_all_or_nothing'),
+    sa.CheckConstraint('lower_spec_limit IS NULL OR lower_spec_limit < upper_spec_limit', name='ck_standard_spec_order'),
+    sa.CheckConstraint('sigma IS NULL OR sigma > 0', name='ck_standard_sigma_is_positive'),
+    sa.CheckConstraint('warning_ratio > 0 AND warning_ratio <= 1', name='ck_standard_warning_ratio'),
+    sa.ForeignKeyConstraint(['item_group', 'item_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['process_group', 'process_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('process_group', 'process_code', 'item_group', 'item_code')
+    )
+    op.create_table('purchase_close_attributes',
+    sa.Column('group_code', sa.String(length=20), nullable=False),
+    sa.Column('code', sa.String(length=30), nullable=False),
+    sa.Column('responsibility', sa.String(length=10), nullable=False),
+    sa.Column('scorecard_axis', sa.String(length=20), nullable=True),
+    sa.Column('reorder_default', sa.String(length=10), nullable=False),
+    sa.CheckConstraint("group_code = 'PO_CLOSE'", name='ck_po_close_group'),
+    sa.CheckConstraint("reorder_default IN ('필요', '불필요', '건별')", name='ck_purchase_close_reorder_default'),
+    sa.CheckConstraint("responsibility = '공급사' OR scorecard_axis IS NULL", name='ck_purchase_close_own_fault_has_no_axis'),
+    sa.CheckConstraint("responsibility IN ('공급사', '자사')", name='ck_purchase_close_responsibility'),
+    sa.CheckConstraint("scorecard_axis IS NULL OR scorecard_axis IN ('수량 준수율', '납기 준수율', '공급 가능성')", name='ck_purchase_close_scorecard_axis'),
+    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('group_code', 'code')
+    )
+    op.create_table('shift_patterns',
+    sa.Column('group_code', sa.String(length=20), nullable=False),
+    sa.Column('code', sa.String(length=30), nullable=False),
+    sa.Column('starts_at', sa.Time(), nullable=False),
+    sa.Column('ends_at', sa.Time(), nullable=False),
+    sa.Column('on_site', sa.Boolean(), nullable=False),
+    sa.CheckConstraint("group_code = 'SHIFT'", name='ck_shift_group'),
+    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('group_code', 'code')
+    )
+    op.create_table('txn_type_attributes',
+    sa.Column('group_code', sa.String(length=20), nullable=False),
+    sa.Column('code', sa.String(length=30), nullable=False),
+    sa.Column('total_effect', sa.String(length=10), nullable=False),
+    sa.Column('paired_code', sa.String(length=30), nullable=True),
+    sa.Column('source_document_type', sa.String(length=30), nullable=False),
+    sa.CheckConstraint("group_code = 'TXN_TYPE'", name='ck_txn_type_group'),
+    sa.CheckConstraint("total_effect IN ('증가', '감소', '양방향', '불변', '기준점')", name='ck_txn_type_total_effect'),
+    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['group_code', 'paired_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.PrimaryKeyConstraint('group_code', 'code')
+    )
     op.create_table('bom_components',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('parent_item_id', sa.Integer(), nullable=False),
@@ -137,16 +241,6 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('parent_item_id', 'child_item_id', name='uq_bom_component_parent_child')
     )
-    op.create_table('common_codes',
-    sa.Column('group_code', sa.String(length=20), nullable=False),
-    sa.Column('code', sa.String(length=30), nullable=False),
-    sa.Column('name', sa.String(length=100), nullable=False),
-    sa.Column('description', sa.String(length=300), nullable=True),
-    sa.Column('sort_order', sa.Integer(), nullable=False),
-    sa.Column('is_active', sa.Boolean(), nullable=False),
-    sa.ForeignKeyConstraint(['group_code'], ['code_groups.group_code'], ),
-    sa.PrimaryKeyConstraint('group_code', 'code')
-    )
     op.create_table('finished_goods_lots',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
@@ -159,15 +253,15 @@ def upgrade() -> None:
     sa.Column('passed_date', sa.Date(), nullable=True),
     sa.Column('reworked', sa.Boolean(), nullable=False),
     sa.Column('expiry_date', sa.Date(), nullable=True),
+    sa.CheckConstraint("(passed_date IS NOT NULL) = (qc_status = '합격')", name='ck_finished_goods_lot_passed_date_matches_status'),
     sa.CheckConstraint("qc_status IN ('검사 대기', '합격', '불합격')", name='ck_finished_goods_lot_qc_status'),
     sa.CheckConstraint("stock_type <> '불량품' OR qc_status = '불합격'", name='ck_finished_goods_lot_defective_is_rejected'),
-    sa.CheckConstraint("(passed_date IS NOT NULL) = (qc_status = '합격')", name='ck_finished_goods_lot_passed_date_matches_status'),
-    sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
-    sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
-    sa.CheckConstraint('expiry_date IS NULL OR expiry_date >= passed_date', name='ck_finished_goods_lot_expiry_after_passed'),
     sa.CheckConstraint("stock_type IN ('양품', '불량품')", name='ck_finished_goods_lot_stock_type'),
     sa.CheckConstraint("warehouse <> '제품창고' OR qc_status = '합격'", name='ck_finished_goods_lot_product_warehouse_holds_passed_only'),
     sa.CheckConstraint("warehouse IN ('생산창고', '제품창고')", name='ck_finished_goods_lot_warehouse'),
+    sa.CheckConstraint('expiry_date IS NULL OR expiry_date >= passed_date', name='ck_finished_goods_lot_expiry_after_passed'),
+    sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
+    sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
     sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('item_id', 'lot_number', 'warehouse', name='uq_finished_goods_lot_warehouse')
@@ -212,93 +306,6 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_table('daily_productions',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('order_id', sa.Integer(), nullable=False),
-    sa.Column('work_date', sa.Date(), nullable=False),
-    sa.Column('planned_quantity', sa.Float(), nullable=False),
-    sa.Column('actual_quantity', sa.Float(), nullable=False),
-    sa.ForeignKeyConstraint(['order_id'], ['orders.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_table('nonconformity_attributes',
-    sa.Column('group_code', sa.String(length=20), nullable=False),
-    sa.Column('code', sa.String(length=30), nullable=False),
-    sa.Column('measure_kind', sa.String(length=10), nullable=False),
-    sa.Column('inspection_item_group', sa.String(length=20), nullable=True),
-    sa.Column('inspection_item_code', sa.String(length=30), nullable=True),
-    sa.CheckConstraint("group_code = 'NC_REASON'", name='ck_nc_reason_group'),
-    sa.CheckConstraint("inspection_item_group IS NULL OR inspection_item_group = 'INSP_ITEM'", name='ck_nonconformity_item_group'),
-    sa.CheckConstraint("measure_kind <> '계량' OR inspection_item_code IS NOT NULL", name='ck_nonconformity_measured_needs_item'),
-    sa.CheckConstraint('(inspection_item_group IS NULL) = (inspection_item_code IS NULL)', name='ck_nonconformity_item_reference_is_whole'),
-    sa.CheckConstraint("measure_kind IN ('계량', '계수')", name='ck_nonconformity_measure_kind'),
-    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.ForeignKeyConstraint(['inspection_item_group', 'inspection_item_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('group_code', 'code')
-    )
-    op.create_table('nonconformity_stage_rules',
-    sa.Column('reason_group', sa.String(length=20), nullable=False),
-    sa.Column('reason_code', sa.String(length=30), nullable=False),
-    sa.Column('stage_group', sa.String(length=20), nullable=False),
-    sa.Column('stage_code', sa.String(length=30), nullable=False),
-    sa.Column('disposition', sa.String(length=20), nullable=False),
-    sa.Column('special_acceptance_allowed', sa.Boolean(), nullable=False),
-    sa.CheckConstraint("disposition IN ('반품', '환불', '재작업', '폐기', '등급 하향')", name='ck_stage_rule_disposition'),
-    sa.CheckConstraint("reason_group = 'NC_REASON'", name='ck_stage_rule_reason_group'),
-    sa.CheckConstraint("stage_group = 'INSP_STAGE'", name='ck_stage_rule_stage_group'),
-    sa.ForeignKeyConstraint(['reason_group', 'reason_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.ForeignKeyConstraint(['stage_group', 'stage_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('reason_group', 'reason_code', 'stage_group', 'stage_code')
-    )
-    op.create_table('process_inspection_standards',
-    sa.Column('process_group', sa.String(length=20), nullable=False),
-    sa.Column('process_code', sa.String(length=30), nullable=False),
-    sa.Column('item_group', sa.String(length=20), nullable=False),
-    sa.Column('item_code', sa.String(length=30), nullable=False),
-    sa.Column('upper_spec_limit', sa.Float(), nullable=True),
-    sa.Column('lower_spec_limit', sa.Float(), nullable=True),
-    sa.Column('center_line', sa.Float(), nullable=True),
-    sa.Column('warning_ratio', sa.Float(), nullable=False),
-    sa.Column('sigma', sa.Float(), nullable=True),
-    sa.Column('sigma_source', sa.String(length=10), nullable=False),
-    sa.Column('time_variant', sa.Boolean(), nullable=False),
-    sa.Column('unit', sa.String(length=20), nullable=True),
-    sa.CheckConstraint("(sigma IS NULL) = (sigma_source = '미정')", name='ck_standard_sigma_matches_source'),
-    sa.CheckConstraint('sigma IS NULL OR sigma > 0', name='ck_standard_sigma_is_positive'),
-    sa.CheckConstraint("item_group = 'INSP_ITEM'", name='ck_standard_item_group'),
-    sa.CheckConstraint("process_group = 'PROCESS'", name='ck_standard_process_group'),
-    sa.CheckConstraint("sigma_source IN ('미정', '임의', '실측')", name='ck_standard_sigma_source'),
-    sa.CheckConstraint('(upper_spec_limit IS NULL AND lower_spec_limit IS NULL AND center_line IS NULL) OR (upper_spec_limit IS NOT NULL AND lower_spec_limit IS NOT NULL AND center_line IS NOT NULL)', name='ck_standard_spec_is_all_or_nothing'),
-    sa.CheckConstraint('lower_spec_limit IS NULL OR lower_spec_limit < upper_spec_limit', name='ck_standard_spec_order'),
-    sa.CheckConstraint('warning_ratio > 0 AND warning_ratio <= 1', name='ck_standard_warning_ratio'),
-    sa.ForeignKeyConstraint(['item_group', 'item_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.ForeignKeyConstraint(['process_group', 'process_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('process_group', 'process_code', 'item_group', 'item_code')
-    )
-    op.create_table('purchase_close_attributes',
-    sa.Column('group_code', sa.String(length=20), nullable=False),
-    sa.Column('code', sa.String(length=30), nullable=False),
-    sa.Column('responsibility', sa.String(length=10), nullable=False),
-    sa.Column('scorecard_axis', sa.String(length=20), nullable=True),
-    sa.Column('reorder_default', sa.String(length=10), nullable=False),
-    sa.CheckConstraint("group_code = 'PO_CLOSE'", name='ck_po_close_group'),
-    sa.CheckConstraint("reorder_default IN ('필요', '불필요', '건별')", name='ck_purchase_close_reorder_default'),
-    sa.CheckConstraint("responsibility = '공급사' OR scorecard_axis IS NULL", name='ck_purchase_close_own_fault_has_no_axis'),
-    sa.CheckConstraint("responsibility IN ('공급사', '자사')", name='ck_purchase_close_responsibility'),
-    sa.CheckConstraint("scorecard_axis IS NULL OR scorecard_axis IN ('수량 준수율', '납기 준수율', '공급 가능성')", name='ck_purchase_close_scorecard_axis'),
-    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('group_code', 'code')
-    )
-    op.create_table('shift_patterns',
-    sa.Column('group_code', sa.String(length=20), nullable=False),
-    sa.Column('code', sa.String(length=30), nullable=False),
-    sa.Column('starts_at', sa.Time(), nullable=False),
-    sa.Column('ends_at', sa.Time(), nullable=False),
-    sa.Column('on_site', sa.Boolean(), nullable=False),
-    sa.CheckConstraint("group_code = 'SHIFT'", name='ck_shift_group'),
-    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('group_code', 'code')
-    )
     op.create_table('supplier_items',
     sa.Column('partner_id', sa.Integer(), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
@@ -314,17 +321,14 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['purchase_uom_group', 'purchase_uom'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.PrimaryKeyConstraint('partner_id', 'item_id')
     )
-    op.create_table('txn_type_attributes',
-    sa.Column('group_code', sa.String(length=20), nullable=False),
-    sa.Column('code', sa.String(length=30), nullable=False),
-    sa.Column('total_effect', sa.String(length=10), nullable=False),
-    sa.Column('paired_code', sa.String(length=30), nullable=True),
-    sa.Column('source_document_type', sa.String(length=30), nullable=False),
-    sa.CheckConstraint("group_code = 'TXN_TYPE'", name='ck_txn_type_group'),
-    sa.CheckConstraint("total_effect IN ('증가', '감소', '양방향', '불변', '기준점')", name='ck_txn_type_total_effect'),
-    sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.ForeignKeyConstraint(['group_code', 'paired_code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('group_code', 'code')
+    op.create_table('daily_productions',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('order_id', sa.Integer(), nullable=False),
+    sa.Column('work_date', sa.Date(), nullable=False),
+    sa.Column('planned_quantity', sa.Float(), nullable=False),
+    sa.Column('actual_quantity', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['order_id'], ['orders.id'], ),
+    sa.PrimaryKeyConstraint('id')
     )
     op.create_table('quality_inspections',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -356,14 +360,8 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f('ix_quality_inspections_inspection_type'))
 
     op.drop_table('quality_inspections')
-    op.drop_table('txn_type_attributes')
-    op.drop_table('supplier_items')
-    op.drop_table('shift_patterns')
-    op.drop_table('purchase_close_attributes')
-    op.drop_table('process_inspection_standards')
-    op.drop_table('nonconformity_stage_rules')
-    op.drop_table('nonconformity_attributes')
     op.drop_table('daily_productions')
+    op.drop_table('supplier_items')
     op.drop_table('purchase_receipts')
     with op.batch_alter_table('orders', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_orders_order_number'))
@@ -377,8 +375,19 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f('ix_finished_goods_lots_lot_number'))
 
     op.drop_table('finished_goods_lots')
-    op.drop_table('common_codes')
     op.drop_table('bom_components')
+    op.drop_table('txn_type_attributes')
+    op.drop_table('shift_patterns')
+    op.drop_table('purchase_close_attributes')
+    op.drop_table('process_inspection_standards')
+    op.drop_table('nonconformity_stage_rules')
+    op.drop_table('nonconformity_attributes')
+    with op.batch_alter_table('items', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_items_item_type'))
+        batch_op.drop_index(batch_op.f('ix_items_code'))
+
+    op.drop_table('items')
+    op.drop_table('common_codes')
     with op.batch_alter_table('risk_statuses', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_risk_statuses_risk_key'))
 
@@ -389,10 +398,5 @@ def downgrade() -> None:
 
     op.drop_table('partners')
     op.drop_table('non_working_periods')
-    with op.batch_alter_table('items', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_items_item_type'))
-        batch_op.drop_index(batch_op.f('ix_items_code'))
-
-    op.drop_table('items')
     op.drop_table('code_groups')
     # ### end Alembic commands ###

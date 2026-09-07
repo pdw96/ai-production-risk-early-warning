@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from app.core.config import FINISHED_ITEM, RAW_ITEM
 from app.db import base as db_base
+from app.db import preflight
 from app.db.master_data import SupplierItem
 from app.db.models import (
     BomComponent,
@@ -678,7 +679,6 @@ def test_the_reset_path_leaves_the_database_under_alembic_control(
     engine = create_engine(url)
     monkeypatch.setattr(db_base, "engine", engine)
     monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
-    monkeypatch.setattr(seed_module, "DATABASE_URL", url)
 
     seed_module.reset_database()
 
@@ -691,6 +691,29 @@ def test_the_reset_path_leaves_the_database_under_alembic_control(
     config.set_main_option("sqlalchemy.url", url)
     head = ScriptDirectory.from_config(config).get_current_head()
     assert stamped == head
+
+
+def test_the_reset_path_stamps_the_engine_it_actually_used(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """버전은 **표를 만든 그 데이터베이스**에 찍혀야 한다.
+
+    이 픽스처는 `db_base.engine` 만 메모리 엔진으로 갈아 끼운다. 찍는 쪽이
+    설정의 접속 주소로 따로 접속하면, 표는 메모리에 서고 `alembic_version` 은
+    개발자의 진짜 파일에 남는다 — 표가 하나도 없는데 head 로 보이는 파일이
+    생기고, 옛 스키마가 든 파일이었다면 「최신」으로 굳어 마이그레이션이
+    건너뛰어진다. 그래서 여기서 묻는 것은 「찍혔는가」가 아니라 **어디에
+    찍혔는가**다.
+    """
+    reset_database()
+
+    with seeded_session_factory() as session:
+        stamped = session.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+
+    config = Config(str(seed_module.BACKEND_DIRECTORY / "alembic.ini"))
+    assert stamped == ScriptDirectory.from_config(config).get_current_head()
 
 
 def test_the_reset_path_removes_tables_the_models_no_longer_know(
@@ -711,7 +734,6 @@ def test_the_reset_path_removes_tables_the_models_no_longer_know(
 
     monkeypatch.setattr(db_base, "engine", engine)
     monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
-    monkeypatch.setattr(seed_module, "DATABASE_URL", url)
 
     seed_module.reset_database()
 
@@ -726,3 +748,44 @@ def test_the_reset_path_removes_tables_the_models_no_longer_know(
     assert "products" not in remaining
     assert "bom_requirements" not in remaining
     assert "items" in remaining
+
+
+def test_preflight_stops_a_database_that_predates_alembic(tmp_path, monkeypatch) -> None:
+    """표는 있는데 버전 표가 없으면 마이그레이션 앞에서 멈춰야 한다.
+
+    이전 판은 Alembic 없이 `create_all` 로 표를 만들었다. Alembic 은 그런
+    데이터베이스를 **빈 것**으로 읽고 초기 리비전을 처음부터 돌리다가 이미 있는
+    표에서 죽는다. 진입점이 마이그레이션을 먼저 돌리므로 기동은 그 자리에서
+    멈추고, 그 메시지로는 무엇을 해야 하는지 알 수 없다.
+    """
+    database_path = tmp_path / "legacy.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
+
+    monkeypatch.setattr(preflight, "engine", engine)
+
+    problem = preflight.check()
+
+    assert problem is not None
+    assert "products" in problem
+    # 고를 수 있는 두 길이 문장 안에 있어야 한다 — 없으면 멈추기만 한 것이다.
+    assert "python -m app.seed" in problem
+    assert "alembic stamp head" in problem
+
+
+def test_preflight_lets_an_empty_or_managed_database_through(tmp_path, monkeypatch) -> None:
+    """빈 데이터베이스와 Alembic 이 아는 데이터베이스는 그냥 지나가야 한다."""
+    database_path = tmp_path / "fine.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    monkeypatch.setattr(preflight, "engine", engine)
+
+    with engine.connect():
+        pass
+    assert preflight.check() is None
+
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num TEXT)"))
+        connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY)"))
+
+    assert preflight.check() is None

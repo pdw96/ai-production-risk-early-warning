@@ -12,10 +12,48 @@ from app.core.config import (
     INCOMING_PROCESS,
     LAMINATING_PROCESS,
     MASS_PRODUCTION_PHASE,
+    PROCESSES,
     RAW_ITEM,
     SEMI_FINISHED_ITEM,
+    UNITS_OF_MEASURE,
 )
+from app.core import codes
+from app.db.master_data import CodeGroup, CommonCode
 from app.db.models import Item
+
+
+def seed_referenced_codes(session: Any) -> None:
+    """품목이 가리키는 공통코드를 넣는다.
+
+    공정과 재고 단위는 늘 수 있는 그룹이라 허용값이 파이썬 상수가 아니라
+    공통코드에 있고, 품목은 그것을 복합 외래키로 가리킨다. 그래서 품목 하나를
+    넣으려면 그 코드가 **먼저 있어야** 한다 — 시드는 공통코드부터 넣지만,
+    표만 만들고 시작하는 테스트에는 그 앞줄이 없다.
+    """
+    for group_code, values in (
+        (codes.PROCESS, PROCESSES),
+        (codes.UOM, UNITS_OF_MEASURE),
+    ):
+        session.add(
+            CodeGroup(
+                group_code=group_code,
+                name=group_code,
+                # 이 둘은 값이 늘 수 있는 그룹이다 — 품목이 상수가 아니라
+                # 코드를 가리키게 된 이유가 그것이다.
+                value_fixed=False,
+                description=group_code,
+            )
+        )
+        for order, value in enumerate(values):
+            session.add(
+                CommonCode(
+                    group_code=group_code,
+                    code=value,
+                    name=value,
+                    sort_order=order,
+                )
+            )
+    session.flush()
 
 
 def finished_item(*, code: str, name: str, **overrides: Any) -> Item:

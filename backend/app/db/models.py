@@ -8,6 +8,7 @@ from sqlalchemy import (
     Date,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     UniqueConstraint,
@@ -31,7 +32,6 @@ from app.core.config import (
     ITEM_TYPES,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
-    PROCESSES,
     PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
     QC_FAILED,
@@ -40,8 +40,8 @@ from app.core.config import (
     RAW_ITEM,
     SEMI_FINISHED_ITEM,
     STOCK_TYPES,
-    UNITS_OF_MEASURE,
 )
+from app.core import codes
 from app.db.base import Base
 
 
@@ -60,8 +60,6 @@ _ALLOWED_INSPECTION_TYPES_SQL = _sql_value_list(INSPECTION_TYPES)
 _ALLOWED_INSPECTION_RESULTS_SQL = _sql_value_list(INSPECTION_RESULTS)
 _ALLOWED_ITEM_TYPES_SQL = _sql_value_list(ITEM_TYPES)
 _ALLOWED_STOCK_TYPES_SQL = _sql_value_list(STOCK_TYPES)
-_ALLOWED_PROCESSES_SQL = _sql_value_list(PROCESSES)
-_ALLOWED_UNITS_OF_MEASURE_SQL = _sql_value_list(UNITS_OF_MEASURE)
 _ALLOWED_ITEM_PHASES_SQL = _sql_value_list(ITEM_PHASES)
 _ALLOWED_BOM_LEVELS_SQL = ", ".join(str(level) for level in BOM_LEVELS)
 
@@ -206,13 +204,30 @@ class Item(Base):
             name="ck_item_type",
         ),
         CheckConstraint(_ITEM_CODE_PREFIX_SQL, name="ck_item_code_prefix"),
-        CheckConstraint(
-            f"process IS NULL OR process IN ({_ALLOWED_PROCESSES_SQL})",
-            name="ck_item_process",
+        # 공정과 재고 단위는 **공통코드를 가리킨다.** 허용값을 파이썬 상수에서
+        # 구워 CHECK 로 박으면, 늘 수 있다고 선언한 그룹(`value_fixed=False`)이
+        # 실제로는 얼지 않는다 — 운영자가 공통코드에 단위 하나를 더해도 그
+        # 단위를 쓰는 품목은 거부되고, 값을 늘리는 데 파이썬 수정과 마이그레이션이
+        # 함께 필요해진다. 그러면 드롭다운에는 뜨는데 저장은 거부되는 값이 생긴다.
+        #
+        # 그룹 열은 상수다. 복합 외래키가 `(그룹, 코드)` 쌍을 요구하므로 열이
+        # 있어야 하고, 그 값이 다른 그룹으로 새지 않도록 CHECK 로 못박는다.
+        # 확장 표들이 이미 쓰는 방식이다(`_group_reference`).
+        ForeignKeyConstraint(
+            ["process_group", "process"],
+            ["common_codes.group_code", "common_codes.code"],
         ),
         CheckConstraint(
-            f"stock_uom IN ({_ALLOWED_UNITS_OF_MEASURE_SQL})",
-            name="ck_item_stock_uom",
+            f"process_group = '{codes.PROCESS}'",
+            name="ck_item_process_group",
+        ),
+        ForeignKeyConstraint(
+            ["stock_uom_group", "stock_uom"],
+            ["common_codes.group_code", "common_codes.code"],
+        ),
+        CheckConstraint(
+            f"stock_uom_group = '{codes.UOM}'",
+            name="ck_item_stock_uom_group",
         ),
         CheckConstraint(
             f"phase IN ({_ALLOWED_ITEM_PHASES_SQL})",
@@ -242,9 +257,19 @@ class Item(Base):
     # 검사 기준을 끌어오는 라벨(지적 ⑯). 접두가 아니라 명시적인 열이어야
     # 공정이 바뀔 때 품목 코드를 바꾸지 않는다.
     process: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 위 복합 외래키의 왼쪽 절반이다. 데이터가 아니라 **구조**이므로 값은 언제나
+    # `PROCESS` 이고 CHECK 가 그것을 못박는다. 공정이 비어 있는 품목은 짝의 한쪽이
+    # NULL 이라 복합 외래키가 아예 검사하지 않으므로, 이 열이 상수여도 무해하다.
+    # 서버 기본값을 함께 두어 SQL 로 넣는 시드가 이 열을 몰라도 된다.
+    process_group: Mapped[str] = mapped_column(
+        String(20), default=codes.PROCESS, server_default=codes.PROCESS
+    )
     # 재고 단위(지적 ㉛). 모든 수량이 이 단위로 저장된다 — 잔량을 수불의 합으로
     # 내린 이상 합할 수 있으려면 단위가 하나여야 하기 때문이다.
     stock_uom: Mapped[str] = mapped_column(String(10))
+    stock_uom_group: Mapped[str] = mapped_column(
+        String(20), default=codes.UOM, server_default=codes.UOM
+    )
     # 초기 · 양산. 게이트와 지표가 다르다(Ppk 1.67 / Cpk 1.33).
     phase: Mapped[str] = mapped_column(String(10))
     # 사내 프로세스가 정한 유효기간 설정기간(일). 로트의 유효기간은 이 값에서

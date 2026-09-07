@@ -103,8 +103,16 @@ export interface FinishedGoods {
   inspection_pending_stock: number;
   /** 출하검사 불합격 재고(생산창고) */
   rejected_stock: number;
+  /**
+   * 합격했으나 아직 제품창고로 옮겨지지 않은 재고(생산창고).
+   *
+   * 출하할 수 없으니 「출하 가능」이 아니고, 판정은 끝났으니 「검사 대기」도
+   * 「불합격」도 아니다 — 넷 중 어디에 넣어도 화면이 거짓말을 하므로 칸이
+   * 따로 있다. 채워지는 것은 재고이동 요청·처리가 서는 단계부터다.
+   */
+  intake_pending_stock: number;
   expired_stock: number;
-  /** 위 네 수량의 합. 로트를 지우지 않으므로 만료분도 들어 있다. */
+  /** 위 다섯 수량의 합. 로트를 지우지 않으므로 만료분도 들어 있다. */
   total_lot_quantity: number;
 }
 

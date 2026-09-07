@@ -48,20 +48,33 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _run(connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
+    # 부르는 쪽이 연결을 넘겼으면 **그 연결로** 돈다. 주소만 받으면 새 엔진을
+    # 열게 되는데, 그 주소는 부르는 쪽이 실제로 쓰는 데이터베이스가 아닐 수
+    # 있다 — 테스트가 `db.base.engine` 을 메모리 엔진으로 바꿔 두었을 때가
+    # 그렇다. 그때 마이그레이션은 개발자의 진짜 파일을 고친다.
+    given = config.attributes.get("connection")
+    if given is not None:
+        _run(given)
+        return
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=True,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+        _run(connection)
 
 
 if context.is_offline_mode():
