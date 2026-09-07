@@ -36,15 +36,27 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-def create_all() -> None:
-    """등록된 모든 ORM 테이블을 생성한다.
+def register_models() -> None:
+    """모든 ORM 모듈을 불러와 메타데이터를 완전하게 만든다.
 
-    기준정보와 거래 표가 서로 다른 모듈에 있으므로 둘 다 불러와야 메타데이터가
-    완전해진다. 하나만 부르면 그 모듈이 참조하는 외래키의 상대가 없어진다.
+    기준정보와 거래 표가 서로 다른 모듈에 있으므로 둘 다 불러와야 한다. 하나만
+    부르면 메타데이터가 반쪽이 되고, 그 반쪽으로 `drop_all` 을 부르면 **모르는
+    표는 지워지지 않는다** — 다음 `create_all` 은 이미 있는 표를 조용히 건너뛰고,
+    시드는 남아 있던 옛 행과 부딪힌다.
     """
     from app.db import master_data, models  # noqa: F401
 
+
+def create_all() -> None:
+    """등록된 모든 ORM 테이블을 생성한다."""
+    register_models()
     Base.metadata.create_all(bind=engine)
+
+
+def drop_all() -> None:
+    """등록된 모든 ORM 테이블을 지운다."""
+    register_models()
+    Base.metadata.drop_all(bind=engine)
 
 
 def get_session() -> Generator[Session, None, None]:

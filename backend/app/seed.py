@@ -132,7 +132,7 @@ def reset_database(reference_date: date | None = None) -> None:
     seed_value = FIXED_SEED + int(effective_reference_date.strftime("%Y%m%d"))
     rng = random.Random(seed_value)
 
-    db_base.Base.metadata.drop_all(bind=db_base.engine)
+    db_base.drop_all()
     db_base.create_all()
 
     products = [
@@ -196,11 +196,12 @@ def reset_database(reference_date: date | None = None) -> None:
     target_stocks[0] = materials[0].safety_stock + 1.0
 
     with db_base.SessionLocal() as session:
-        # 기준정보가 먼저다. 코드가 없으면 그것을 참조하는 표가 설 수 없다.
-        load_master_data(session)
-
         session.add_all(products + materials)
         session.flush()
+
+        # 기준정보는 품목 **뒤**에 넣는다. 구매 기준정보가 품목을 코드로 찾아
+        # 잇기 때문이다. 품목 자체가 SQL 로 내려가면 이 호출 하나만 남는다.
+        load_master_data(session)
 
         for product_index, product in enumerate(products):
             for material in materials[product_index * 3 : product_index * 3 + 3]:

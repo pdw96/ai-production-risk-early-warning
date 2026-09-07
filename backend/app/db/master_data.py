@@ -396,3 +396,48 @@ class ProcessInspectionStandard(Base):
     # 켜진 것뿐이다 — 두께는 시간이 지나도 두께다.
     time_variant: Mapped[bool] = mapped_column(Boolean, default=False)
     unit: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class SupplierItem(Base):
+    """공급사별 품목 — 구매 기준정보.
+
+    역산의 세 번째 겹이다. 생산 리드타임만으로는 「지금 발주해야 늦지 않는다」를
+    말할 수 없다.
+
+    칸 둘이 지적 ㉛ 때문에 붙는다. 발주는 「25kg 포대 10개」이고 재고는
+    「250kg」이라 구매 단위와 재고 단위가 다른 것이 예외가 아니라 보통이다.
+    단위를 섞어 저장하면 어느 값이 어느 단위인지 나중에 아무도 모르므로, 재고는
+    품목의 재고 단위 하나로만 저장하고 **환산은 여기 경계에서 한 번만** 한다.
+    """
+
+    __tablename__ = "supplier_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["purchase_uom_group", "purchase_uom"],
+            ["common_codes.group_code", "common_codes.code"],
+        ),
+        CheckConstraint(
+            f"purchase_uom_group = '{codes.UOM}'", name="ck_supplier_item_uom_group"
+        ),
+        # 리드타임은 시간으로만 저장한다(지적 ⑬). 공급사의 납기는 날로 오지만
+        # 입력 시점에 일 × 24 로 바꾼다 — 두 단위를 모두 다루는 것보다 경계에서
+        # 한 번 바꾸는 편이 싸다.
+        CheckConstraint(
+            "lead_time_hours >= 0", name="ck_supplier_item_lead_time_hours"
+        ),
+        CheckConstraint(
+            "conversion_factor > 0", name="ck_supplier_item_conversion_factor"
+        ),
+    )
+
+    partner_id: Mapped[int] = mapped_column(
+        ForeignKey("partners.id"), primary_key=True
+    )
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
+    lead_time_hours: Mapped[float] = mapped_column(Float)
+    purchase_uom_group: Mapped[str] = mapped_column(
+        String(20), default=codes.UOM
+    )
+    purchase_uom: Mapped[str] = mapped_column(String(10))
+    # 구매 단위 하나가 재고 단위로 얼마인가. 「25kg 포대」면 25.0 이다.
+    conversion_factor: Mapped[float] = mapped_column(Float, default=1.0)

@@ -6,8 +6,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from sqlalchemy import select
+
 from app.core.config import FINISHED_ITEM, RAW_ITEM
 from app.db import base as db_base
+from app.db.master_data import SupplierItem
 from app.db.models import (
     BomComponent,
     DailyProduction,
@@ -18,6 +21,7 @@ from app.db.models import (
     PurchaseReceipt,
     QualityInspection,
 )
+from app.services.lead_time import HOURS_PER_DAY, days_from_hours
 from app.seed import (
     RECENT_OUTPUT_VARIANCE_CYCLE,
     _recent_output_series,
@@ -492,3 +496,44 @@ def test_reset_database_is_deterministic_for_finished_goods_and_inspections(
     reset_database(reference_date)
 
     assert snapshot() == first
+
+
+def test_every_material_has_a_supplier_with_a_lead_time_in_hours(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """지적 ⑬ — 구매 리드타임은 입력 시점에 일 × 24 로 바뀌어 저장된다.
+
+    저장된 숫자 하나만 보고는 그것이 날인지 시간인지 알 수 없으므로 단위를 섞지
+    않는다. 그리고 자재마다 공급사가 있어야 「지금 발주해야 늦지 않는다」를
+    말할 수 있다 — 역산의 세 번째 겹이다.
+    """
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        supplier_items = session.scalars(select(SupplierItem)).all()
+        materials = session.scalars(
+            select(Item).where(Item.item_type == RAW_ITEM)
+        ).all()
+        stock_uom_by_id = {item.id: item.stock_uom for item in materials}
+
+    assert {row.item_id for row in supplier_items} == set(stock_uom_by_id)
+    for row in supplier_items:
+        # 날 × 24 로 저장했으므로 24의 배수여야 한다.
+        assert row.lead_time_hours > 0
+        assert row.lead_time_hours % HOURS_PER_DAY == 0
+        # 환산 계수가 1이면 구매 단위와 재고 단위가 같아야 한다.
+        if row.conversion_factor == 1.0:
+            assert row.purchase_uom == stock_uom_by_id[row.item_id]
+
+
+def test_the_purchase_lead_time_reads_back_as_whole_days_on_screen(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """저장은 시간이고 날은 화면에서만 쓴다. 되돌려도 어긋나지 않아야 한다."""
+    reset_database(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        hours = session.scalars(select(SupplierItem.lead_time_hours)).all()
+
+    assert hours
+    assert all(days_from_hours(value) == int(days_from_hours(value)) for value in hours)

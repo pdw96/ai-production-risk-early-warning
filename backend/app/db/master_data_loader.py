@@ -13,7 +13,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-MASTER_DATA_SQL = Path(__file__).resolve().parents[1] / "seed_data" / "master_data.sql"
+SEED_DATA_DIRECTORY = Path(__file__).resolve().parents[1] / "seed_data"
+
+# 순서가 있는 목록이다. 뒤 파일이 앞 파일의 행을 코드로 찾아 참조하므로, 이
+# 차례가 곧 의존 관계다. 파일을 하나로 합치지 않는 이유는 그 의존 관계를
+# 파일 이름으로 읽히게 하기 위해서다.
+MASTER_DATA_FILES: tuple[str, ...] = (
+    "01_common_codes.sql",
+    "02_purchase.sql",
+)
 
 
 def statements(sql: str) -> list[str]:
@@ -63,15 +71,25 @@ def statements(sql: str) -> list[str]:
     return [statement for statement in parsed if statement]
 
 
-def load_master_data(session: Session, path: Path | None = None) -> int:
+def load_sql_file(session: Session, path: Path) -> int:
+    """SQL 파일 하나를 문장 단위로 실행하고 실행한 문장 수를 돌려준다."""
+    executed = 0
+    for statement in statements(path.read_text(encoding="utf-8")):
+        session.execute(text(statement))
+        executed += 1
+    return executed
+
+
+def load_master_data(
+    session: Session,
+    file_names: tuple[str, ...] = MASTER_DATA_FILES,
+) -> int:
     """기준정보를 세션에 넣는다. 커밋하지 않는다 — 호출자가 트랜잭션을 쥔다.
 
     시드 전체가 트랜잭션 하나여야 「반쯤 채워진 데이터베이스」라는 상태가 아예
     없어지므로, 여기서 커밋하면 그 보장이 깨진다.
     """
-    sql = (path or MASTER_DATA_SQL).read_text(encoding="utf-8")
-    executed = 0
-    for statement in statements(sql):
-        session.execute(text(statement))
-        executed += 1
-    return executed
+    return sum(
+        load_sql_file(session, SEED_DATA_DIRECTORY / file_name)
+        for file_name in file_names
+    )

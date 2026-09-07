@@ -87,6 +87,7 @@ def test_create_all_builds_every_table_from_both_model_modules(
         "process_inspection_standards",
         "purchase_close_attributes",
         "shift_patterns",
+        "supplier_items",
         "txn_type_attributes",
     }
 
