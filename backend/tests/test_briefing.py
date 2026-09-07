@@ -9,6 +9,7 @@ from datetime import date
 from app.db.models import FinishedGoodsLot, Item, MaterialLot, PurchaseReceipt
 from tests.factories import raw_item
 from app.services.briefing import (
+    _build_finished_goods_response,
     _build_material_response,
     _finished_goods_lot_state,
 )
@@ -266,3 +267,36 @@ def test_a_lot_awaiting_inspection_is_counted_as_pending() -> None:
         )
         == "검사 대기"
     )
+
+
+def test_a_transfer_pending_lot_gets_its_own_quantity() -> None:
+    """넷 중 어디에 넣어도 화면이 거짓말을 하므로 칸을 하나 더 둔다.
+
+    그리고 **다섯의 합은 총량과 같아야 한다** — 빠지면 재고 일부가 화면에서
+    조용히 사라진다.
+    """
+    product = raw_item(code="RM-01", name="자리 채우기용")
+    product.item_type = "완제품"
+    product.code = "FG-01"
+    product.id = 1
+    product.shelf_life_days = None
+    product.finished_goods_lots = [
+        _finished_lot(warehouse="제품창고", qc_status="합격"),
+        _finished_lot(warehouse="생산창고", qc_status="합격"),
+        _finished_lot(warehouse="생산창고", qc_status="검사 대기"),
+        _finished_lot(warehouse="생산창고", qc_status="불합격"),
+    ]
+
+    response = _build_finished_goods_response(product, REFERENCE_DATE)
+
+    assert response.releasable_stock == 100
+    assert response.intake_pending_stock == 100
+    assert response.inspection_pending_stock == 100
+    assert response.rejected_stock == 100
+    assert (
+        response.releasable_stock
+        + response.inspection_pending_stock
+        + response.rejected_stock
+        + response.intake_pending_stock
+        + response.expired_stock
+    ) == response.total_lot_quantity

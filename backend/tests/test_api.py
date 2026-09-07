@@ -546,6 +546,7 @@ def test_finished_goods_expose_stock_by_state_for_every_product(
         "releasable_stock",
         "inspection_pending_stock",
         "rejected_stock",
+        "intake_pending_stock",
         "expired_stock",
         "total_lot_quantity",
     } <= set(products[0])
@@ -559,9 +560,10 @@ def test_finished_goods_expose_stock_by_state_for_every_product(
 def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
     client: TestClient,
 ) -> None:
-    """네 수량은 서로 겹치지 않고 합이 로트 합계와 같아야 한다.
+    """다섯 수량은 서로 겹치지 않고 합이 로트 합계와 같아야 한다.
 
-    겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보인다.
+    겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보이고,
+    빠지면 재고 일부가 화면에서 조용히 사라진다.
     """
     products = client.get("/api/finished-goods").json()["data"]
 
@@ -570,6 +572,7 @@ def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
             product["releasable_stock"]
             + product["inspection_pending_stock"]
             + product["rejected_stock"]
+            + product["intake_pending_stock"]
             + product["expired_stock"]
         )
         assert round(buckets, 2) == product["total_lot_quantity"]

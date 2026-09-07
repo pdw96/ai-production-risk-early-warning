@@ -138,7 +138,7 @@ class MasterDataResponse(BaseModel):
 class FinishedGoodsResponse(BaseModel):
     """제품 한 건의 완제품 재고.
 
-    네 수량은 서로 겹치지 않으며 합이 `total_lot_quantity` 와 같다. 로트를
+    다섯 수량은 서로 겹치지 않으며 합이 `total_lot_quantity` 와 같다. 로트를
     지우지 않으므로(영구 기록) 만료분도 합계에 남는다.
     """
 
@@ -152,6 +152,13 @@ class FinishedGoodsResponse(BaseModel):
     inspection_pending_stock: float
     # OQC 불합격 재고(생산창고)
     rejected_stock: float
+    # 합격했으나 아직 제품창고로 옮겨지지 않은 재고(생산창고).
+    #
+    # 양방향 CHECK 를 단방향 둘로 가르면서(지적 ①) 표현할 수 있게 된 상태다.
+    # 출하할 수 없으니 「출하 가능」이 아니고, 판정은 끝났으니 「검사 대기」도
+    # 「불합격」도 아니다 — 넷 중 어디에 넣어도 화면이 거짓말을 하므로 칸을
+    # 하나 더 둔다. 채워지는 것은 관문 6(재고이동 요청·처리)이 서는 단계부터다.
+    intake_pending_stock: float = 0.0
     expired_stock: float
     total_lot_quantity: float
 

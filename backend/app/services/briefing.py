@@ -563,6 +563,7 @@ def _build_finished_goods_response(
         releasable_stock=round(quantity_by_state["출하 가능"], 2),
         inspection_pending_stock=round(quantity_by_state["검사 대기"], 2),
         rejected_stock=round(quantity_by_state["불합격"], 2),
+        intake_pending_stock=round(quantity_by_state["입고 대기"], 2),
         expired_stock=round(quantity_by_state["만료"], 2),
         total_lot_quantity=round(sum(lot.quantity for lot in lots), 2),
     )

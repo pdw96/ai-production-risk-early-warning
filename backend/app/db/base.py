@@ -2,7 +2,7 @@ import sqlite3
 from collections.abc import Generator
 from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -59,9 +59,21 @@ def create_all() -> None:
 
 
 def drop_all() -> None:
-    """등록된 모든 ORM 테이블을 지운다."""
+    """데이터베이스에 **실제로 있는** 표를 전부 지운다.
+
+    모델 메타데이터만 보고 지우면 **이름이 바뀐 옛 표가 살아남는다.** 품목 통합
+    전의 `products` · `materials` · `bom_requirements` 를 가진 데이터베이스에서
+    이 함수를 부르면 지금 메타데이터는 그 이름들을 모르므로 건드리지 않고,
+    새 표가 그 옆에 생긴다. 그리고 시드가 현재 리비전을 찍어 두므로
+    **Alembic 도 영영 치우지 못한다** — 옛 데이터를 든 표가 그대로 굳는다.
+
+    그래서 메타데이터가 아니라 **데이터베이스를 읽어** 지운다. `alembic_version`
+    도 함께 사라지며, 시드가 곧바로 다시 찍는다.
+    """
     register_models()
-    Base.metadata.drop_all(bind=engine)
+    existing = MetaData()
+    existing.reflect(bind=engine)
+    existing.drop_all(bind=engine)
 
 
 def get_session() -> Generator[Session, None, None]:

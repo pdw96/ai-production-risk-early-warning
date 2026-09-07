@@ -691,3 +691,38 @@ def test_the_reset_path_leaves_the_database_under_alembic_control(
     config.set_main_option("sqlalchemy.url", url)
     head = ScriptDirectory.from_config(config).get_current_head()
     assert stamped == head
+
+
+def test_the_reset_path_removes_tables_the_models_no_longer_know(
+    tmp_path, monkeypatch
+) -> None:
+    """이름이 바뀐 옛 표는 메타데이터가 모르므로 살아남는다.
+
+    품목 통합 전의 `products` 를 가진 데이터베이스에서 시드를 돌리면 새 표가
+    그 옆에 생기고, 시드가 현재 리비전을 찍어 두므로 **Alembic 도 영영 치우지
+    못한다** — 옛 데이터를 든 표가 그대로 굳는다.
+    """
+    database_path = tmp_path / "legacy.db"
+    url = f"sqlite:///{database_path.as_posix()}"
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE bom_requirements (id INTEGER PRIMARY KEY)"))
+
+    monkeypatch.setattr(db_base, "engine", engine)
+    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
+    monkeypatch.setattr(seed_module, "DATABASE_URL", url)
+
+    seed_module.reset_database()
+
+    with engine.connect() as connection:
+        remaining = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+        }
+
+    assert "products" not in remaining
+    assert "bom_requirements" not in remaining
+    assert "items" in remaining
