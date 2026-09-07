@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import FINISHED_ITEM, RAW_ITEM
 from app.db import base as db_base
@@ -22,10 +22,12 @@ from app.db.models import (
     QualityInspection,
 )
 from app.services.lead_time import HOURS_PER_DAY, days_from_hours
+from app import seed as seed_module
 from app.seed import (
     RECENT_OUTPUT_VARIANCE_CYCLE,
     _recent_output_series,
     reset_database,
+    seed_if_empty,
 )
 from app.services.briefing import get_master_data, list_materials
 from app.services.order_risk import calculate_order_risk
@@ -537,3 +539,85 @@ def test_the_purchase_lead_time_reads_back_as_whole_days_on_screen(
 
     assert hours
     assert all(days_from_hours(value) == int(days_from_hours(value)) for value in hours)
+
+
+def test_seeding_only_happens_when_the_item_table_is_empty(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """시드 판단의 셋째 조건.
+
+    「표가 있는가」는 아무것도 말해 주지 않는다 — 마이그레이션이 항상 만들어
+    두기 때문이다. 물어야 할 것은 내용의 유무이고, 그 표식은 품목 표다:
+    가장 먼저 채워지고 마지막까지 남는 표이기 때문이다.
+    """
+    db_base.drop_all()
+    db_base.create_all()
+
+    assert seed_if_empty(date(2026, 8, 31)) is True
+    # 두 번째 기동은 아무것도 하지 않는다. 하면 사람이 넣은 데이터가 지워진다.
+    assert seed_if_empty(date(2026, 8, 31)) is False
+
+    with seeded_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Item)) == 20
+
+
+def test_a_failed_seed_leaves_nothing_behind(
+    monkeypatch: pytest.MonkeyPatch,
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """전체가 트랜잭션 하나다 — 「반쯤 채워짐」이라는 상태가 아예 없어야 한다.
+
+    SQLite 라면 파일을 지우고 처음으로 돌아갈 수 있지만 PostgreSQL 에는 지울
+    파일이 없다. 반쯤 채워진 데이터베이스는 「비어 있지 않다」로 판정되어 다시는
+    시드되지 않고 고장난 채로 굳는다.
+    """
+    db_base.drop_all()
+    db_base.create_all()
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("시드 도중 실패")
+
+    intact = seed_module._seed_finished_goods_lots
+    monkeypatch.setattr(seed_module, "_seed_finished_goods_lots", explode)
+    with pytest.raises(RuntimeError):
+        seed_if_empty(date(2026, 8, 31))
+
+    with seeded_session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Item)) == 0
+
+    # 되돌아갔으므로 다음 기동이 다시 시도할 수 있다. 이 하나만 되돌린다 —
+    # monkeypatch.undo() 는 픽스처가 갈아 끼운 엔진까지 되돌려, 시험이 임시
+    # 데이터베이스가 아니라 진짜 파일을 보게 만든다.
+    monkeypatch.setattr(seed_module, "_seed_finished_goods_lots", intact)
+    assert seed_if_empty(date(2026, 8, 31)) is True
+
+
+def test_the_master_data_comes_from_sql_and_the_scenario_from_python(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """경계는 한 줄이다 — 「오늘」이 안 나오면 SQL, 나오면 파이썬.
+
+    그래서 기준일을 바꿔도 기준정보는 한 글자도 달라지지 않고, 시나리오만
+    통째로 움직인다. 난수가 안전재고를 흔들던 동안에는 어제 본 화면과 오늘 본
+    화면의 숫자가 달라도 「왜 달라졌나」를 물을 수 없었다.
+    """
+    reset_database(date(2026, 8, 31))
+    with seeded_session_factory() as session:
+        first_master = sorted(
+            (item.code, item.safety_stock, item.shelf_life_days, item.stock_uom)
+            for item in session.scalars(select(Item)).all()
+        )
+        first_orders = session.scalar(select(func.count()).select_from(Order))
+
+    reset_database(date(2026, 9, 20))
+    with seeded_session_factory() as session:
+        second_master = sorted(
+            (item.code, item.safety_stock, item.shelf_life_days, item.stock_uom)
+            for item in session.scalars(select(Item)).all()
+        )
+        second_order_numbers = session.scalars(select(Order.order_number)).all()
+
+    assert first_master == second_master
+    assert first_orders == len(second_order_numbers)
+    # 오더 번호에는 기준일이 박혀 있다 — 시나리오는 움직였다.
+    assert all(number.startswith("MO-20260920-") for number in second_order_numbers)

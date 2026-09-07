@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import random
+import sys
 from collections import defaultdict
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.core.config import (
     DEFECTIVE_STOCK,
+    is_sqlite,
     FINISHED_ITEM,
     GOOD_STOCK,
     INCOMING_INSPECTION,
@@ -27,7 +29,6 @@ from app.core.config import (
 from app.db import base as db_base
 from app.db.master_data_loader import load_master_data
 from app.db.models import (
-    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
     Item,
@@ -127,256 +128,252 @@ def initialize_sample_database(reference_date: date | None = None) -> None:
 
 
 def reset_database(reference_date: date | None = None) -> None:
-    """기준일에 상대적인 가상 소재 공장 데이터를 SQLite에 다시 생성한다."""
-    effective_reference_date = reference_date or date.today()
-    seed_value = FIXED_SEED + int(effective_reference_date.strftime("%Y%m%d"))
-    rng = random.Random(seed_value)
+    """표를 지우고 다시 만든 뒤 시드를 넣는다 — 개발과 테스트의 길이다.
 
+    컨테이너 기동은 이 길로 오지 않는다. 거기서는 마이그레이션이 표를 맞추고
+    `seed_if_empty` 가 내용을 본다 — 표를 지우는 것과 채우는 것은 다른 일이며,
+    운영에서 지우는 쪽이 도는 것은 사고다.
+    """
     db_base.drop_all()
     db_base.create_all()
 
-    products = [
-        Item(
-            code=f"FG-{index:02d}",
-            name=name,
-            item_type=FINISHED_ITEM,
-            # 완제품은 적층·경화 공정에서 나온다. 공정이 검사 항목을 고르는
-            # 라벨이므로 품목마다 명시한다(지적 ⑯).
-            process=LAMINATING_PROCESS,
-            stock_uom="EA",
-            phase=MASS_PRODUCTION_PHASE,
-            shelf_life_days=PRODUCT_SHELF_LIFE_DAYS[index - 1],
-            # 완제품 안전재고 칸은 통합으로 **생겼을 뿐** 아직 정한 사람이 없다.
-            # 없는 값을 지어내면 화면이 있는 것처럼 보인다.
-            safety_stock=None,
-            setup_hours=PRODUCT_SETUP_HOURS[index - 1],
-            hours_per_unit=PRODUCT_HOURS_PER_UNIT[index - 1],
-        )
-        for index, name in enumerate(
-            ("아크솔 시트", "노바필름", "루멘코트", "벨로스랩", "테라패널"),
-            start=1,
-        )
-    ]
-    materials = [
-        Item(
-            code=f"RM-{index:02d}",
-            name=name,
-            item_type=RAW_ITEM,
-            # 자재는 수입검사 공정에서 기준을 끌어온다.
-            process=INCOMING_PROCESS,
-            stock_uom=MATERIAL_STOCK_UOMS[index - 1],
-            phase=MASS_PRODUCTION_PHASE,
-            shelf_life_days=MATERIAL_SHELF_LIFE_DAYS[index - 1],
-            safety_stock=float(rng.randrange(180, 361)),
-        )
-        for index, name in enumerate(
-            (
-                "폴리머 베이스",
-                "세라믹 분말",
-                "광학 안료",
-                "보강 섬유",
-                "접착 수지",
-                "방열 첨가제",
-                "차단 필름",
-                "표면 코팅제",
-                "미세 충전재",
-                "유연 가소제",
-                "보호 라이너",
-                "안정화 첨가제",
-                "전도성 페이스트",
-                "기능성 염료",
-                "포장 라미네이트",
-            ),
-            start=1,
-        )
-    ]
-    # 로트 합계가 곧 가용 재고다(Material 에는 재고 컬럼이 없다).
+    with db_base.SessionLocal() as session:
+        _populate(session, reference_date or date.today())
+        session.commit()
+
+
+def seed_if_empty(reference_date: date | None = None) -> bool:
+    """비어 있을 때만 시드하고, 넣었는지를 돌려준다.
+
+    시드 판단의 세 조건 중 **셋째**다. 첫째(마이그레이션)와 둘째(스위치)는
+    기동 스크립트가 본다.
+
+    「표가 있는가」는 아무것도 말해 주지 않는다 — 마이그레이션이 항상 만들어
+    두기 때문이다. 물어야 할 것은 **내용의 유무**이고, 그 표식으로 품목 표를
+    쓴다. 가장 먼저 채워지고 마지막까지 남는 표이기 때문이다. 생산실적이나
+    출하실적 같은 거래 표는 비어 있는 것이 정상 상태라 판단 기준이 될 수 없다.
+
+    전체가 트랜잭션 하나다. 중간에 실패하면 아무것도 들어가지 않은 상태로
+    되돌아가고 다음 기동에서 다시 시도된다 — 「반쯤 채워짐」이라는 상태 자체가
+    없어진다. 파일을 지우고 다시 시작하는 탈출구가 PostgreSQL 에는 없으므로,
+    그 상태를 만들지 않는 것이 유일한 방어다.
+    """
+    with db_base.SessionLocal() as session:
+        _lock_for_seeding(session)
+        if session.scalar(select(func.count()).select_from(Item)):
+            return False
+        _populate(session, reference_date or date.today())
+        session.commit()
+        return True
+
+
+def _lock_for_seeding(session) -> None:
+    """시드 구간에 잠금을 하나 건다.
+
+    컨테이너가 둘 이상 동시에 뜨면 둘 다 「비어 있다」를 보고 둘 다 시드한다.
+    이것은 PostgreSQL 이라서 생기는 문제다 — 파일 하나였을 때는 없던 일이다.
+    트랜잭션 잠금이라 커밋이나 롤백에서 저절로 풀린다.
+    """
+    if is_sqlite():
+        # 파일 하나를 쓰는 동안 다른 쓰기는 어차피 줄을 선다.
+        return
+    session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": FIXED_SEED})
+
+
+def _populate(session, effective_reference_date: date) -> None:
+    """기준일에 상대적인 가상 소재 공장 데이터를 만든다.
+
+    기준정보는 SQL 파일에서 오고 시나리오만 여기서 만든다. 경계는 한 줄이다 —
+    「오늘」이 안 나오면 SQL, 나오면 파이썬이다.
+    """
+    seed_value = FIXED_SEED + int(effective_reference_date.strftime("%Y%m%d"))
+    rng = random.Random(seed_value)
+
+    load_master_data(session)
+    session.flush()
+
+    products = list(
+        session.scalars(
+            select(Item).where(Item.item_type == FINISHED_ITEM).order_by(Item.code)
+        ).all()
+    )
+    materials = list(
+        session.scalars(
+            select(Item).where(Item.item_type == RAW_ITEM).order_by(Item.code)
+        ).all()
+    )
+    if not products or not materials:
+        raise RuntimeError("기준정보 SQL 이 품목을 만들지 못했습니다.")
+
+    # 로트 합계가 곧 가용 재고다(품목에는 재고 컬럼이 없다).
     target_stocks = [float(rng.randrange(700, 1_401)) for _ in materials]
     # RM-01 은 안전재고를 겨우 넘긴 상태로 고정해 부족 시나리오를 보장한다.
     target_stocks[0] = materials[0].safety_stock + 1.0
 
-    with db_base.SessionLocal() as session:
-        session.add_all(products + materials)
-        session.flush()
+    for material_index, material in enumerate(materials):
+        scheduled_offset = rng.randrange(14)
+        if material_index in (0, EXPIRY_SHORTAGE_MATERIAL_INDEX):
+            # 예정 입고가 일찍 도착하면 부족 시나리오가 지워지므로 뒤로 민다.
+            scheduled_offset = 13
+        scheduled_date = effective_reference_date + timedelta(days=scheduled_offset)
+        session.add(
+            PurchaseReceipt(
+                item=material,
+                scheduled_date=scheduled_date,
+                scheduled_quantity=float(rng.randrange(180, 521)),
+                # 도착분도 로트가 되므로 유효기간을 갖는다. 도착일에 자재의
+                # 설정기간을 더해 파생하며, 무기한 자재면 유효기간이 없다.
+                expiry_date=_expiry_date(material.shelf_life_days, scheduled_date),
+            )
+        )
 
-        # 기준정보는 품목 **뒤**에 넣는다. 구매 기준정보가 품목을 코드로 찾아
-        # 잇기 때문이다. 품목 자체가 SQL 로 내려가면 이 호출 하나만 남는다.
-        load_master_data(session)
+    _seed_material_lots(session, materials, target_stocks, effective_reference_date, rng)
 
-        for product_index, product in enumerate(products):
-            for material in materials[product_index * 3 : product_index * 3 + 3]:
+    # PQC 는 (오더 × 실적일) 을 고정 주기로 표본검사한다. 전수 검사로 두면
+    # 900건이 넘어 화면에서 읽을 수 없고, 공정검사는 원래 표본검사다.
+    pqc_sample_index = 0
+
+    for order_index in range(30):
+        risk_pattern = order_index % 3
+        historical_output = [float(rng.randrange(14, 23)) for _ in range(23)]
+        recent_daily_output = float(rng.randrange(8, 16))
+        historical_output.extend(_recent_output_series(recent_daily_output))
+        completed_quantity = sum(historical_output)
+
+        if risk_pattern == 0:
+            remaining_quantity = recent_daily_output * float(rng.randrange(8, 11))
+            due_date = effective_reference_date + timedelta(days=5)
+        elif risk_pattern == 1:
+            remaining_quantity = recent_daily_output
+            due_date = effective_reference_date + timedelta(days=1)
+        else:
+            remaining_quantity = recent_daily_output * 2
+            due_date = effective_reference_date + timedelta(days=rng.randrange(5, 10))
+
+        order = Order(
+            order_number=f"MO-{effective_reference_date:%Y%m%d}-{order_index + 1:03d}",
+            item=products[order_index % len(products)],
+            due_date=due_date,
+            planned_quantity=completed_quantity + remaining_quantity,
+        )
+        session.add(order)
+
+        for day_offset, actual_quantity in enumerate(historical_output, start=-29):
+            variance = PLAN_VARIANCE_CYCLE[day_offset % len(PLAN_VARIANCE_CYCLE)]
+            work_date = effective_reference_date + timedelta(days=day_offset)
+            production = DailyProduction(
+                order=order,
+                work_date=work_date,
+                planned_quantity=round(actual_quantity * variance, 2),
+                actual_quantity=actual_quantity,
+            )
+            session.add(production)
+
+            if (order_index + day_offset) % PQC_SAMPLE_CYCLE == 0:
+                failed = pqc_sample_index % PQC_FAIL_CYCLE == 0
                 session.add(
-                    BomComponent(
-                        parent_item=product,
-                        child_item=material,
-                        # 반제품이 없는 동안 BOM 은 완제품 ← 원자재 한 단이다.
-                        # 반제품 오더가 생기는 5단계에서 이 줄이 두 단으로 갈린다.
-                        level=1,
-                        unit_quantity=round(rng.uniform(0.8, 2.4), 2),
+                    QualityInspection(
+                        inspection_type=PROCESS_INSPECTION,
+                        inspected_date=work_date,
+                        result=QC_FAILED if failed else QC_PASSED,
+                        reason=(
+                            PQC_FAIL_REASONS[
+                                pqc_sample_index % len(PQC_FAIL_REASONS)
+                            ]
+                            if failed
+                            else None
+                        ),
+                        daily_production=production,
                     )
                 )
-
-        for material_index, material in enumerate(materials):
-            scheduled_offset = rng.randrange(14)
-            if material_index in (0, EXPIRY_SHORTAGE_MATERIAL_INDEX):
-                # 예정 입고가 일찍 도착하면 부족 시나리오가 지워지므로 뒤로 민다.
-                scheduled_offset = 13
-            scheduled_date = effective_reference_date + timedelta(days=scheduled_offset)
+                pqc_sample_index += 1
+        for day_offset in range(1, 15):
             session.add(
-                PurchaseReceipt(
-                    item=material,
-                    scheduled_date=scheduled_date,
-                    scheduled_quantity=float(rng.randrange(180, 521)),
-                    # 도착분도 로트가 되므로 유효기간을 갖는다. 도착일에 자재의
-                    # 설정기간을 더해 파생하며, 무기한 자재면 유효기간이 없다.
-                    expiry_date=_expiry_date(material.shelf_life_days, scheduled_date),
-                )
-            )
-
-        _seed_material_lots(session, materials, target_stocks, effective_reference_date, rng)
-
-        # PQC 는 (오더 × 실적일) 을 고정 주기로 표본검사한다. 전수 검사로 두면
-        # 900건이 넘어 화면에서 읽을 수 없고, 공정검사는 원래 표본검사다.
-        pqc_sample_index = 0
-
-        for order_index in range(30):
-            risk_pattern = order_index % 3
-            historical_output = [float(rng.randrange(14, 23)) for _ in range(23)]
-            recent_daily_output = float(rng.randrange(8, 16))
-            historical_output.extend(_recent_output_series(recent_daily_output))
-            completed_quantity = sum(historical_output)
-
-            if risk_pattern == 0:
-                remaining_quantity = recent_daily_output * float(rng.randrange(8, 11))
-                due_date = effective_reference_date + timedelta(days=5)
-            elif risk_pattern == 1:
-                remaining_quantity = recent_daily_output
-                due_date = effective_reference_date + timedelta(days=1)
-            else:
-                remaining_quantity = recent_daily_output * 2
-                due_date = effective_reference_date + timedelta(days=rng.randrange(5, 10))
-
-            order = Order(
-                order_number=f"MO-{effective_reference_date:%Y%m%d}-{order_index + 1:03d}",
-                item=products[order_index % len(products)],
-                due_date=due_date,
-                planned_quantity=completed_quantity + remaining_quantity,
-            )
-            session.add(order)
-
-            for day_offset, actual_quantity in enumerate(historical_output, start=-29):
-                variance = PLAN_VARIANCE_CYCLE[day_offset % len(PLAN_VARIANCE_CYCLE)]
-                work_date = effective_reference_date + timedelta(days=day_offset)
-                production = DailyProduction(
+                DailyProduction(
                     order=order,
-                    work_date=work_date,
-                    planned_quantity=round(actual_quantity * variance, 2),
-                    actual_quantity=actual_quantity,
+                    work_date=effective_reference_date + timedelta(days=day_offset),
+                    planned_quantity=remaining_quantity / 14,
+                    actual_quantity=0.0,
                 )
-                session.add(production)
-
-                if (order_index + day_offset) % PQC_SAMPLE_CYCLE == 0:
-                    failed = pqc_sample_index % PQC_FAIL_CYCLE == 0
-                    session.add(
-                        QualityInspection(
-                            inspection_type=PROCESS_INSPECTION,
-                            inspected_date=work_date,
-                            result=QC_FAILED if failed else QC_PASSED,
-                            reason=(
-                                PQC_FAIL_REASONS[
-                                    pqc_sample_index % len(PQC_FAIL_REASONS)
-                                ]
-                                if failed
-                                else None
-                            ),
-                            daily_production=production,
-                        )
-                    )
-                    pqc_sample_index += 1
-            for day_offset in range(1, 15):
-                session.add(
-                    DailyProduction(
-                        order=order,
-                        work_date=effective_reference_date + timedelta(days=day_offset),
-                        planned_quantity=remaining_quantity / 14,
-                        actual_quantity=0.0,
-                    )
-                )
-
-        session.commit()
-
-        _seed_finished_goods_lots(session, products, effective_reference_date)
-        session.commit()
-
-        severities = set()
-        for order in session.query(Order).all():
-            completed_quantity = sum(
-                production.actual_quantity
-                for production in order.daily_productions
-                if production.work_date <= effective_reference_date
-            )
-            recent_output = sum(
-                production.actual_quantity
-                for production in order.daily_productions
-                if effective_reference_date - timedelta(days=6)
-                <= production.work_date
-                <= effective_reference_date
-            ) / 7
-            severities.add(
-                calculate_order_risk(
-                    planned_quantity=order.planned_quantity,
-                    actual_quantity=completed_quantity,
-                    average_daily_output=recent_output,
-                    due_date=order.due_date,
-                    reference_date=effective_reference_date,
-                ).severity
             )
 
-        if severities != {"정상", "주의", "위험"}:
-            raise RuntimeError("합성 데이터가 정상·주의·위험 납기 상태를 모두 만들지 못했습니다.")
+    # 전체가 트랜잭션 하나여야 하므로 중간에 커밋하지 않는다. flush 는 뒤
+    # 단계가 방금 넣은 행을 조회로 볼 수 있게만 해 준다 — 「반쯤 채워짐」이라는
+    # 상태가 아예 생기지 않는 것이 요점이다.
+    session.flush()
 
-        if not any(
-            material.expiring_quantity > 0 and material.shortage_expected
-            for material in list_materials(session)
-        ):
-            raise RuntimeError("합성 데이터가 유효기간 폐기로 부족해지는 자재를 만들지 못했습니다.")
+    _seed_finished_goods_lots(session, products, effective_reference_date)
+    session.flush()
 
-        finished_goods_lots = session.query(FinishedGoodsLot).all()
-        if not finished_goods_lots:
-            raise RuntimeError("합성 데이터가 완제품 로트를 만들지 못했습니다.")
-        if {lot.qc_status for lot in finished_goods_lots} != {
-            QC_PENDING,
-            QC_PASSED,
-            QC_FAILED,
-        }:
-            raise RuntimeError("합성 데이터가 OQC 세 상태를 모두 만들지 못했습니다.")
-        if not any(
-            lot.expiry_date is not None and lot.expiry_date <= effective_reference_date
-            for lot in finished_goods_lots
-        ):
-            raise RuntimeError("합성 데이터가 만료된 완제품 로트를 만들지 못했습니다.")
-        if not any(
-            lot.passed_date is not None and lot.expiry_date is None
-            for lot in finished_goods_lots
-        ):
-            raise RuntimeError("합성 데이터가 무기한 완제품 로트를 만들지 못했습니다.")
-        if not any(lot.stock_type == DEFECTIVE_STOCK for lot in finished_goods_lots):
-            raise RuntimeError("합성 데이터가 불량품 재고를 만들지 못했습니다.")
+    severities = set()
+    for order in session.query(Order).all():
+        completed_quantity = sum(
+            production.actual_quantity
+            for production in order.daily_productions
+            if production.work_date <= effective_reference_date
+        )
+        recent_output = sum(
+            production.actual_quantity
+            for production in order.daily_productions
+            if effective_reference_date - timedelta(days=6)
+            <= production.work_date
+            <= effective_reference_date
+        ) / 7
+        severities.add(
+            calculate_order_risk(
+                planned_quantity=order.planned_quantity,
+                actual_quantity=completed_quantity,
+                average_daily_output=recent_output,
+                due_date=order.due_date,
+                reference_date=effective_reference_date,
+            ).severity
+        )
 
-        inspection_types = {
-            inspection.inspection_type
-            for inspection in session.query(QualityInspection).all()
-        }
-        if inspection_types != {INCOMING_INSPECTION, PROCESS_INSPECTION, OUTGOING_INSPECTION}:
-            raise RuntimeError("합성 데이터가 IQC·PQC·OQC 기록을 모두 만들지 못했습니다.")
+    if severities != {"정상", "주의", "위험"}:
+        raise RuntimeError("합성 데이터가 정상·주의·위험 납기 상태를 모두 만들지 못했습니다.")
 
-        warehouses_by_lot_number: defaultdict[str, set[str]] = defaultdict(set)
-        for lot in session.query(MaterialLot).all():
-            warehouses_by_lot_number[lot.lot_number].add(lot.warehouse)
-        if not any(
-            len(warehouses) > 1 for warehouses in warehouses_by_lot_number.values()
-        ):
-            raise RuntimeError("합성 데이터가 두 창고에 나뉜 로트를 만들지 못했습니다.")
+    if not any(
+        material.expiring_quantity > 0 and material.shortage_expected
+        for material in list_materials(session)
+    ):
+        raise RuntimeError("합성 데이터가 유효기간 폐기로 부족해지는 자재를 만들지 못했습니다.")
+
+    finished_goods_lots = session.query(FinishedGoodsLot).all()
+    if not finished_goods_lots:
+        raise RuntimeError("합성 데이터가 완제품 로트를 만들지 못했습니다.")
+    if {lot.qc_status for lot in finished_goods_lots} != {
+        QC_PENDING,
+        QC_PASSED,
+        QC_FAILED,
+    }:
+        raise RuntimeError("합성 데이터가 OQC 세 상태를 모두 만들지 못했습니다.")
+    if not any(
+        lot.expiry_date is not None and lot.expiry_date <= effective_reference_date
+        for lot in finished_goods_lots
+    ):
+        raise RuntimeError("합성 데이터가 만료된 완제품 로트를 만들지 못했습니다.")
+    if not any(
+        lot.passed_date is not None and lot.expiry_date is None
+        for lot in finished_goods_lots
+    ):
+        raise RuntimeError("합성 데이터가 무기한 완제품 로트를 만들지 못했습니다.")
+    if not any(lot.stock_type == DEFECTIVE_STOCK for lot in finished_goods_lots):
+        raise RuntimeError("합성 데이터가 불량품 재고를 만들지 못했습니다.")
+
+    inspection_types = {
+        inspection.inspection_type
+        for inspection in session.query(QualityInspection).all()
+    }
+    if inspection_types != {INCOMING_INSPECTION, PROCESS_INSPECTION, OUTGOING_INSPECTION}:
+        raise RuntimeError("합성 데이터가 IQC·PQC·OQC 기록을 모두 만들지 못했습니다.")
+
+    warehouses_by_lot_number: defaultdict[str, set[str]] = defaultdict(set)
+    for lot in session.query(MaterialLot).all():
+        warehouses_by_lot_number[lot.lot_number].add(lot.warehouse)
+    if not any(
+        len(warehouses) > 1 for warehouses in warehouses_by_lot_number.values()
+    ):
+        raise RuntimeError("합성 데이터가 두 창고에 나뉜 로트를 만들지 못했습니다.")
 
 
 def _expiry_date(shelf_life_days: int | None, start_date: date) -> date | None:
@@ -627,5 +624,22 @@ def _split_first_lot_across_warehouses(entries: list[dict]) -> list[dict]:
     ]
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
+    """두 길을 가른다 — 표를 지우고 다시 만드는 길과, 비었을 때만 채우는 길.
+
+    기동 스크립트는 `--if-empty` 로 부른다. 인자 없이 부르면 표를 지우므로
+    개발과 테스트에서만 쓴다.
+    """
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--if-empty" in arguments:
+        if seed_if_empty():
+            print("합성 샘플 데이터를 넣었습니다.")
+        else:
+            print("품목 표에 이미 내용이 있어 시드를 건너뜁니다.")
+        return
     initialize_sample_database()
+    print("표를 다시 만들고 합성 샘플 데이터를 넣었습니다.")
+
+
+if __name__ == "__main__":
+    main()

@@ -20,7 +20,8 @@ SEED_DATA_DIRECTORY = Path(__file__).resolve().parents[1] / "seed_data"
 # 파일 이름으로 읽히게 하기 위해서다.
 MASTER_DATA_FILES: tuple[str, ...] = (
     "01_common_codes.sql",
-    "02_purchase.sql",
+    "02_items.sql",
+    "03_purchase.sql",
 )
 
 
