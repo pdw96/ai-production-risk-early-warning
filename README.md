@@ -215,6 +215,8 @@ npm run dev
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env   # compose 가 자동으로 읽는다
 ```
 
+이 값은 접속 주소에 그대로 끼워 넣으므로 **URL 에 안전한 문자만** 써야 합니다 — `/` `#` `?` `@` `%` 가 들어가면 주소가 깨져 마이그레이션이 접속하지 못합니다. 위 `openssl rand -hex` 는 16진수만 내므로 이 조건을 만족합니다. 그 밖의 문자를 꼭 써야 하면 `DATABASE_URL` 을 직접 정하면 되고, 그때는 그 값이 우선합니다.
+
 ### 로컬 PC·서버
 
 ```bash

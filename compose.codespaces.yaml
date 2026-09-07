@@ -27,7 +27,9 @@ services:
     build: ./backend
     environment:
       # host 네트워크에서는 데이터베이스도 같은 네임스페이스의 127.0.0.1 이다.
-      DATABASE_URL: postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@127.0.0.1:5432/production_risk
+      # 비밀번호가 주소에 들어가므로 URL 에 안전한 문자만 쓴다. 그 밖의 문자가
+      # 필요하면 DATABASE_URL 을 직접 준다 — 그쪽이 이긴다.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@127.0.0.1:5432/production_risk}
       SEED_SAMPLE_DATA: "1"
     depends_on:
       database:

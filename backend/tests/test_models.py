@@ -710,3 +710,35 @@ def test_overlapping_item_code_prefixes_are_rejected() -> None:
 
 def test_the_current_prefixes_do_not_overlap() -> None:
     _reject_overlapping_prefixes(ITEM_CODE_PREFIXES)
+
+
+def test_expiry_cannot_precede_the_pass_date(session: Session) -> None:
+    """시계는 합격일에서 시작한다 — 유효기간이 그보다 앞설 수 없다.
+
+    뒤집힌 줄은 날짜 제약 셋을 모두 만족하면서 화면에서는 곧바로 「만료」로
+    그려진다: 합격하자마자 만료된 로트다.
+    """
+    product = finished_item(code="FG-95", name="가상 제품 O")
+    session.add(
+        _finished_goods_lot(
+            product,
+            produced_date=date(2026, 9, 1),
+            passed_date=date(2026, 9, 7),
+            expiry_date=date(2026, 9, 1),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_the_prefix_check_is_case_sensitive_on_this_engine(session: Session) -> None:
+    """SQLite 의 `LIKE` 는 ASCII 대소문자를 가리지 않고 PostgreSQL 은 가린다.
+
+    `LIKE` 로 적으면 `fg-01` 이 개발·테스트에서는 통과하고 운영에서 거부된다 —
+    두 엔진에서 제약이 같은 뜻이어야 한다는 목표가 그 자리에서 깨진다.
+    """
+    session.add(finished_item(code="fg-99", name="소문자 코드"))
+
+    with pytest.raises(IntegrityError):
+        session.commit()

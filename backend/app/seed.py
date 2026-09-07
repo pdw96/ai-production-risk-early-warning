@@ -5,9 +5,13 @@ import sys
 from collections import defaultdict
 from datetime import date, timedelta
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import func, select, text
 
 from app.core.config import (
+    BACKEND_DIRECTORY,
+    DATABASE_URL,
     DEFECTIVE_STOCK,
     is_sqlite,
     FINISHED_ITEM,
@@ -107,10 +111,25 @@ def reset_database(reference_date: date | None = None) -> None:
     """
     db_base.drop_all()
     db_base.create_all()
+    _stamp_at_head()
 
     with db_base.SessionLocal() as session:
         _populate(session, reference_date or date.today())
         session.commit()
+
+
+def _stamp_at_head() -> None:
+    """다시 만든 표에 현재 리비전을 찍는다.
+
+    `create_all` 은 표만 만들고 `alembic_version` 을 남기지 않는다. 그대로 두면
+    이 데이터베이스는 **버전 없는 것**으로 보이고, README 가 함께 안내하는
+    `alembic upgrade head` 가 초기 마이그레이션을 처음부터 돌리려다 이미 있는
+    표에서 터진다. 두 길이 같은 데이터베이스를 가리키는 이상 한쪽이 다른 쪽을
+    못 쓰게 만들면 안 된다.
+    """
+    config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
+    command.stamp(config, "head")
 
 
 def seed_if_empty(reference_date: date | None = None) -> bool:

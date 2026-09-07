@@ -91,8 +91,14 @@ _reject_overlapping_prefixes(ITEM_CODE_PREFIXES)
 # 접두는 유형과 유일성만 맡는다(지적 ⑯). 유형과 접두는 정의상 서로를 결정하므로
 # 양방향으로 건다 — 창고와 검사 결과처럼 나중에 갈라질 수 있는 두 사실이 아니라,
 # 접두가 곧 유형의 표기이기 때문이다.
+# `LIKE` 를 쓰지 않는다. SQLite 의 `LIKE` 는 ASCII 에 대해 **대소문자를 가리지
+# 않고** PostgreSQL 의 `LIKE` 는 가린다 — `code = 'fg-01'` 인 완제품이 개발과
+# 테스트(SQLite)는 통과하고 운영(PostgreSQL)에서 거부된다. 두 엔진에서 제약이
+# 같은 뜻이어야 한다는 것이 이 저장소가 엔진을 옮긴 이유 중 하나이므로,
+# 대소문자를 가리는 `substr` 비교로 적는다.
 _ITEM_CODE_PREFIX_SQL = " AND ".join(
-    f"((item_type = '{item_type}') = (code LIKE '{prefix}%'))"
+    f"((item_type = '{item_type}')"
+    f" = (substr(code, 1, {len(prefix)}) = '{prefix}'))"
     for item_type, prefix in ITEM_CODE_PREFIXES.items()
 )
 
@@ -479,6 +485,13 @@ class FinishedGoodsLot(Base):
         CheckConstraint(
             "expiry_date IS NULL OR passed_date IS NOT NULL",
             name="ck_finished_goods_lot_expiry_needs_passed_date",
+        ),
+        # 시계가 합격일에서 시작하므로 유효기간이 그보다 앞설 수 없다. 뒤집힌
+        # 줄은 위 셋을 모두 만족하면서 화면에서는 곧바로 「만료」로 그려진다 —
+        # 합격하자마자 만료된 로트다.
+        CheckConstraint(
+            "expiry_date IS NULL OR expiry_date >= passed_date",
+            name="ck_finished_goods_lot_expiry_after_passed",
         ),
     )
 

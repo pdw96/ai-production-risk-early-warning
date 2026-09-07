@@ -29,7 +29,11 @@ services:
   backend:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@database:5432/production_risk
+      # 비밀번호를 URL 에 끼워 넣으므로 **URL 에 안전한 문자만** 써야 한다 —
+      # `/` `#` `?` `@` `%` 가 들어가면 주소가 깨지고 마이그레이션이 접속하지
+      # 못한다. README 가 안내하는 `openssl rand -hex` 는 이 조건을 만족한다.
+      # 그런 문자를 꼭 써야 하면 DATABASE_URL 을 직접 주면 된다 — 그쪽이 이긴다.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@database:5432/production_risk}
       # 합성 시연 데이터를 넣는 스위치. 운영에서 자동 시드는 편의가 아니라
       # 사고이므로 기본값은 꺼짐이고, 여기서만 켠다.
       SEED_SAMPLE_DATA: "1"

@@ -9,11 +9,49 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.types import String
 
-# 자동 생성은 이 제약을 실행 시점 방언으로 구워 문자열로 박아 둔다. 그러면
-# SQLite 문법이 마이그레이션에 남아 PostgreSQL 에서 뜻이 달라지므로, 모델이
-# 쓰는 식을 그대로 불러 쓴다 — 제약이 두 엔진에서 같은 규칙이어야 한다.
-from app.db.models import failure_reason_is_present
+
+# 자동 생성은 이 제약을 **실행 시점 방언으로 구워 문자열로** 박아 둔다. 그러면
+# SQLite 문법이 마이그레이션에 남아 PostgreSQL 에서 뜻이 달라진다.
+#
+# 그렇다고 모델에서 불러오지도 않는다. 지나간 리비전은 **그때의 스키마를 적은
+# 기록**이라 나중의 모델 변경에 흔들리면 안 된다 — 모델의 식이 바뀌거나 이름이
+# 사라지면 이 리비전이 다른 제약을 만들거나 아예 임포트에서 터진다.
+#
+# 그래서 방언이 정하게 하되 **식을 이 파일 안에 둔다.** 모델 쪽과 같은 모양이며,
+# 둘이 어긋나는지는 `tests/test_migrations.py` 가 스키마를 대조해 잡는다.
+class _BlankTrimmed(ColumnElement):
+    """양끝의 공백·탭·개행을 걷어낸 값. 이름이 엔진마다 다르다."""
+
+    type = String()
+    inherit_cache = True
+
+    def __init__(self, column_name: str) -> None:
+        self.column_name = column_name
+
+
+@compiles(_BlankTrimmed, "sqlite")
+def _compile_trim_blank_sqlite(element, compiler, **_kw) -> str:
+    return f"trim({element.column_name}, ' ' || char(9) || char(10) || char(13))"
+
+
+@compiles(_BlankTrimmed, "postgresql")
+def _compile_trim_blank_postgresql(element, compiler, **_kw) -> str:
+    return f"btrim({element.column_name}, ' ' || chr(9) || chr(10) || chr(13))"
+
+
+def failure_reason_is_present() -> ColumnElement:
+    """합격이 아니면 사유가 있어야 하고, 공백만으로는 사유가 아니다."""
+    return sa.or_(
+        sa.literal_column("result") == '합격',
+        sa.and_(
+            sa.literal_column("reason").is_not(None),
+            _BlankTrimmed("reason") != "",
+        ),
+    )
 
 
 revision: str = '65f0715f47d9'
@@ -43,7 +81,7 @@ def upgrade() -> None:
     sa.Column('safety_stock', sa.Float(), nullable=True),
     sa.Column('setup_hours', sa.Float(), nullable=True),
     sa.Column('hours_per_unit', sa.Float(), nullable=True),
-    sa.CheckConstraint("((item_type = '완제품') = (code LIKE 'FG-%')) AND ((item_type = '반제품') = (code LIKE 'SF-%')) AND ((item_type = '원자재') = (code LIKE 'RM-%'))", name='ck_item_code_prefix'),
+    sa.CheckConstraint("((item_type = '완제품') = (substr(code, 1, 3) = 'FG-')) AND ((item_type = '반제품') = (substr(code, 1, 3) = 'SF-')) AND ((item_type = '원자재') = (substr(code, 1, 3) = 'RM-'))", name='ck_item_code_prefix'),
     sa.CheckConstraint("item_type <> '반제품' OR shelf_life_days IS NULL", name='ck_item_semi_finished_has_no_shelf_life'),
     sa.CheckConstraint("item_type <> '원자재' OR safety_stock IS NOT NULL", name='ck_item_raw_has_safety_stock'),
     sa.CheckConstraint("item_type IN ('완제품', '반제품', '원자재')", name='ck_item_type'),
@@ -126,6 +164,7 @@ def upgrade() -> None:
     sa.CheckConstraint("(passed_date IS NOT NULL) = (qc_status = '합격')", name='ck_finished_goods_lot_passed_date_matches_status'),
     sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
     sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
+    sa.CheckConstraint('expiry_date IS NULL OR expiry_date >= passed_date', name='ck_finished_goods_lot_expiry_after_passed'),
     sa.CheckConstraint("stock_type IN ('양품', '불량품')", name='ck_finished_goods_lot_stock_type'),
     sa.CheckConstraint("warehouse <> '제품창고' OR qc_status = '합격'", name='ck_finished_goods_lot_product_warehouse_holds_passed_only'),
     sa.CheckConstraint("warehouse IN ('생산창고', '제품창고')", name='ck_finished_goods_lot_warehouse'),

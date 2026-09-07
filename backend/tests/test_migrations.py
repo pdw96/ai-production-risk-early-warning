@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -127,8 +128,18 @@ def test_the_migration_does_not_freeze_one_engine_s_sql() -> None:
 
     assert sources
     for name, source in sources.items():
-        assert "char(9)" not in source, f"{name} 에 SQLite 문법이 박혀 있다"
-        assert "chr(9)" not in source, f"{name} 에 PostgreSQL 문법이 박혀 있다"
+        # 굳었다는 것은 **한 방언만** 남았다는 뜻이다. 리비전이 방언을 스스로
+        # 가르면 둘이 함께 있고(각자의 `@compiles`), 그것은 굳은 것이 아니다.
+        # 그래서 「있다/없다」가 아니라 **짝이 맞는가**를 본다.
+        assert ("char(9)" in source) == ("chr(9)" in source), (
+            f"{name} 에 한 엔진의 문법만 남아 있다 — 다른 엔진에서 규칙이 사라진다"
+        )
+        # 그리고 어느 쪽도 **제약 문자열 안에** 박혀서는 안 된다. 박히면 그
+        # 문자열이 그대로 실행되므로 방언이 끼어들 자리가 없다.
+        for frozen in re.findall(r"CheckConstraint\(\s*(['\"].*?['\"])", source):
+            assert "char(9)" not in frozen and "chr(9)" not in frozen, (
+                f"{name} 의 CHECK 문자열에 한 엔진의 문법이 박혀 있다: {frozen}"
+            )
 
 
 def test_both_engines_render_the_same_constraint_meaning() -> None:
