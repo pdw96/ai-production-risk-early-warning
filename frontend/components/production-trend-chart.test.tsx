@@ -84,6 +84,17 @@ describe("ProductionTrendChart", () => {
     expect(screen.getByText(/단위: 개/)).toBeDefined();
   });
 
+  it("says the all-product total has no single unit when products disagree", () => {
+    // 완제품 단위가 갈리면 백엔드가 `quantity_uom: null` 을 보낸다. 그 합에는
+    // 붙일 단위가 없으므로 「개」라고 적지 않는다.
+    render(
+      <ProductionTrendChart data={total} productTrends={product_trends} totalUnit={null} />,
+    );
+
+    expect(screen.getByText(/단위: 혼재/)).toBeDefined();
+    expect(within(accessible_table()).getByText("357.22 (단위 혼재)")).toBeDefined();
+  });
+
   it("marks only the selected product as pressed", async () => {
     const user = userEvent.setup();
     render(<ProductionTrendChart data={total} productTrends={product_trends} />);

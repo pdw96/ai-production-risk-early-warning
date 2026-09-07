@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import base as db_base
 from app.main import app
 from app.seed import reset_database
+from tests.factories import finished_item
 from app.services.briefing import RECENT_INSPECTIONS_PER_TYPE
 
 
@@ -56,12 +57,16 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
     data = response.json()["data"]
     assert set(data) == {
         "kpis",
+        # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 완제품
+        # 단위가 갈리면 None 이 되고, 그때 화면은 「개」 대신 혼재를 말한다.
+        "quantity_uom",
         "production_trend",
         "product_trends",
         "top_order_risks",
         "top_material_risks",
         "recommended_actions",
     }
+    assert data["quantity_uom"] == "EA"
     assert set(data["kpis"]) == {
         "due_risk_order_count",
         "material_shortage_count",
@@ -849,35 +854,47 @@ def test_every_quantity_screen_knows_the_unit_it_counts_in(client: TestClient) -
         assert requirement["unit_quantity_uom"] == units[requirement["material_code"]]
 
 
-def test_the_cross_product_totals_assume_one_counting_unit(client: TestClient) -> None:
-    """제품을 넘어 더하는 숫자들은 **완제품 단위가 하나일 때만** 뜻을 갖는다.
+def test_every_per_item_quantity_carries_its_own_unit(client: TestClient) -> None:
+    """품목 하나를 가리키는 수량은 어디서나 그 품목의 단위를 든다."""
+    units = {
+        row["material_code"]: row["stock_uom"]
+        for row in client.get("/api/materials").json()["data"]
+    }
+    assert len(set(units.values())) > 1
 
-    대시보드 KPI(오늘 계획·실적) · 전 제품 합계 추이 · 생산관리의 일자별 실적은
-    여러 제품을 한 숫자로 더한다. 지금은 완제품이 전부 `EA` 라 그 합이 개수이고
-    화면의 「개」도 맞다.
-
-    단위가 다른 완제품이 하나라도 생기면 그 숫자들은 킬로그램과 개수를 더한 값이
-    되어 무엇도 세지 않는다. 그날 이 테스트가 먼저 깨지는 것이 목적이다 — 화면이
-    조용히 거짓말을 시작하는 것보다 CI 가 멈추는 편이 낫다. 깨지면 KPI · 추이 ·
-    일자별 실적을 단위별로 가르고, 이 테스트를 그 구조에 맞게 다시 쓴다.
-    """
-    finished = client.get("/api/finished-goods").json()["data"]
-    units = {product["stock_uom"] for product in finished}
-
-    assert units == {"EA"}, (
-        f"완제품 단위가 여럿이 됐습니다({sorted(units)}). 대시보드 KPI · 전 제품"
-        " 합계 추이 · 일자별 생산실적은 제품을 넘어 더하므로 지금 구조로는"
-        " 뜻을 잃습니다."
-    )
-
-    # 오더도 제품 하나를 가리키므로 단위를 든다.
     for order in client.get("/api/orders").json()["data"]:
         assert order["stock_uom"] == "EA"
 
-    # 제품별 추이도 계열마다 제품 하나라 단위가 정해진다. 전 제품 합계 추이만
-    # 여러 제품을 더하므로 단위를 갖지 않는다.
     dashboard = client.get("/api/dashboard").json()["data"]
-    product_units = {trend["product_code"]: trend["stock_uom"] for trend in dashboard["product_trends"]}
-    assert product_units
-    assert set(product_units.values()) == {"EA"}
+    # 제품별 계열은 계열마다 제품 하나라 단위가 정해진다. 전 제품 합계 추이의
+    # 점에는 그 칸이 없고, 대신 응답이 그 합의 단위를 따로 말한다.
+    assert {trend["stock_uom"] for trend in dashboard["product_trends"]} == {"EA"}
     assert "stock_uom" not in dashboard["production_trend"][0]
+
+
+def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> None:
+    """제품을 넘어 더한 숫자는 **자기 단위를 스스로 말한다.**
+
+    지금은 완제품이 전부 `EA` 라 `quantity_uom` 이 `EA` 다. 시드가 그러하다는
+    것만 확인하면 아무것도 지키지 못한다 — 기준정보는 화면에서 늘 수 있고,
+    운영 데이터에 m² 완제품이 하나 생기는 순간 시드를 보는 검사는 여전히
+    통과하면서 화면은 그 합을 「개」로 적는다. 그래서 **단위가 다른 완제품을
+    실제로 넣어 보고** 응답이 스스로 「단위 없음」을 말하는지 본다.
+    """
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] == "EA"
+    results = client.get("/api/production-results").json()["data"]
+    assert {row["quantity_uom"] for row in results if row["active_order_count"]} == {"EA"}
+
+    # m² 로 세는 완제품을 하나 들인다. 시트·필름 공장에서 이상한 품목이 아니다.
+    with db_base.SessionLocal() as session:
+        session.add(
+            finished_item(code="FG-99", name="가상 광학필름", stock_uom="m2")
+        )
+        session.commit()
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] is None, (
+        "완제품 단위가 갈렸는데도 합계가 단위를 주장합니다 —"
+        " 킬로그램과 개수를 더한 숫자에는 붙일 단위가 없습니다."
+    )

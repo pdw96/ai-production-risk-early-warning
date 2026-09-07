@@ -84,7 +84,8 @@ def upgrade() -> None:
     sa.Column('partner_type', sa.String(length=10), nullable=False),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.CheckConstraint("partner_type IN ('공급사', '고객사')", name='ck_partner_type'),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('id', 'partner_type', name='uq_partner_id_type')
     )
     with op.batch_alter_table('partners', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_partners_code'), ['code'], unique=True)
@@ -126,12 +127,12 @@ def upgrade() -> None:
     sa.CheckConstraint("((item_type = '완제품') = (substr(code, 1, 3) = 'FG-')) AND ((item_type = '반제품') = (substr(code, 1, 3) = 'SF-')) AND ((item_type = '원자재') = (substr(code, 1, 3) = 'RM-'))", name='ck_item_code_prefix'),
     sa.CheckConstraint("item_type <> '반제품' OR shelf_life_days IS NULL", name='ck_item_semi_finished_has_no_shelf_life'),
     sa.CheckConstraint("item_type <> '원자재' OR safety_stock IS NOT NULL", name='ck_item_raw_has_safety_stock'),
-    sa.CheckConstraint('setup_hours IS NULL OR setup_hours >= 0', name='ck_item_setup_hours_not_negative'),
-    sa.CheckConstraint('hours_per_unit IS NULL OR hours_per_unit >= 0', name='ck_item_hours_per_unit_not_negative'),
     sa.CheckConstraint("item_type IN ('완제품', '반제품', '원자재')", name='ck_item_type'),
     sa.CheckConstraint("phase IN ('초기', '양산')", name='ck_item_phase'),
     sa.CheckConstraint("process_group = 'PROCESS'", name='ck_item_process_group'),
     sa.CheckConstraint("stock_uom_group = 'UOM'", name='ck_item_stock_uom_group'),
+    sa.CheckConstraint('hours_per_unit IS NULL OR hours_per_unit >= 0', name='ck_item_hours_per_unit_not_negative'),
+    sa.CheckConstraint('setup_hours IS NULL OR setup_hours >= 0', name='ck_item_setup_hours_not_negative'),
     sa.ForeignKeyConstraint(['process_group', 'process'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.ForeignKeyConstraint(['stock_uom_group', 'stock_uom'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.PrimaryKeyConstraint('id')
@@ -227,7 +228,7 @@ def upgrade() -> None:
     sa.CheckConstraint("group_code = 'TXN_TYPE'", name='ck_txn_type_group'),
     sa.CheckConstraint("total_effect IN ('증가', '감소', '양방향', '불변', '기준점')", name='ck_txn_type_total_effect'),
     sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.ForeignKeyConstraint(['group_code', 'paired_code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['group_code', 'paired_code'], ['txn_type_attributes.group_code', 'txn_type_attributes.code'], ),
     sa.PrimaryKeyConstraint('group_code', 'code')
     )
     op.create_table('bom_components',
@@ -310,16 +311,18 @@ def upgrade() -> None:
     )
     op.create_table('supplier_items',
     sa.Column('partner_id', sa.Integer(), nullable=False),
+    sa.Column('partner_type', sa.String(length=10), server_default='공급사', nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
     sa.Column('lead_time_hours', sa.Float(), nullable=False),
     sa.Column('purchase_uom_group', sa.String(length=20), nullable=False),
     sa.Column('purchase_uom', sa.String(length=10), nullable=False),
     sa.Column('conversion_factor', sa.Float(), nullable=False),
+    sa.CheckConstraint("partner_type = '공급사'", name='ck_supplier_item_partner_type'),
     sa.CheckConstraint("purchase_uom_group = 'UOM'", name='ck_supplier_item_uom_group'),
     sa.CheckConstraint('conversion_factor > 0', name='ck_supplier_item_conversion_factor'),
     sa.CheckConstraint('lead_time_hours >= 0', name='ck_supplier_item_lead_time_hours'),
     sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
-    sa.ForeignKeyConstraint(['partner_id'], ['partners.id'], ),
+    sa.ForeignKeyConstraint(['partner_id', 'partner_type'], ['partners.id', 'partners.partner_type'], ),
     sa.ForeignKeyConstraint(['purchase_uom_group', 'purchase_uom'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.PrimaryKeyConstraint('partner_id', 'item_id')
     )

@@ -9,6 +9,7 @@ function result(overrides: Partial<ProductionResult> = {}): ProductionResult {
   return {
     achievement_rate: 94.3,
     active_order_count: 30,
+    quantity_uom: "EA",
     actual_quantity: 337,
     planned_quantity: 357.22,
     work_date: "2026-08-31",

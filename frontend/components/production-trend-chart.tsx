@@ -13,11 +13,16 @@ import {
 import React, { useState } from "react";
 
 import type { ProductionPoint, ProductTrend } from "../lib/api";
-import { format_quantity, unit_label } from "../lib/format";
+import { format_mixed_quantity, unit_label } from "../lib/format";
 
 interface ProductionTrendChartProps {
   data: ProductionPoint[];
   productTrends?: ProductTrend[];
+  /**
+   * 전 제품 합계가 쓰는 단위. 완제품 단위가 갈리면 `null` 이고, 그때 그 합에는
+   * 붙일 단위가 없다. 제품을 고르면 그 계열의 단위가 이것을 대신한다.
+   */
+  totalUnit?: string | null;
 }
 
 const ALL_PRODUCTS = "전체";
@@ -39,6 +44,7 @@ function format_full_date(value: string): string {
 export function ProductionTrendChart({
   data,
   productTrends = [],
+  totalUnit = "EA",
 }: Readonly<ProductionTrendChartProps>) {
   const [selected_code, set_selected_code] = useState<string | null>(null);
   const selected_trend =
@@ -51,10 +57,9 @@ export function ProductionTrendChart({
     ? `${selected_trend.product_name} · ${selected_trend.product_code}`
     : "전 제품 합계";
   // 제품을 고르면 그 제품의 단위가 정해진다. 전 제품 합계는 여러 제품을 더한
-  // 값이라 단위가 하나로 정해지지 않으므로 세는 단위를 그대로 쓴다 — 완제품
-  // 단위가 갈리는 날 그 합 자체를 손봐야 하고, 백엔드 회귀 테스트가 그날을 잡는다.
-  const unit = selected_trend ? selected_trend.stock_uom : undefined;
-  const quantity_label = (value: number) => format_quantity(value, unit);
+  // 값이라 응답이 그 단위를 따로 말해 주며, 완제품 단위가 갈리면 `null` 이다.
+  const unit = selected_trend ? selected_trend.stock_uom : totalUnit;
+  const quantity_label = (value: number) => format_mixed_quantity(value, unit);
 
   return (
     <section aria-labelledby="production-trend-title" className="dashboard-panel trend-panel">

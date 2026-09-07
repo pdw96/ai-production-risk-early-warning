@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, timedelta
 
 from sqlalchemy import distinct, func, select
@@ -162,6 +163,18 @@ def list_materials(session: Session) -> list[MaterialResponse]:
     ]
 
 
+def _single_uom(units: Iterable[str]) -> str | None:
+    """여럿을 더한 수량이 쓸 단위. 갈리면 None 이다.
+
+    제품을 넘어 더하는 숫자에 단위를 붙일 수 있는 것은 **모두 같은 단위일 때뿐**
+    이다. 킬로그램과 개수를 더한 값에는 붙일 단위가 없고, 그때 화면은 「개」라고
+    적는 대신 단위가 혼재한다고 말해야 한다. 더할 것이 하나도 없으면 붙일 단위도
+    없으므로 None 이다.
+    """
+    distinct = set(units)
+    return distinct.pop() if len(distinct) == 1 else None
+
+
 def list_production_results(session: Session) -> list[ProductionResultResponse]:
     """생산관리 화면용 일자별 생산실적(생산일보)을 최근 날짜부터 만든다."""
     reference_date = get_reference_date(session)
@@ -172,15 +185,22 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
             DailyProduction.planned_quantity,
             DailyProduction.actual_quantity,
             DailyProduction.order_id,
-        ).where(DailyProduction.work_date.between(start_date, reference_date))
+            Item.stock_uom,
+        )
+        .join(Order, DailyProduction.order_id == Order.id)
+        .join(Item, Order.item_id == Item.id)
+        .where(DailyProduction.work_date.between(start_date, reference_date))
     ).all()
 
     planned_by_day: defaultdict[date, float] = defaultdict(float)
     actual_by_day: defaultdict[date, float] = defaultdict(float)
     orders_by_day: defaultdict[date, set[int]] = defaultdict(set)
-    for work_date, planned, actual, order_id in rows:
+    # 그날 더해진 제품들의 단위. 하나로 모이지 않으면 그 합에는 붙일 단위가 없다.
+    units_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    for work_date, planned, actual, order_id, stock_uom in rows:
         planned_by_day[work_date] += float(planned or 0)
         actual_by_day[work_date] += float(actual or 0)
+        units_by_day[work_date].add(stock_uom)
         if actual:
             orders_by_day[work_date].add(order_id)
 
@@ -196,6 +216,7 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
                 actual_quantity=round(actual, 2),
                 achievement_rate=round(actual / planned * 100, 1) if planned else 0.0,
                 active_order_count=len(orders_by_day.get(day, ())),
+                quantity_uom=_single_uom(units_by_day.get(day, ())),
             )
         )
     return results
@@ -708,7 +729,14 @@ def get_dashboard(session: Session) -> DashboardResponse:
     if not actions:
         actions = ["현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."]
 
+    # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 완제품 단위가
+    # 갈리면 None 이고, 그때 화면은 「개」라고 적는 대신 혼재를 말한다.
+    finished_units = session.scalars(
+        select(Item.stock_uom).where(Item.item_type == FINISHED_ITEM)
+    ).all()
+
     return DashboardResponse(
+        quantity_uom=_single_uom(finished_units),
         kpis=DashboardKpis(
             due_risk_order_count=sum(
                 order.severity == "위험" for order in orders

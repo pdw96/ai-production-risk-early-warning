@@ -22,13 +22,19 @@ export default function SalesPage() {
     return <DataState state="empty" />;
   }
 
-  // 제품을 넘어 더한 값이라 단위를 붙일 수 없다 — 표의 각 줄은 그 제품의
-  // 단위로 적지만 이 합계는 그러지 못한다. 지금은 완제품이 전부 EA 라 「개」가
-  // 맞고, 그 전제가 깨지는 날은 백엔드 회귀 테스트가 먼저 잡는다.
-  const releasable_total = finished_goods.reduce(
-    (total, product) => total + product.releasable_stock,
-    0,
-  );
+  // 제품마다 단위를 들고 있으므로 **단위별로 나누어** 적는다. 한 숫자로 더하면
+  // 킬로그램과 개수를 더한 값이 되고, 그것은 무엇도 세지 않는다.
+  const releasable_by_unit = new Map<string, number>();
+  for (const product of finished_goods) {
+    releasable_by_unit.set(
+      product.stock_uom,
+      (releasable_by_unit.get(product.stock_uom) ?? 0) + product.releasable_stock,
+    );
+  }
+  const releasable_total = [...releasable_by_unit.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([unit, quantity]) => format_quantity(quantity, unit))
+    .join(" · ");
 
   return (
     <div className="page-shell">
@@ -38,7 +44,7 @@ export default function SalesPage() {
           <h1>영업관리</h1>
           <p>
             지금 내보낼 수 있는 완제품입니다. 출하 가능 재고는{" "}
-            {format_quantity(releasable_total)}입니다.
+            {releasable_total}입니다.
           </p>
         </div>
         <span className="page-header__count">{finished_goods.length} PRODUCTS</span>

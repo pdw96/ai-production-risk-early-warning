@@ -11,7 +11,7 @@ import { getDashboard, type Dashboard } from "../lib/api";
 // 수량 표기는 한 곳에서만 정한다. 여기 사본을 두었더니 자재에 단위가 생겼을 때
 // 이 화면만 「개」로 남았다 — 같은 규칙을 두 곳에 적으면 반드시 갈린다.
 // 날짜와 백분율은 이 화면만의 표기라(「2026년 9월 7일」) 아직 사본이 맞다.
-import { format_count, format_quantity } from "../lib/format";
+import { format_count, format_mixed_quantity, format_quantity } from "../lib/format";
 
 function format_percentage(value: number): string {
   return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(value)}%`;
@@ -91,20 +91,20 @@ export default function HomePage() {
         <Link aria-label={`자재 부족 위험 ${dashboard.kpis.material_shortage_count}건 상세 보기`} href="/materials">
           <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={format_count(dashboard.kpis.material_shortage_count)} />
         </Link>
-        {/* 아래 둘은 제품을 넘어 더한 값이라 단위를 붙일 수 없다. 지금은 완제품이
-            전부 EA 라 「개」가 맞고, 그 전제가 깨지는 날은 백엔드 회귀 테스트가
-            먼저 잡는다(test_the_cross_product_totals_assume_one_counting_unit). */}
-        <Link aria-label={`오늘 생산 계획 ${format_quantity(dashboard.kpis.today_plan_quantity)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_quantity(dashboard.kpis.today_plan_quantity)} />
+        {/* 아래 둘은 제품을 넘어 더한 값이다. 응답의 `quantity_uom` 이 그 합의
+            단위를 말하고, 완제품 단위가 갈리면 null 이 되어 「단위 혼재」로 적힌다. */}
+        <Link aria-label={`오늘 생산 계획 ${format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.quantity_uom)} />
         </Link>
-        <Link aria-label={`오늘 생산 실적 ${format_quantity(dashboard.kpis.today_actual_quantity)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_quantity(dashboard.kpis.today_actual_quantity)} />
+        <Link aria-label={`오늘 생산 실적 ${format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.quantity_uom)} />
         </Link>
       </section>
 
       <ProductionTrendChart
         data={dashboard.production_trend}
         productTrends={dashboard.product_trends}
+        totalUnit={dashboard.quantity_uom}
       />
 
       <section className="dashboard-lower-grid">

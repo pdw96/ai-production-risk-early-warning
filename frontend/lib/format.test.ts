@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { format_count, format_date, format_percentage, format_quantity } from "./format";
+import {
+  format_count,
+  format_date,
+  format_mixed_quantity,
+  format_percentage,
+  format_quantity,
+  unit_label,
+} from "./format";
 
 describe("operation formatters", () => {
   it("formats quantities with Korean numeric grouping", () => {
@@ -20,6 +27,15 @@ describe("operation formatters", () => {
     // 붙였다가 지우는 것이라 기본 단위가 바뀌면 조용히 「3개」가 남는다.
     expect(format_count(3)).toBe("3건");
     expect(format_count(1234)).toBe("1,234건");
+  });
+
+  it("refuses to name a unit for a total that mixes units", () => {
+    // 제품을 넘어 더한 값의 단위가 갈리면 붙일 단위가 없다. 「개」라고 적으면
+    // 화면이 거짓말을 하므로 갈렸다고 말한다.
+    expect(format_mixed_quantity(1234.5, "kg")).toBe("1,234.5 kg");
+    expect(format_mixed_quantity(1234.5, "EA")).toBe("1,234.5개");
+    expect(format_mixed_quantity(1234.5, null)).toBe("1,234.5 (단위 혼재)");
+    expect(unit_label(null)).toBe("혼재");
   });
 
   it("formats percentages to one decimal place", () => {

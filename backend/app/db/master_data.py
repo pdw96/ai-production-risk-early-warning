@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -101,14 +102,19 @@ class TxnTypeAttribute(Base):
     __tablename__ = "txn_type_attributes"
     __table_args__ = (
         *_group_reference(codes.TXN_TYPE),
-        # 짝도 수불유형이어야 한다. 외래키가 없으면 임의 문자열이 들어가고,
-        # 그러면 「생산출고 ↔ 생산입고」 처럼 서로를 가리켜야 할 자리가 없는
-        # 코드를 가리킨 채 통과한다 — 한쪽만 나는 사고를 구조가 막는다던 칸이
-        # 정작 자기 자신은 지켜지지 않는 셈이다. 비어 있으면(짝이 없는 유형)
-        # 복합 외래키는 검사하지 않으므로 nullable 은 그대로 산다.
+        # 짝은 **이 표에 줄이 있는 수불유형**이어야 한다. 공통코드를 가리키면
+        # 「그 코드가 있다」까지만 증명된다 — 속성 줄이 아예 없는 코드를 짝으로
+        # 적어도 통과하고, 그러면 짝을 따라간 자리에 총량 영향도 원천 문서도
+        # 없다. 여기를 가리키면 그 한 겹이 더 막힌다.
+        #
+        # **서로를 가리키는지까지는 제약이 보지 못한다.** A 가 B 를 짝으로 적고
+        # B 는 C 를 적어도 두 줄 다 통과한다 — 같은 표의 다른 줄을 보는 조건은
+        # CHECK 로 적을 수 없기 때문이다. 지금은 시드가 유일한 쓰기 경로라
+        # 정합 테스트가 그것을 지키고, 화면에서 코드를 만드는 길이 생기는 날
+        # 쓰기 시점 검증이나 트리거가 함께 서야 한다.
         ForeignKeyConstraint(
             ["group_code", "paired_code"],
-            ["common_codes.group_code", "common_codes.code"],
+            ["txn_type_attributes.group_code", "txn_type_attributes.code"],
         ),
         CheckConstraint(
             f"total_effect IN ({_sql_value_list(codes.TOTAL_EFFECTS)})",
@@ -280,6 +286,10 @@ class Partner(Base):
             f"partner_type IN ({_sql_value_list(codes.PARTNER_TYPES)})",
             name="ck_partner_type",
         ),
+        # `id` 는 이미 기본키라 이 유일키가 행을 더 좁히지는 않는다. 두는 이유는
+        # **복합 외래키의 상대가 되기 위해서**다 — 「이 거래처는 공급사여야 한다」를
+        # 참조하는 쪽에서 걸려면 `(id, 유형)` 쌍을 가리킬 수 있어야 한다.
+        UniqueConstraint("id", "partner_type", name="uq_partner_id_type"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -446,6 +456,18 @@ class SupplierItem(Base):
 
     __tablename__ = "supplier_items"
     __table_args__ = (
+        # 거래처는 **공급사여야 한다.** `partner_id` 만 참조하면 존재 여부만
+        # 보므로 고객사가 그 자리에 들어가고, 그 줄의 리드타임과 환산 계수가
+        # 구매 계획으로 흘러간다 — 물건을 팔 곳을 사 올 곳으로 쓰는 셈이다.
+        # 유형 열은 데이터가 아니라 구조이며 CHECK 가 값을 못박는다(품목의
+        # `stock_uom_group` 과 같은 방식).
+        ForeignKeyConstraint(
+            ["partner_id", "partner_type"],
+            ["partners.id", "partners.partner_type"],
+        ),
+        CheckConstraint(
+            f"partner_type = '{codes.SUPPLIER}'", name="ck_supplier_item_partner_type"
+        ),
         ForeignKeyConstraint(
             ["purchase_uom_group", "purchase_uom"],
             ["common_codes.group_code", "common_codes.code"],
@@ -464,8 +486,9 @@ class SupplierItem(Base):
         ),
     )
 
-    partner_id: Mapped[int] = mapped_column(
-        ForeignKey("partners.id"), primary_key=True
+    partner_id: Mapped[int] = mapped_column(primary_key=True)
+    partner_type: Mapped[str] = mapped_column(
+        String(10), default=codes.SUPPLIER, server_default=codes.SUPPLIER
     )
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), primary_key=True)
     lead_time_hours: Mapped[float] = mapped_column(Float)

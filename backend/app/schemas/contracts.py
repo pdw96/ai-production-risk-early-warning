@@ -23,6 +23,15 @@ InspectionType = Literal["IQC", "PQC", "OQC"]
 InspectionResult = Literal["합격", "불합격"]
 InspectionTargetType = Literal["자재 로트", "생산 실적", "완제품 로트"]
 
+# 제품을 넘어 더한 수량이 쓰는 단위. **완제품 단위가 하나일 때만 값이 있고,
+# 갈리면 `None` 이다** — 킬로그램과 개수를 더한 숫자에는 붙일 단위가 없기 때문이다.
+#
+# 시드가 전부 `EA` 인 것에 기대지 않는다. 기준정보는 화면에서 늘 수 있고, 그때
+# 이 값이 `None` 이 되어 화면이 「단위 혼재」라고 말한다 — 조용히 「개」로 적는
+# 것보다 낫다. 그 합 자체를 단위별로 가르는 것은 그런 완제품이 실제로 생기는
+# 단계의 일이다.
+CrossProductUom = str | None
+
 
 class Envelope(BaseModel, Generic[DataT]):
     data: DataT
@@ -31,10 +40,9 @@ class Envelope(BaseModel, Generic[DataT]):
 class ProductionPoint(BaseModel):
     """하루치 계획·실적 한 점.
 
-    **제품별 계열에서는 그 제품의 단위**이고, 전 제품 합계 추이에서는 여러 제품을
-    더한 값이다. 지금은 완제품이 전부 `EA` 라 그 합이 뜻을 갖는다 — 단위가 다른
-    완제품이 생기는 날 이 합은 무엇도 세지 않게 되며, 그것을 회귀 테스트가 잡는다
-    (`test_api.py::test_the_cross_product_totals_assume_one_counting_unit`).
+    제품별 계열에서는 그 제품의 단위이고, 전 제품 합계 추이에서는 여러 제품을
+    더한 값이다. 후자의 단위는 응답의 `quantity_uom` 이 말한다 — 비어 있으면
+    더할 수 없는 것을 더한 숫자라는 뜻이다.
     """
 
     work_date: date
@@ -114,11 +122,7 @@ class ProductTrend(BaseModel):
 
 
 class ProductionResultResponse(BaseModel):
-    """생산관리 화면의 일자별 생산실적 한 줄.
-
-    수량은 그날 실적이 잡힌 **여러 제품을 더한 값**이라 단위가 하나로 정해지지
-    않는다. 지금은 완제품이 전부 `EA` 라 그 합이 뜻을 갖는다.
-    """
+    """생산관리 화면의 일자별 생산실적 한 줄."""
 
     work_date: date
     planned_quantity: float
@@ -127,6 +131,9 @@ class ProductionResultResponse(BaseModel):
     achievement_rate: float
     # 그날 실적이 잡힌 오더 수
     active_order_count: int
+    # 위 두 수량이 쓰는 단위. 그날 실적이 잡힌 제품들의 단위가 갈리면 `None` 이며,
+    # 그때 그 합은 더할 수 없는 것을 더한 숫자다.
+    quantity_uom: CrossProductUom = None
 
 
 class MasterItemResponse(BaseModel):
@@ -300,15 +307,14 @@ class RiskStatusUpdate(BaseModel):
 class DashboardKpis(BaseModel):
     due_risk_order_count: int
     material_shortage_count: int
-    # 아래 둘은 그날의 **전 제품 합계**라 단위가 하나로 정해지지 않는다. 지금은
-    # 완제품이 전부 `EA` 라 뜻을 갖는다 — 단위가 다른 완제품이 생기는 날
-    # 이 숫자와 추이 차트는 함께 손봐야 하고, 회귀 테스트가 그 순간을 잡는다.
     today_plan_quantity: float
     today_actual_quantity: float
 
 
 class DashboardResponse(BaseModel):
     kpis: DashboardKpis
+    # KPI 의 오늘 계획·실적과 아래 `production_trend` 가 함께 쓰는 단위.
+    quantity_uom: CrossProductUom = None
     # 전 제품 합계 추이. 차트의 기본값이다.
     production_trend: list[ProductionPoint]
     # 같은 기간을 제품별로 나눈 추이. 합계와 날짜 축이 같다.

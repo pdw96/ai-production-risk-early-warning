@@ -1,7 +1,7 @@
 import React from "react";
 
 import type { ProductionResult } from "../lib/api";
-import { format_date, format_percentage, format_quantity } from "../lib/format";
+import { format_date, format_mixed_quantity, format_percentage } from "../lib/format";
 
 function achievement_label(result: ProductionResult): string {
   // 실적이 0이어도 달성률은 0이 된다. 계획 수량을 함께 봐야 "계획이 없던 날"과
@@ -29,13 +29,13 @@ export function ProductionResultTable({
           </tr>
         </thead>
         <tbody>
-          {/* 계획·실적은 그날 실적이 잡힌 여러 제품을 더한 값이라 단위를 붙일 수
-              없다. 지금은 완제품이 전부 EA 라 「개」가 맞다. */}
+          {/* 계획·실적은 그날 실적이 잡힌 여러 제품을 더한 값이다. 그 제품들의
+              단위가 갈리면 `quantity_uom` 이 null 이 되고 「단위 혼재」로 적힌다. */}
           {results.map((result) => (
             <tr key={result.work_date}>
               <td>{format_date(result.work_date)}</td>
-              <td className="numeric-cell">{format_quantity(result.planned_quantity)}</td>
-              <td className="numeric-cell">{format_quantity(result.actual_quantity)}</td>
+              <td className="numeric-cell">{format_mixed_quantity(result.planned_quantity, result.quantity_uom)}</td>
+              <td className="numeric-cell">{format_mixed_quantity(result.actual_quantity, result.quantity_uom)}</td>
               <td className="numeric-cell">{format_percentage(result.achievement_rate)}</td>
               <td>{achievement_label(result)}</td>
               <td className="numeric-cell">{result.active_order_count}건</td>

@@ -12,9 +12,26 @@ export function format_quantity(value: number, unit = COUNTING_UNIT): string {
   return unit === COUNTING_UNIT ? `${formatted}개` : `${formatted} ${unit}`;
 }
 
-/** 숫자 없이 단위만 적을 때. 「단위: 개」 · 「단위: kg」 */
-export function unit_label(unit = COUNTING_UNIT): string {
+/**
+ * 숫자 없이 단위만 적을 때. 「단위: 개」 · 「단위: kg」
+ *
+ * `null` 은 **제품을 넘어 더해서 단위가 갈린 값**이다. 그때 「개」라고 적으면
+ * 화면이 거짓말을 하므로 갈렸다고 말한다.
+ */
+export function unit_label(unit: string | null = COUNTING_UNIT): string {
+  if (unit === null) {
+    return "혼재";
+  }
   return unit === COUNTING_UNIT ? "개" : unit;
+}
+
+/**
+ * 제품을 넘어 더한 수량. 단위가 갈리면(`null`) 숫자 뒤에 단위를 붙이지 않고
+ * 갈렸다고 적는다 — 킬로그램과 개수를 더한 값에 붙일 단위는 없다.
+ */
+export function format_mixed_quantity(value: number, unit: string | null): string {
+  const formatted = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value);
+  return unit === null ? `${formatted} (단위 혼재)` : format_quantity(value, unit);
 }
 
 /**

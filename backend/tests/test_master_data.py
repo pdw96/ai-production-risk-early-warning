@@ -37,6 +37,7 @@ from app.db.master_data import (
     ProcessInspectionStandard,
     PurchaseCloseAttribute,
     ShiftPattern,
+    SupplierItem,
     TxnTypeAttribute,
 )
 from app.db.master_data_loader import load_master_data, statements
@@ -627,3 +628,80 @@ def test_a_real_txn_type_may_be_named_as_a_pair(session: Session) -> None:
     session.commit()
 
     assert attribute.paired_code == partner.code
+
+
+def test_every_transaction_type_pair_points_back(session: Session) -> None:
+    """짝은 **서로를** 가리켜야 한다 — A 가 B 를 적으면 B 도 A 를 적어야 한다.
+
+    창고를 건너는 수불은 두 줄이 함께 난다. 짝이 한쪽만 맞으면 그 두 줄 중
+    하나만 나고, 「한쪽만 나는 사고를 구조가 막는다」던 칸이 정작 자기 자신을
+    지키지 못한다.
+
+    외래키는 여기까지 보지 못한다 — 같은 표의 **다른 줄**을 보는 조건은 CHECK 로
+    적을 수 없기 때문이다. 지금은 시드가 유일한 쓰기 경로이므로 이 테스트가 그
+    자리를 대신하고, 화면에서 코드를 만드는 길이 생기는 날 쓰기 시점 검증이
+    함께 서야 한다.
+    """
+    pairs = {
+        row.code: row.paired_code
+        for row in session.scalars(select(TxnTypeAttribute)).all()
+    }
+
+    assert pairs, "수불유형이 하나도 없으면 이 검사가 아무것도 지키지 않는다."
+    for code, paired_code in pairs.items():
+        if paired_code is None:
+            continue
+        assert paired_code in pairs, f"{code} 의 짝 {paired_code} 에 속성 줄이 없습니다."
+        assert pairs[paired_code] == code, (
+            f"{code} 는 {paired_code} 를 짝으로 적었는데,"
+            f" {paired_code} 는 {pairs[paired_code]} 를 가리킵니다."
+        )
+
+
+def test_a_customer_cannot_be_used_as_a_supplier(session: Session) -> None:
+    """공급사별 품목의 거래처는 **공급사여야 한다.**
+
+    `partner_id` 만 참조하면 존재 여부만 본다 — 고객사가 그 자리에 들어가고,
+    그 줄의 리드타임과 환산 계수가 구매 계획으로 흘러간다. 물건을 팔 곳을
+    사 올 곳으로 쓰는 셈이다.
+    """
+    customer = session.scalars(
+        select(Partner).where(Partner.partner_type == "고객사")
+    ).first()
+    item = session.scalars(select(Item).where(Item.item_type == RAW_ITEM)).first()
+    assert customer is not None and item is not None
+
+    session.add(
+        SupplierItem(
+            partner_id=customer.id,
+            item_id=item.id,
+            lead_time_hours=48.0,
+            purchase_uom=item.stock_uom,
+            conversion_factor=1.0,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_a_pair_must_have_its_own_attribute_row(session: Session) -> None:
+    """짝은 **이 표에 줄이 있는** 수불유형이어야 한다.
+
+    공통코드를 가리키면 「그 코드가 있다」까지만 증명된다 — 속성 줄이 없는 코드를
+    짝으로 적어도 통과하고, 짝을 따라간 자리에 총량 영향도 원천 문서도 없다.
+    """
+    # 속성 줄이 없는 수불유형 코드를 하나 만든다. 공통코드에는 있다.
+    session.add(
+        CommonCode(
+            group_code=codes.TXN_TYPE, code="XX-NEW", name="속성 없는 유형", sort_order=99
+        )
+    )
+    session.flush()
+
+    existing = session.scalars(select(TxnTypeAttribute)).first()
+    assert existing is not None
+    existing.paired_code = "XX-NEW"
+
+    with pytest.raises(IntegrityError):
+        session.flush()

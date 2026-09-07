@@ -84,6 +84,8 @@ export interface ProductionResult {
   actual_quantity: number;
   achievement_rate: number;
   active_order_count: number;
+  /** 위 두 수량이 쓰는 단위. 그날 제품들의 단위가 갈리면 null 이다. */
+  quantity_uom: string | null;
 }
 
 export interface MasterItem {
@@ -229,6 +231,11 @@ export interface Dashboard {
     today_plan_quantity: number;
     today_actual_quantity: number;
   };
+  /**
+   * KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위.
+   * 완제품 단위가 갈리면 null 이고, 그때 그 합에는 붙일 단위가 없다.
+   */
+  quantity_uom: string | null;
   production_trend: ProductionPoint[];
   product_trends: ProductTrend[];
   top_order_risks: Order[];
