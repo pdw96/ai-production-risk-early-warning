@@ -55,6 +55,19 @@ def test_a_negative_quantity_is_refused() -> None:
         production_lead_time_hours(setup_hours=3, hours_per_unit=0.15, quantity=-1)
 
 
+def test_negative_coefficients_are_refused() -> None:
+    """음수 계수는 소요 시간을 음수로 만들고, 그러면 착수가 완료보다 뒤에 잡힌다.
+
+    `(4, -1, 100)` 은 `-96` 이 되어 `start_at` 이 일정을 거꾸로 세운다. 손으로
+    고치는 품목 마스터에서 부호 하나가 그 일을 하므로, 표의 제약과 이 함수
+    양쪽에서 막는다.
+    """
+    with pytest.raises(ValueError):
+        production_lead_time_hours(setup_hours=4, hours_per_unit=-1, quantity=100)
+    with pytest.raises(ValueError):
+        production_lead_time_hours(setup_hours=-4, hours_per_unit=0.2, quantity=100)
+
+
 def test_backward_scheduling_just_subtracts_hours() -> None:
     """쉬는 날이 없으므로 달력을 셀 필요가 없다.
 

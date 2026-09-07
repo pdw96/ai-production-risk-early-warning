@@ -86,6 +86,8 @@ export interface MasterItem {
   item_type: ItemType;
   item_code: string;
   item_name: string;
+  /** 이 품목의 재고 단위. 안전재고가 이 단위로 적힌다. */
+  stock_uom: string;
   /** 안전재고는 자재만 관리한다. */
   safety_stock: number | null;
   lot_count: number | null;
@@ -180,6 +182,8 @@ export interface BomRequirement {
   material_code: string;
   material_name: string;
   unit_quantity: number;
+  /** 소요량의 단위는 **하위 품목의** 재고 단위다. */
+  unit_quantity_uom: string;
 }
 
 export interface MasterData {
@@ -191,6 +195,8 @@ export interface PurchaseReceipt {
   receipt_id: number;
   material_code: string;
   material_name: string;
+  /** 예정 수량의 단위. */
+  stock_uom: string;
   scheduled_date: string;
   scheduled_quantity: number;
   expiry_date: string | null;

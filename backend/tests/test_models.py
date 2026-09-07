@@ -751,3 +751,23 @@ def test_the_prefix_check_is_case_sensitive_on_this_engine(session: Session) -> 
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_lead_time_coefficients_cannot_be_negative(session: Session) -> None:
+    """음수 계수가 표에 들어가면 계획이 시간을 거꾸로 흐르게 한다.
+
+    소요 시간 = 준비시간 + 개당 시간 × 수량이므로 계수가 음수면 합이 음수가 되고,
+    `start_at` 은 착수를 **완료보다 뒤에** 잡는다. 손으로 고치는 품목 마스터에서
+    부호 하나가 그 일을 하므로 표가 먼저 막는다.
+    """
+    session.add(finished_item(code="FG-90", name="가상 소재 Z", hours_per_unit=-0.2))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_a_negative_setup_time_is_refused_too(session: Session) -> None:
+    session.add(finished_item(code="FG-91", name="가상 소재 Y", setup_hours=-1))
+
+    with pytest.raises(IntegrityError):
+        session.flush()

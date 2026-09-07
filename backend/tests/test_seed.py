@@ -789,3 +789,36 @@ def test_preflight_lets_an_empty_or_managed_database_through(tmp_path, monkeypat
         connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY)"))
 
     assert preflight.check() is None
+
+
+def test_the_reset_path_leaves_tables_this_app_does_not_own(tmp_path, monkeypatch) -> None:
+    """옆에 있는 남의 표는 살아남아야 한다.
+
+    옛 표를 치우려고 데이터베이스를 읽어서 지우면, 스키마를 나눠 쓰는 곳에서는
+    **보이는 표를 전부** 지운다. 개발용이라고 문서에 적는 것으로는 막지 못한다 —
+    한 번 실행하면 되돌릴 수 없기 때문이다. 지울 것은 이름으로 정한다.
+    """
+    database_path = tmp_path / "shared.db"
+    url = f"sqlite:///{database_path.as_posix()}"
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        # 옛 이름 하나와, 이 앱과 무관한 표 하나를 나란히 둔다.
+        connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE payroll_entries (id INTEGER PRIMARY KEY)"))
+
+    monkeypatch.setattr(db_base, "engine", engine)
+    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
+
+    seed_module.reset_database()
+
+    with engine.connect() as connection:
+        remaining = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+        }
+
+    assert "products" not in remaining
+    assert "payroll_entries" in remaining
+    assert "items" in remaining

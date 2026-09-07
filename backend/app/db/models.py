@@ -248,6 +248,17 @@ class Item(Base):
             f"item_type <> '{RAW_ITEM}' OR safety_stock IS NOT NULL",
             name="ck_item_raw_has_safety_stock",
         ),
+        # 리드타임 계수는 시간이다. 음수를 넣으면 소요 시간이 음수가 되고
+        # `start_at` 이 착수를 **완료보다 뒤에** 잡는다 — 계획이 시간을 거꾸로
+        # 흐르게 한다. 손으로 고치는 품목 마스터에서 부호 하나가 그 일을 한다.
+        CheckConstraint(
+            "setup_hours IS NULL OR setup_hours >= 0",
+            name="ck_item_setup_hours_not_negative",
+        ),
+        CheckConstraint(
+            "hours_per_unit IS NULL OR hours_per_unit >= 0",
+            name="ck_item_hours_per_unit_not_negative",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

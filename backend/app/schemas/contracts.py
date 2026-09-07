@@ -116,6 +116,8 @@ class MasterItemResponse(BaseModel):
     item_type: ItemType
     item_code: str
     item_name: str
+    # 이 품목의 재고 단위. 안전재고가 이 단위로 적힌다.
+    stock_uom: str
     # 안전재고는 자재만 값을 가진다.
     safety_stock: float | None
     # 제품·자재 모두 로트를 가진다(제품은 완제품 로트).
@@ -132,6 +134,9 @@ class BomRequirementResponse(BaseModel):
     material_code: str
     material_name: str
     unit_quantity: float
+    # 소요량의 단위는 **하위 품목의** 재고 단위다. 상위 하나를 만드는 데 드는
+    # 하위의 양이므로, 상위의 단위를 적으면 뜻이 뒤집힌다.
+    unit_quantity_uom: str
 
 
 class MasterDataResponse(BaseModel):
@@ -245,6 +250,7 @@ class PurchaseReceiptResponse(BaseModel):
     receipt_id: int
     material_code: str
     material_name: str
+    stock_uom: str
     scheduled_date: date
     scheduled_quantity: float
     expiry_date: date | None

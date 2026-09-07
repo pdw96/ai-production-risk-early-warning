@@ -45,7 +45,7 @@ export function PurchaseTable({
               </td>
               <td>{format_date(receipt.scheduled_date)}</td>
               <td>{format_arrival(receipt.days_until_arrival)}</td>
-              <td className="numeric-cell">{format_quantity(receipt.scheduled_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(receipt.scheduled_quantity, receipt.stock_uom)}</td>
               <td>{format_expiry_date(receipt.expiry_date)}</td>
               <td>{receipt.within_horizon ? "반영" : "기간 밖"}</td>
             </tr>

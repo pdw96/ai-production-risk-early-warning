@@ -49,6 +49,12 @@ def production_lead_time_hours(
     """
     if quantity < 0:
         raise ValueError("수량은 음수일 수 없습니다.")
+    # 계수도 본다. 제약이 표를 지키지만 이 함수는 표를 거치지 않은 값으로도
+    # 불릴 수 있고, 음수 계수는 소요 시간을 음수로 만들어 `start_at` 이 착수를
+    # 완료보다 뒤에 잡게 한다 — 일정이 시간을 거꾸로 흐르는 것보다, 여기서
+    # 터지는 편이 낫다.
+    if setup_hours < 0 or hours_per_unit < 0:
+        raise ValueError("리드타임 계수는 음수일 수 없습니다.")
     return setup_hours + hours_per_unit * quantity
 
 

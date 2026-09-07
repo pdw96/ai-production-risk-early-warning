@@ -8,10 +8,10 @@ import { KpiCard } from "../components/kpi-card";
 import { ProductionTrendChart } from "../components/production-trend-chart";
 import { StatusBadge } from "../components/status-badge";
 import { getDashboard, type Dashboard } from "../lib/api";
-
-function format_quantity(value: number): string {
-  return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value)}개`;
-}
+// 수량 표기는 한 곳에서만 정한다. 여기 사본을 두었더니 자재에 단위가 생겼을 때
+// 이 화면만 「개」로 남았다 — 같은 규칙을 두 곳에 적으면 반드시 갈린다.
+// 날짜와 백분율은 이 화면만의 표기라(「2026년 9월 7일」) 아직 사본이 맞다.
+import { format_quantity } from "../lib/format";
 
 function format_percentage(value: number): string {
   return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(value)}%`;
@@ -145,11 +145,11 @@ export default function HomePage() {
                 <Link href="/materials">
                   <div>
                     <strong>{material.material_name}</strong>
-                    <span>{material.material_code} · 재고 {format_quantity(material.current_stock)}</span>
+                    <span>{material.material_code} · 재고 {format_quantity(material.current_stock, material.stock_uom)}</span>
                   </div>
                   <div className="risk-list__metrics">
                     <StatusBadge severity={material.severity} />
-                    <span>안전재고 {format_quantity(material.safety_stock)}</span>
+                    <span>안전재고 {format_quantity(material.safety_stock, material.stock_uom)}</span>
                   </div>
                 </Link>
               </li>

@@ -14,6 +14,7 @@ const items: MasterItem[] = [
     lot_count: 30,
     safety_stock: null,
     shelf_life_days: 180,
+    stock_uom: "EA",
   },
   {
     item_code: "RM-01",
@@ -23,6 +24,7 @@ const items: MasterItem[] = [
     lot_count: 2,
     safety_stock: 224,
     shelf_life_days: null,
+    stock_uom: "L",
   },
 ];
 
@@ -33,6 +35,7 @@ const bom_requirements: BomRequirement[] = [
     product_code: "FG-01",
     product_name: "아크솔 시트",
     unit_quantity: 1.42,
+    unit_quantity_uom: "L",
   },
 ];
 
@@ -58,7 +61,7 @@ describe("MasterItemTable", () => {
 
     expect(markup.match(/해당 없음/g)).toHaveLength(1);
     expect(markup).toContain("30건");
-    expect(markup).not.toContain("224개");
+    expect(markup).not.toContain("224 L");
   });
 
   it("shows the shelf life setting and names the open-ended case", () => {
@@ -73,7 +76,8 @@ describe("MasterItemTable", () => {
   it("shows safety stock and lot count for materials", () => {
     const markup = renderToStaticMarkup(<MasterItemTable items={[items[1]]} />);
 
-    expect(markup).toContain("224개");
+    // 안전재고도 그 자재의 단위로 적는다.
+    expect(markup).toContain("224 L");
     expect(markup).toContain("2건");
   });
 });
@@ -82,7 +86,8 @@ describe("BomTable", () => {
   it("renders the per-unit material requirement of a product", () => {
     const markup = renderToStaticMarkup(<BomTable bomRequirements={bom_requirements} />);
 
-    ["아크솔 시트", "FG-01", "폴리머 베이스", "RM-01", "1.42개"].forEach((value) =>
+    // 소요량의 단위는 하위 품목(자재)의 것이다.
+      ["아크솔 시트", "FG-01", "폴리머 베이스", "RM-01", "1.42 L"].forEach((value) =>
       expect(markup).toContain(value),
     );
   });

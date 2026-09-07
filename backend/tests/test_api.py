@@ -347,9 +347,14 @@ def test_master_data_bom_links_every_product_to_its_materials(client: TestClient
 
     bom = data["bom_requirements"]
     assert len(bom) == 15
-    assert {"product_code", "product_name", "material_code", "material_name", "unit_quantity"} <= set(
-        bom[0]
-    )
+    assert {
+        "product_code",
+        "product_name",
+        "material_code",
+        "material_name",
+        "unit_quantity",
+        "unit_quantity_uom",
+    } <= set(bom[0])
     # 목록은 제품 코드 → 자재 코드 순으로 안정 정렬된다.
     assert bom == sorted(bom, key=lambda row: (row["product_code"], row["material_code"]))
     linked_counts = {
@@ -371,6 +376,7 @@ def test_purchases_expose_the_inbound_schedule_with_horizon_flag(
         "receipt_id",
         "material_code",
         "material_name",
+        "stock_uom",
         "scheduled_date",
         "scheduled_quantity",
         "expiry_date",
@@ -814,3 +820,30 @@ def test_the_warehouse_material_total_is_only_meaningful_within_one_unit(
         sum(lot["quantity"] for lot in raw["lots"] if lot["item_type"] == "자재"),
         abs=0.05,
     )
+
+
+def test_every_quantity_screen_knows_the_unit_it_counts_in(client: TestClient) -> None:
+    """단위를 두 화면에만 실으면 같은 자재가 화면마다 다른 말을 한다.
+
+    RM-02 가 자재관리에서는 `240 kg` 인데 구매관리에서는 `240개` 로 나오면,
+    단위를 실어 준 것이 오히려 화면 사이를 어긋나게 한다. 그래서 수량을 보여
+    주는 응답은 전부 자기 단위를 든다.
+    """
+    units = {
+        row["material_code"]: row["stock_uom"]
+        for row in client.get("/api/materials").json()["data"]
+    }
+
+    for receipt in client.get("/api/purchases").json()["data"]:
+        assert receipt["stock_uom"] == units[receipt["material_code"]]
+
+    master = client.get("/api/master-data").json()["data"]
+    for item in master["items"]:
+        assert item["stock_uom"]
+        if item["item_type"] == "자재":
+            assert item["stock_uom"] == units[item["item_code"]]
+
+    # 소요량의 단위는 **하위 품목의** 것이다. 상위 하나를 만드는 데 드는 하위의
+    # 양이므로, 상위의 단위를 적으면 뜻이 뒤집힌다.
+    for requirement in master["bom_requirements"]:
+        assert requirement["unit_quantity_uom"] == units[requirement["material_code"]]

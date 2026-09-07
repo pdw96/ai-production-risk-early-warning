@@ -14,6 +14,7 @@ function receipt(overrides: Partial<PurchaseReceipt> = {}): PurchaseReceipt {
     receipt_id: 7,
     scheduled_date: "2026-09-07",
     scheduled_quantity: 375,
+    stock_uom: "L",
     within_horizon: true,
     ...overrides,
   };
@@ -23,7 +24,9 @@ describe("PurchaseTable", () => {
   it("renders the receipt number, material and schedule", () => {
     const markup = renderToStaticMarkup(<PurchaseTable receipts={[receipt()]} />);
 
-    ["PO-007", "RM-01", "폴리머 베이스", "2026.09.07", "375개", "2026.12.01"].forEach(
+    // 이 자재의 단위는 L 이다. 예정 수량도 그 단위로 적혀야 한다 —
+    // 다른 화면이 「375 L」인데 여기만 「375개」면 같은 물건이 두 말을 한다.
+    ["PO-007", "RM-01", "폴리머 베이스", "2026.09.07", "375 L", "2026.12.01"].forEach(
       (value) => expect(markup).toContain(value),
     );
   });

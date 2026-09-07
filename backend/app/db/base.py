@@ -58,21 +58,38 @@ def create_all() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+# 이 앱이 예전에 쓰던 표 이름들. 지금 모델은 이 이름을 모르므로 메타데이터만
+# 보고 지우면 **살아남는다** — 품목 통합 전의 `products` · `materials` ·
+# `bom_requirements` 를 가진 데이터베이스에서 새 표가 그 옆에 생기고, 시드가
+# 현재 리비전을 찍어 두므로 Alembic 도 영영 치우지 못한다. 옛 데이터를 든 표가
+# 그대로 굳는 것을 막으려면 이름을 여기 적어 두는 수밖에 없다.
+#
+# 표 이름을 바꿀 때마다 옛 이름이 여기 한 줄 는다.
+LEGACY_TABLE_NAMES: tuple[str, ...] = (
+    "products",
+    "materials",
+    "bom_requirements",
+)
+
+
 def drop_all() -> None:
-    """데이터베이스에 **실제로 있는** 표를 전부 지운다.
+    """**이 앱이 만든 표만** 지운다 — 지금 것과 옛 것.
 
-    모델 메타데이터만 보고 지우면 **이름이 바뀐 옛 표가 살아남는다.** 품목 통합
-    전의 `products` · `materials` · `bom_requirements` 를 가진 데이터베이스에서
-    이 함수를 부르면 지금 메타데이터는 그 이름들을 모르므로 건드리지 않고,
-    새 표가 그 옆에 생긴다. 그리고 시드가 현재 리비전을 찍어 두므로
-    **Alembic 도 영영 치우지 못한다** — 옛 데이터를 든 표가 그대로 굳는다.
+    데이터베이스 전체를 읽어 지우지 않는다. PostgreSQL 로 옮기면서 스키마를
+    다른 것과 나눠 쓸 수 있게 됐고, 보이는 표를 전부 지우면 **옆에 있는 남의
+    표까지 사라진다.** 개발용이라고 문서에 적어 두는 것으로는 막지 못한다 —
+    한 번 실행하면 되돌릴 수 없기 때문이다.
 
-    그래서 메타데이터가 아니라 **데이터베이스를 읽어** 지운다. `alembic_version`
-    도 함께 사라지며, 시드가 곧바로 다시 찍는다.
+    그래서 지울 것을 이름으로 정한다. 현재 모델의 표와 위의 옛 이름들, 그리고
+    `alembic_version` 이다. 버전 표를 함께 지우는 것은 시드가 곧바로 다시 찍기
+    때문이다.
     """
     register_models()
+    owned = set(Base.metadata.tables) | set(LEGACY_TABLE_NAMES) | {"alembic_version"}
+
     existing = MetaData()
-    existing.reflect(bind=engine)
+    # 이름으로 걸러 반사한다. 여기서 거른 표는 아래 `drop_all` 이 아예 보지 못한다.
+    existing.reflect(bind=engine, only=lambda name, _metadata: name in owned)
     existing.drop_all(bind=engine)
 
 

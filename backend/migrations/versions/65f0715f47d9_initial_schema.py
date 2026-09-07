@@ -126,6 +126,8 @@ def upgrade() -> None:
     sa.CheckConstraint("((item_type = '완제품') = (substr(code, 1, 3) = 'FG-')) AND ((item_type = '반제품') = (substr(code, 1, 3) = 'SF-')) AND ((item_type = '원자재') = (substr(code, 1, 3) = 'RM-'))", name='ck_item_code_prefix'),
     sa.CheckConstraint("item_type <> '반제품' OR shelf_life_days IS NULL", name='ck_item_semi_finished_has_no_shelf_life'),
     sa.CheckConstraint("item_type <> '원자재' OR safety_stock IS NOT NULL", name='ck_item_raw_has_safety_stock'),
+    sa.CheckConstraint('setup_hours IS NULL OR setup_hours >= 0', name='ck_item_setup_hours_not_negative'),
+    sa.CheckConstraint('hours_per_unit IS NULL OR hours_per_unit >= 0', name='ck_item_hours_per_unit_not_negative'),
     sa.CheckConstraint("item_type IN ('완제품', '반제품', '원자재')", name='ck_item_type'),
     sa.CheckConstraint("phase IN ('초기', '양산')", name='ck_item_phase'),
     sa.CheckConstraint("process_group = 'PROCESS'", name='ck_item_process_group'),

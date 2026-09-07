@@ -241,6 +241,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="제품",
             item_code=product.code,
             item_name=product.name,
+            stock_uom=product.stock_uom,
             # 안전재고는 자재만 관리한다.
             safety_stock=None,
             # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
@@ -254,6 +255,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="자재",
             item_code=material.code,
             item_name=material.name,
+            stock_uom=material.stock_uom,
             safety_stock=(
                 None if material.safety_stock is None else round(material.safety_stock, 2)
             ),
@@ -279,6 +281,7 @@ def get_master_data(session: Session) -> MasterDataResponse:
                 material_code=row.child_item.code,
                 material_name=row.child_item.name,
                 unit_quantity=round(row.unit_quantity, 2),
+                unit_quantity_uom=row.child_item.stock_uom,
             )
             for row in bom_rows
         ),
@@ -301,6 +304,7 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
         PurchaseReceiptResponse(
             receipt_id=receipt.id,
             material_code=receipt.item.code,
+            stock_uom=receipt.item.stock_uom,
             material_name=receipt.item.name,
             scheduled_date=receipt.scheduled_date,
             scheduled_quantity=round(receipt.scheduled_quantity, 2),
