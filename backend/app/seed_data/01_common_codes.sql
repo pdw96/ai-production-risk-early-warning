@@ -49,7 +49,7 @@ INSERT INTO code_groups (group_code, name, value_fixed, description) VALUES
 -- 창고 셋. 담는 것이 정해져 있다.
 INSERT INTO common_codes (group_code, code, name, description, sort_order, is_active) VALUES
   ('WAREHOUSE', '원재료창고', '원재료창고', '입고된 자재를 보관한다.', 1, TRUE),
-  ('WAREHOUSE', '생산창고',   '생산창고',   '원재료창고에서 이동한 자재와 검사 대기·불합격 완제품이 있다.', 2, TRUE),
+  ('WAREHOUSE', '생산창고',   '생산창고',   '원재료창고에서 이동한 자재와, 검사 대기·불합격·이송 대기 완제품이 있다.', 2, TRUE),
   ('WAREHOUSE', '제품창고',   '제품창고',   '출하검사에 합격한 완제품만 적재된다.', 3, TRUE);
 
 INSERT INTO common_codes (group_code, code, name, description, sort_order, is_active) VALUES

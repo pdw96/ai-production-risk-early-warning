@@ -44,7 +44,8 @@ FINISHED_GOODS_WAREHOUSES = (PRODUCTION_WAREHOUSE, PRODUCT_WAREHOUSE)
 
 # 창고는 셋이며 담는 것이 정해져 있다.
 #   원재료창고 — 입고된 자재
-#   생산창고   — 원재료창고에서 이동한 자재, 그리고 검사 대기·불합격 완제품
+#   생산창고   — 원재료창고에서 이동한 자재, 그리고 검사 대기 · 불합격 · 합격했지만
+#                아직 제품창고로 옮겨지지 않은 완제품
 #   제품창고   — 출하검사 합격 완제품만
 WAREHOUSES = (RAW_MATERIAL_WAREHOUSE, PRODUCTION_WAREHOUSE, PRODUCT_WAREHOUSE)
 

@@ -822,3 +822,43 @@ def test_the_reset_path_leaves_tables_this_app_does_not_own(tmp_path, monkeypatc
     assert "products" not in remaining
     assert "payroll_entries" in remaining
     assert "items" in remaining
+
+
+def test_the_reset_path_works_from_any_working_directory(tmp_path, monkeypatch) -> None:
+    """`alembic.ini` 의 리비전 폴더는 **현재 작업 디렉터리**를 기준으로 풀린다.
+
+    그래서 `backend/` 밖에서 부르면 표를 지우고 다시 만든 **뒤에** 버전을 찍다가
+    죽는다. 남는 것은 빈 표 스무 개에 버전도 데이터도 없는 데이터베이스이고,
+    그 상태를 `preflight` 는 「옛 데이터베이스」로 잘못 읽어 기동을 막는다 —
+    지우는 데까지는 성공했으므로 되돌릴 것도 없다.
+    """
+    database_path = tmp_path / "elsewhere.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    monkeypatch.setattr(db_base, "engine", engine)
+    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
+    monkeypatch.chdir(tmp_path)
+
+    seed_module.reset_database()
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+        assert connection.execute(text("SELECT count(*) FROM items")).scalar_one() == 20
+
+
+def test_preflight_ignores_tables_this_app_does_not_own(tmp_path, monkeypatch) -> None:
+    """남의 표 하나가 첫 기동을 영영 막아서는 안 된다.
+
+    스키마를 나눠 쓰는 곳에서 「아무 표나 있으면 멈춘다」로 두면, 이 앱이 아직
+    한 줄도 만들지 않았는데도 마이그레이션이 시작되지 못한다. 그리고 그때
+    알려 주는 두 길(리셋 · 스탬프)은 둘 다 그 상태에 대한 답이 아니다.
+    """
+    database_path = tmp_path / "neighbour.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE payroll_entries (id INTEGER PRIMARY KEY)"))
+
+    monkeypatch.setattr(preflight, "engine", engine)
+
+    assert preflight.check() is None

@@ -30,7 +30,9 @@ function total_by_unit(lots: WarehouseLot[], keep: (lot: WarehouseLot) => boolea
     totals.set(lot.stock_uom, (totals.get(lot.stock_uom) ?? 0) + lot.quantity);
   }
   if (totals.size === 0) {
-    return format_quantity(0);
+    // 여기서 `format_quantity(0)` 을 쓰면 「0개」가 된다. kg 만 담는 창고에서
+    // 그것은 이 화면이 없애려던 바로 그 오류다 — 없는 것에는 단위가 없다.
+    return "없음";
   }
   return [...totals.entries()]
     .sort(([left], [right]) => left.localeCompare(right))

@@ -17,7 +17,7 @@ import sys
 
 from sqlalchemy import inspect
 
-from app.db.base import engine
+from app.db.base import Base, LEGACY_TABLE_NAMES, engine, register_models
 
 
 ALEMBIC_TABLE = "alembic_version"
@@ -40,11 +40,21 @@ Alembic 없이 만들어진 이전 판의 데이터베이스입니다. 이대로
 
 
 def check() -> str | None:
-    """막아야 할 상태면 사람에게 보일 문장을, 아니면 None 을 돌려준다."""
-    tables = sorted(inspect(engine).get_table_names())
-    if not tables or ALEMBIC_TABLE in tables:
+    """막아야 할 상태면 사람에게 보일 문장을, 아니면 None 을 돌려준다.
+
+    보는 것은 **이 앱의 표뿐**이다. 아무 표나 있으면 막으면, 스키마를 나눠 쓰는
+    곳에서는 옆에 있는 남의 표 하나 때문에 **첫 기동이 영영 마이그레이션을 하지
+    못한다** — 그리고 그때 알려 주는 두 길은 둘 다 그 상태에 대한 답이 아니다.
+    지우는 쪽(`drop_all`)이 이 앱의 표만 지우기로 한 것과 같은 이유이며, 같은
+    목록을 본다.
+    """
+    register_models()
+    owned = set(Base.metadata.tables) | set(LEGACY_TABLE_NAMES)
+
+    present = sorted(set(inspect(engine).get_table_names()) & (owned | {ALEMBIC_TABLE}))
+    if not present or ALEMBIC_TABLE in present:
         return None
-    return MESSAGE.format(table=ALEMBIC_TABLE, tables=", ".join(tables))
+    return MESSAGE.format(table=ALEMBIC_TABLE, tables=", ".join(present))
 
 
 def main() -> None:
