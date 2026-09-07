@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     Float,
@@ -15,7 +16,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.config import (
     BOM_LEVELS,
+    DEFECTIVE_STOCK,
     FINISHED_GOODS_WAREHOUSES,
+    GOOD_STOCK,
     INCOMING_INSPECTION,
     INSPECTION_RESULTS,
     INSPECTION_TYPES,
@@ -27,9 +30,11 @@ from app.core.config import (
     PROCESSES,
     PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
+    QC_FAILED,
     QC_PASSED,
     QC_STATUSES,
     SEMI_FINISHED_ITEM,
+    STOCK_TYPES,
     UNITS_OF_MEASURE,
 )
 from app.db.base import Base
@@ -49,6 +54,7 @@ _ALLOWED_QC_STATUSES_SQL = _sql_value_list(QC_STATUSES)
 _ALLOWED_INSPECTION_TYPES_SQL = _sql_value_list(INSPECTION_TYPES)
 _ALLOWED_INSPECTION_RESULTS_SQL = _sql_value_list(INSPECTION_RESULTS)
 _ALLOWED_ITEM_TYPES_SQL = _sql_value_list(ITEM_TYPES)
+_ALLOWED_STOCK_TYPES_SQL = _sql_value_list(STOCK_TYPES)
 _ALLOWED_PROCESSES_SQL = _sql_value_list(PROCESSES)
 _ALLOWED_UNITS_OF_MEASURE_SQL = _sql_value_list(UNITS_OF_MEASURE)
 _ALLOWED_ITEM_PHASES_SQL = _sql_value_list(ITEM_PHASES)
@@ -311,9 +317,14 @@ class FinishedGoodsLot(Base):
 
     로트 행은 삭제하지 않는다. 유효기간이 지나도 `만료` 로 표시할 뿐 남긴다.
 
-    창고는 `생산창고`/`제품창고` 둘이고, **어디에 있는지가 곧 검사 결과다.**
-    생산창고에는 검사 대기와 불합격만 있고, 합격하면 제품창고로 옮겨진다.
-    출하는 제품창고 재고에 한해 일어난다(후속: 출하 리스크).
+    창고는 `생산창고`/`제품창고` 둘이다. 제품창고에 들어오는 조건은 검사 합격이지만
+    **그 역은 성립하지 않는다**(지적 ①) — 제품창고 안에서 양불이동으로 불량품이
+    갈리고, 합격이면서 아직 입고 처리가 안 된 로트도 있을 수 있다. 그래서 두
+    사실을 양방향 하나가 아니라 **단방향 둘**로 건다.
+
+    날짜가 둘인 것은 유효기간의 기산점이 생산일이 아니라 합격일이기 때문이다
+    (지적 ⑰). 둘의 차이가 「검사에 며칠 걸렸나」가 되어, 생산창고에 완제품이
+    쌓이는 이유를 그 값이 설명한다.
     """
 
     __tablename__ = "finished_goods_lots"
@@ -332,12 +343,27 @@ class FinishedGoodsLot(Base):
             f"qc_status IN ({_ALLOWED_QC_STATUSES_SQL})",
             name="ck_finished_goods_lot_qc_status",
         ),
-        # 창고와 검사 결과는 서로를 결정한다 — 제품창고에는 합격만 있고, 합격은
-        # 제품창고에만 있다. 한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는
-        # 상태가 생겨, 생산창고가 검사 대기·불합격만 담는다는 규칙이 깨진다.
         CheckConstraint(
-            f"(warehouse = '{PRODUCT_WAREHOUSE}') = (qc_status = '{QC_PASSED}')",
-            name="ck_finished_goods_lot_warehouse_matches_qc",
+            f"stock_type IN ({_ALLOWED_STOCK_TYPES_SQL})",
+            name="ck_finished_goods_lot_stock_type",
+        ),
+        # 지적 ① — 양방향 하나를 단방향 둘로 가른다.
+        #
+        # ① 제품창고에 있으면 합격이다. 검사 대기·불합격이 섞이면 출하 가능
+        #    수량이 실제보다 많아 보인다.
+        # ② 불량품이면 불합격이다. 재고구분은 판정에서 나오는 것이지 사람이
+        #    임의로 붙이는 딱지가 아니다.
+        #
+        # 역방향은 걸지 않는다. 「합격이면 반드시 제품창고」로 못박으면 합격했으나
+        # 아직 입고 처리 전인 로트가 표현되지 않고, 관문 6(재고이동 요청·처리)이
+        # 들어오는 자리가 제약에 막힌다.
+        CheckConstraint(
+            f"warehouse <> '{PRODUCT_WAREHOUSE}' OR qc_status = '{QC_PASSED}'",
+            name="ck_finished_goods_lot_product_warehouse_holds_passed_only",
+        ),
+        CheckConstraint(
+            f"stock_type <> '{DEFECTIVE_STOCK}' OR qc_status = '{QC_FAILED}'",
+            name="ck_finished_goods_lot_defective_is_rejected",
         ),
     )
 
@@ -349,9 +375,20 @@ class FinishedGoodsLot(Base):
     # 없으면 `검사 대기`다. 캐시를 두는 이유는 위 창고 불변식을 CHECK 제약으로
     # 걸기 위해서다(테이블 간 참조는 SQLite CHECK 로 표현할 수 없다).
     qc_status: Mapped[str] = mapped_column(String(20))
+    # 양품 · 불량품. 지금은 판정에서 그대로 나오지만, 관문 8(양불이동)이 들어오면
+    # 총량을 바꾸지 않고 이 칸만 바꾸는 수불 줄이 생긴다.
+    stock_type: Mapped[str] = mapped_column(String(10), default=GOOD_STOCK)
     quantity: Mapped[float] = mapped_column(Float)
     produced_date: Mapped[date] = mapped_column(Date)
-    # 제품의 설정기간에서 파생해 저장한다. 무기한 품목이면 None 이다.
+    # 합격일 — 유효기간의 기산점이다(지적 ⑰). 아직 판정을 받지 않았거나
+    # 불합격한 로트는 값이 없다. 생산일과의 차이가 곧 검사 대기 일수다.
+    passed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 재작업분인가(30판). 로트번호에 `+R` 을 붙이는 관행은 라벨과 맞추기 위해
+    # 그대로 두되, 판정은 번호가 아니라 이 칸에서 읽는다 — 번호는 사람이 보는
+    # 라벨이고 분기는 프로그램이 하는 일이다.
+    reworked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 제품의 설정기간을 합격일에 더해 파생한다. 합격일이 없으면 유효기간도
+    # 아직 없다 — 시계는 합격에서 시작한다. 무기한 품목도 None 이다.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     item: Mapped[Item] = relationship(back_populates="finished_goods_lots")

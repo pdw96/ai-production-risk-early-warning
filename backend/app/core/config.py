@@ -55,6 +55,12 @@ OUTGOING_INSPECTION = "OQC"
 INSPECTION_TYPES = (INCOMING_INSPECTION, PROCESS_INSPECTION, OUTGOING_INSPECTION)
 INSPECTION_RESULTS = (QC_PASSED, QC_FAILED)
 
+# 재고구분(STOCK_TYPE). 창고 안에서 출하 가능 여부를 가르는 축이며, 창고와는
+# 다른 질문에 답한다 — 창고는 「어디에 있는가」이고 재고구분은 「팔 수 있는가」다.
+GOOD_STOCK = "양품"
+DEFECTIVE_STOCK = "불량품"
+STOCK_TYPES = (GOOD_STOCK, DEFECTIVE_STOCK)
+
 # ── 품목 (지적 ⑧ · ⑯ · ㉛) ────────────────────────────────────────────────
 # 품목 표가 하나가 되면서 「무엇인가」를 유형이 말한다. 반제품은 만들어지면서
 # 쓰이므로 표가 둘일 때는 앉을 자리가 없었다.

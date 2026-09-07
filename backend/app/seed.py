@@ -7,7 +7,9 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from app.core.config import (
+    DEFECTIVE_STOCK,
     FINISHED_ITEM,
+    GOOD_STOCK,
     INCOMING_INSPECTION,
     LAMINATING_PROCESS,
     MASS_PRODUCTION_PHASE,
@@ -105,6 +107,9 @@ PRODUCT_HOURS_PER_UNIT: tuple[float, ...] = (0.2, 0.15, 0.25, 0.18, 0.3)
 
 # 생산 당일과 그 전날 생산분은 아직 OQC 를 받지 않은 것으로 둔다.
 OQC_PENDING_DAYS = 1
+# 생산 다음 날 검사한다. 합격일 = 생산일 + 이 값이고, 그 차이가 곧
+# 「검사에 며칠 걸렸나」다(지적 ⑰).
+OQC_LEAD_DAYS = 1
 # 검사 표본과 불합격을 고르는 고정 주기. 위와 같은 이유로 rng 를 쓰지 않는다.
 OQC_FAIL_CYCLE = 17
 PQC_SAMPLE_CYCLE = 7
@@ -345,8 +350,13 @@ def reset_database(reference_date: date | None = None) -> None:
             for lot in finished_goods_lots
         ):
             raise RuntimeError("합성 데이터가 만료된 완제품 로트를 만들지 못했습니다.")
-        if not any(lot.expiry_date is None for lot in finished_goods_lots):
+        if not any(
+            lot.passed_date is not None and lot.expiry_date is None
+            for lot in finished_goods_lots
+        ):
             raise RuntimeError("합성 데이터가 무기한 완제품 로트를 만들지 못했습니다.")
+        if not any(lot.stock_type == DEFECTIVE_STOCK for lot in finished_goods_lots):
+            raise RuntimeError("합성 데이터가 불량품 재고를 만들지 못했습니다.")
 
         inspection_types = {
             inspection.inspection_type
@@ -419,6 +429,13 @@ def _seed_finished_goods_lots(
         else:
             qc_status = QC_PASSED
 
+        # 합격일이 유효기간의 기산점이다(지적 ⑰). 아직 판정을 받지 않았거나
+        # 불합격한 로트는 합격일이 없고, 그래서 유효기간도 아직 시작하지 않는다.
+        passed_date = (
+            work_date + timedelta(days=OQC_LEAD_DAYS)
+            if qc_status == QC_PASSED
+            else None
+        )
         lot = FinishedGoodsLot(
             item=product,
             lot_number=f"LOT-{product.code}-{work_date:%y%m%d}",
@@ -427,9 +444,19 @@ def _seed_finished_goods_lots(
                 PRODUCT_WAREHOUSE if qc_status == QC_PASSED else PRODUCTION_WAREHOUSE
             ),
             qc_status=qc_status,
+            # 재고구분은 판정에서 나온다. 양불이동으로 사람이 바꾸는 것은
+            # 관문 8 이 들어오는 7단계의 일이다.
+            stock_type=DEFECTIVE_STOCK if qc_status == QC_FAILED else GOOD_STOCK,
+            # 재작업 흐름은 6단계에서 생긴다. 시드에는 재작업분이 없다.
+            reworked=False,
             quantity=round(float(quantity), 2),
             produced_date=work_date,
-            expiry_date=_expiry_date(product.shelf_life_days, work_date),
+            passed_date=passed_date,
+            expiry_date=(
+                None
+                if passed_date is None
+                else _expiry_date(product.shelf_life_days, passed_date)
+            ),
         )
         session.add(lot)
 
@@ -439,7 +466,7 @@ def _seed_finished_goods_lots(
         session.add(
             QualityInspection(
                 inspection_type=OUTGOING_INSPECTION,
-                inspected_date=work_date + timedelta(days=1),
+                inspected_date=work_date + timedelta(days=OQC_LEAD_DAYS),
                 result=qc_status,
                 reason=(
                     None

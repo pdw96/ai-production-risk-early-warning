@@ -372,9 +372,14 @@ def test_finished_goods_lot_quantity_equals_the_recorded_production(
     assert failed_pqc
 
 
-def test_finished_goods_lots_derive_their_expiry_from_the_product_master(
+def test_finished_goods_lots_derive_their_expiry_from_the_pass_date(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
+    """지적 ⑰ — 시계는 생산이 아니라 합격에서 시작한다.
+
+    아직 판정을 받지 않았거나 불합격한 로트는 합격일이 없고, 그래서 유효기간도
+    아직 없다. 불합격분은 팔 물건이 아니므로 유효기간을 셀 이유가 없다.
+    """
     reset_database(date(2026, 8, 31))
 
     with seeded_session_factory() as session:
@@ -387,12 +392,15 @@ def test_finished_goods_lots_derive_their_expiry_from_the_product_master(
     assert lots
     for lot in lots:
         shelf_life_days = shelf_life_by_product[lot.item_id]
-        if shelf_life_days is None:
+        if lot.passed_date is None or shelf_life_days is None:
             assert lot.expiry_date is None
         else:
-            assert lot.expiry_date == lot.produced_date + timedelta(
-                days=shelf_life_days
-            )
+            assert lot.expiry_date == lot.passed_date + timedelta(days=shelf_life_days)
+
+    # 세 경우가 모두 데이터에 있어야 이 판정이 무언가를 말한다.
+    assert any(lot.passed_date is None for lot in lots)
+    assert any(lot.passed_date is not None and lot.expiry_date is None for lot in lots)
+    assert any(lot.expiry_date is not None for lot in lots)
 
 
 def test_finished_goods_qc_status_agrees_with_the_oqc_record(

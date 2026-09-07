@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -324,8 +324,10 @@ def _finished_goods_lot(product: Item, **overrides: Any) -> FinishedGoodsLot:
         "lot_number": "LOT-FG-01-260901",
         "warehouse": "제품창고",
         "qc_status": "합격",
+        "stock_type": "양품",
         "quantity": 100,
         "produced_date": date.today(),
+        "passed_date": date.today(),
     }
     values.update(overrides)
     return FinishedGoodsLot(**values)
@@ -352,21 +354,55 @@ def test_the_product_warehouse_holds_only_lots_that_passed_inspection(
         session.commit()
 
 
-def test_a_lot_that_passed_inspection_cannot_stay_in_the_production_warehouse(
+def test_a_lot_that_passed_inspection_may_wait_in_the_production_warehouse(
     session: Session,
 ) -> None:
-    """창고와 검사 결과는 서로를 결정한다.
+    """지적 ① — 양방향 CHECK 를 버린다.
 
-    한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는 상태가 생겨, 생산창고가
-    검사 대기·불합격만 담는다는 규칙이 깨진다.
+    제품창고에 들어오는 조건은 「합격 + 입고 처리」이지 합격 하나가 아니다.
+    양방향으로 묶어 두면 **합격했으나 아직 옮기지 않은** 로트를 표현할 수 없고,
+    관문 6(재고이동 요청·처리)이 들어올 자리가 제약에 막힌다.
     """
     product = finished_item(code="FG-03", name="가상 제품 C")
     session.add(
         _finished_goods_lot(product, warehouse="생산창고", qc_status="합격")
     )
+    session.commit()
+
+    saved = session.query(FinishedGoodsLot).one()
+    assert (saved.warehouse, saved.qc_status) == ("생산창고", "합격")
+
+
+def test_defective_stock_must_have_failed_inspection(session: Session) -> None:
+    """재고구분은 판정에서 나오는 것이지 사람이 임의로 붙이는 딱지가 아니다."""
+    product = finished_item(code="FG-11", name="가상 제품 K")
+    session.add(_finished_goods_lot(product, stock_type="불량품"))
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_a_lot_records_both_the_production_and_the_pass_date(session: Session) -> None:
+    """지적 ⑰ — 유효기간의 기산점은 생산일이 아니라 합격일이다.
+
+    두 날짜의 차이가 곧 「검사에 며칠 걸렸나」이고, 그 값이 생산창고에 완제품이
+    쌓이는 이유를 설명한다.
+    """
+    product = finished_item(code="FG-12", name="가상 제품 L", shelf_life_days=30)
+    session.add(
+        _finished_goods_lot(
+            product,
+            produced_date=date(2026, 9, 1),
+            passed_date=date(2026, 9, 3),
+            expiry_date=date(2026, 10, 3),
+        )
+    )
+    session.commit()
+
+    saved = session.query(FinishedGoodsLot).one()
+    assert (saved.passed_date - saved.produced_date).days == 2
+    assert saved.expiry_date == saved.passed_date + timedelta(days=30)
+    assert saved.reworked is False
 
 
 def test_a_rejected_lot_stays_in_the_production_warehouse(session: Session) -> None:
