@@ -37,8 +37,12 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def create_all() -> None:
-    """등록된 모든 ORM 테이블을 생성한다."""
-    from app.db import models  # noqa: F401
+    """등록된 모든 ORM 테이블을 생성한다.
+
+    기준정보와 거래 표가 서로 다른 모듈에 있으므로 둘 다 불러와야 메타데이터가
+    완전해진다. 하나만 부르면 그 모듈이 참조하는 외래키의 상대가 없어진다.
+    """
+    from app.db import master_data, models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

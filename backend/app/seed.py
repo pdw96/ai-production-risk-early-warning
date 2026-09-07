@@ -25,6 +25,7 @@ from app.core.config import (
     INCOMING_PROCESS,
 )
 from app.db import base as db_base
+from app.db.master_data_loader import load_master_data
 from app.db.models import (
     BomComponent,
     DailyProduction,
@@ -195,6 +196,9 @@ def reset_database(reference_date: date | None = None) -> None:
     target_stocks[0] = materials[0].safety_stock + 1.0
 
     with db_base.SessionLocal() as session:
+        # 기준정보가 먼저다. 코드가 없으면 그것을 참조하는 표가 설 수 없다.
+        load_master_data(session)
+
         session.add_all(products + materials)
         session.flush()
 

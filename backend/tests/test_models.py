@@ -54,7 +54,7 @@ def test_order_has_product_and_daily_productions(session: Session) -> None:
     assert saved_order.daily_productions[0].actual_quantity == 18
 
 
-def test_create_all_and_sessionlocal_persist_all_task_one_models(
+def test_create_all_builds_every_table_from_both_model_modules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = create_engine("sqlite:///:memory:")
@@ -64,7 +64,10 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
 
     db_base.create_all()
 
+    # 기준정보와 거래 표가 다른 모듈에 있으므로, 하나만 불러오면 메타데이터가
+    # 반쪽이 되고 외래키의 상대가 없어진다. 이 목록이 그것을 지킨다.
     assert set(inspect(engine).get_table_names()) == {
+        # 거래·재고
         "bom_components",
         "daily_productions",
         "finished_goods_lots",
@@ -74,6 +77,17 @@ def test_create_all_and_sessionlocal_persist_all_task_one_models(
         "purchase_receipts",
         "quality_inspections",
         "risk_statuses",
+        # 기준정보
+        "code_groups",
+        "common_codes",
+        "non_working_periods",
+        "nonconformity_attributes",
+        "nonconformity_stage_rules",
+        "partners",
+        "process_inspection_standards",
+        "purchase_close_attributes",
+        "shift_patterns",
+        "txn_type_attributes",
     }
 
     with db_base.SessionLocal() as database_session:
