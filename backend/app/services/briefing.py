@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from datetime import date, timedelta
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import (
@@ -200,7 +200,10 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
     for work_date, planned, actual, order_id, stock_uom in rows:
         planned_by_day[work_date] += float(planned or 0)
         actual_by_day[work_date] += float(actual or 0)
-        units_by_day[work_date].add(stock_uom)
+        # 계획도 실적도 0 이면 그 줄은 합에 아무것도 보태지 않으므로 단위도
+        # 정하지 않는다 — 보태지 않은 것이 합의 단위를 바꿔서는 안 된다.
+        if planned or actual:
+            units_by_day[work_date].add(stock_uom)
         if actual:
             orders_by_day[work_date].add(order_id)
 
@@ -743,7 +746,13 @@ def get_dashboard(session: Session) -> DashboardResponse:
             DailyProduction.work_date.between(
                 reference_date - timedelta(days=6),
                 reference_date,
-            )
+            ),
+            # 계획도 실적도 0 인 줄은 합에 아무것도 보태지 않는다. 그런 줄까지
+            # 세면 수량 0 짜리 m² 실적 하나가 개수만 더한 합을 「혼재」로 만든다.
+            or_(
+                DailyProduction.planned_quantity != 0,
+                DailyProduction.actual_quantity != 0,
+            ),
         )
         .distinct()
     ).all()

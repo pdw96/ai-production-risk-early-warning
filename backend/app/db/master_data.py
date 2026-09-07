@@ -495,6 +495,8 @@ class SupplierItem(Base):
     purchase_uom_group: Mapped[str] = mapped_column(
         String(20), default=codes.UOM
     )
-    purchase_uom: Mapped[str] = mapped_column(String(10))
+    # 참조되는 칸(`common_codes.code`, 30)에 맞춘다 — 좁으면 긴 코드를
+    # PostgreSQL 만 거부한다.
+    purchase_uom: Mapped[str] = mapped_column(String(30))
     # 구매 단위 하나가 재고 단위로 얼마인가. 「25kg 포대」면 25.0 이다.
     conversion_factor: Mapped[float] = mapped_column(Float, default=1.0)

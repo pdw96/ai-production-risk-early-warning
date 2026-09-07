@@ -20,10 +20,18 @@ if [ -z "${DATABASE_URL:-}" ]; then
 else
   case "${DATABASE_URL}" in
     sqlite:*)
-      # `sqlite:///상대경로` 와 `sqlite:////절대경로` 를 함께 다룬다. 방언
-      # 접미(`sqlite+pysqlite:`)와 `?mode=ro` 같은 질의 문자열도 걷어낸다.
+      # 슬래시 셋과 넷이 **다른 뜻**이다. `sqlite:///data/x.db` 는 작업
+      # 디렉터리 기준 상대경로(`data/x.db`)이고, `sqlite:////data/x.db` 는
+      # 절대경로(`/data/x.db`)다. `://` 까지만 걷어내면 앞의 것이 `/data/x.db`
+      # 로 보여 컨테이너 루트에 `/data` 를 만들고, 정작 열리는 `/app/data` 는
+      # 없는 채로 남는다.
+      #
+      # 그래서 `://` 뒤에 남는 슬래시를 **정확히 하나** 더 걷어낸다. 그러면
+      # 셋은 상대경로가, 넷은 절대경로가 그대로 남는다. 방언 접미
+      # (`sqlite+pysqlite:`)와 `?mode=ro` 같은 질의 문자열도 함께 걷어낸다.
       database_path="${DATABASE_URL#*://}"
       database_path="${database_path%%\?*}"
+      database_path="${database_path#/}"
       # 메모리 데이터베이스에는 앉을 자리가 없다.
       if [ -n "$database_path" ]; then
         mkdir -p "$(dirname "$database_path")"

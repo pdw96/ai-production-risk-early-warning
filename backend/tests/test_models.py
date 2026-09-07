@@ -771,3 +771,50 @@ def test_a_negative_setup_time_is_refused_too(session: Session) -> None:
 
     with pytest.raises(IntegrityError):
         session.flush()
+
+
+def test_a_finished_item_cannot_hold_a_material_lot(session: Session) -> None:
+    """자재 로트의 품목은 **원자재여야 한다.**
+
+    `item_id` 만 참조하면 존재 여부만 본다. 완제품이 자재 로트에 들어가면 창고
+    화면은 그 줄을 「자재」로 세는데(그 자리에서 유형을 못박는다) 자재관리 화면은
+    원자재만 거르므로 보이지 않는다 — 같은 물건이 한 화면에는 있고 다른 화면에는
+    없다. 표가 둘이던 때는 외래키가 이것을 지켰고, 한 표로 합치면서 잃었다.
+    """
+    product = finished_item(code="FG-80", name="가상 소재 W")
+    session.add(product)
+    session.flush()
+
+    session.add(
+        MaterialLot(
+            item_id=product.id,
+            lot_number="LOT-WRONG",
+            warehouse="원재료창고",
+            quantity=10,
+            received_date=date.today(),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_a_raw_item_cannot_hold_a_finished_goods_lot(session: Session) -> None:
+    """완제품 로트의 품목은 **완제품이어야 한다.** 출하검사와 유효기간이 그것의 것이다."""
+    material = raw_item(code="RM-80", name="가상 원자재 W", safety_stock=10)
+    session.add(material)
+    session.flush()
+
+    session.add(
+        FinishedGoodsLot(
+            item_id=material.id,
+            lot_number="LOT-WRONG",
+            warehouse="생산창고",
+            qc_status="검사 대기",
+            quantity=10,
+            produced_date=date.today(),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()

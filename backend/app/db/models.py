@@ -23,6 +23,7 @@ from app.core.config import (
     BOM_LEVELS,
     DEFECTIVE_STOCK,
     FINISHED_GOODS_WAREHOUSES,
+    FINISHED_ITEM,
     GOOD_STOCK,
     INCOMING_INSPECTION,
     INSPECTION_RESULTS,
@@ -204,6 +205,10 @@ class Item(Base):
             name="ck_item_type",
         ),
         CheckConstraint(_ITEM_CODE_PREFIX_SQL, name="ck_item_code_prefix"),
+        # `id` 는 이미 기본키라 이 유일키가 행을 더 좁히지 않는다. 두는 이유는
+        # **복합 외래키의 상대가 되기 위해서**다 — 「이 로트의 품목은 원자재여야
+        # 한다」를 참조하는 쪽에서 걸려면 `(id, 유형)` 쌍을 가리킬 수 있어야 한다.
+        UniqueConstraint("id", "item_type", name="uq_item_id_type"),
         # 공정과 재고 단위는 **공통코드를 가리킨다.** 허용값을 파이썬 상수에서
         # 구워 CHECK 로 박으면, 늘 수 있다고 선언한 그룹(`value_fixed=False`)이
         # 실제로는 얼지 않는다 — 운영자가 공통코드에 단위 하나를 더해도 그
@@ -267,7 +272,10 @@ class Item(Base):
     item_type: Mapped[str] = mapped_column(String(20), index=True)
     # 검사 기준을 끌어오는 라벨(지적 ⑯). 접두가 아니라 명시적인 열이어야
     # 공정이 바뀔 때 품목 코드를 바꾸지 않는다.
-    process: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 길이는 **참조되는 칸(`common_codes.code`, 30)에 맞춘다.** 좁게 두면
+    # 운영자가 더한 긴 코드를 PostgreSQL 만 거부하고 SQLite 는 통과시켜, 늘 수
+    # 있다고 선언한 그룹이 엔진에 따라 다르게 얼어붙는다.
+    process: Mapped[str | None] = mapped_column(String(30), nullable=True)
     # 위 복합 외래키의 왼쪽 절반이다. 데이터가 아니라 **구조**이므로 값은 언제나
     # `PROCESS` 이고 CHECK 가 그것을 못박는다. 공정이 비어 있는 품목은 짝의 한쪽이
     # NULL 이라 복합 외래키가 아예 검사하지 않으므로, 이 열이 상수여도 무해하다.
@@ -277,7 +285,7 @@ class Item(Base):
     )
     # 재고 단위(지적 ㉛). 모든 수량이 이 단위로 저장된다 — 잔량을 수불의 합으로
     # 내린 이상 합할 수 있으려면 단위가 하나여야 하기 때문이다.
-    stock_uom: Mapped[str] = mapped_column(String(10))
+    stock_uom: Mapped[str] = mapped_column(String(30))
     stock_uom_group: Mapped[str] = mapped_column(
         String(20), default=codes.UOM, server_default=codes.UOM
     )
@@ -424,6 +432,18 @@ class MaterialLot(Base):
             "warehouse",
             name="uq_material_lot_warehouse",
         ),
+        # 품목은 **원자재여야 한다.** `item_id` 만 참조하면 존재 여부만 보므로
+        # 완제품이 자재 로트에 들어가고, 그러면 창고 화면은 그 줄을 「자재」로
+        # 세는데(`get_warehouse_stock` 이 그렇게 못박는다) 자재관리 화면은
+        # 원자재만 거르므로 보이지 않는다 — 같은 물건이 한 화면에는 있고 다른
+        # 화면에는 없다. 표가 둘이던 때는 외래키가 이것을 지켰다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{RAW_ITEM}'", name="ck_material_lot_item_type"
+        ),
         CheckConstraint(
             f"warehouse IN ({_ALLOWED_MATERIAL_WAREHOUSES_SQL})",
             name="ck_material_lot_warehouse",
@@ -431,7 +451,11 @@ class MaterialLot(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조라 값이 언제나 같다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=RAW_ITEM, server_default=RAW_ITEM
+    )
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     quantity: Mapped[float] = mapped_column(Float)
@@ -471,6 +495,16 @@ class FinishedGoodsLot(Base):
 
     __tablename__ = "finished_goods_lots"
     __table_args__ = (
+        # 품목은 **완제품이어야 한다.** 자재 로트와 같은 이유이며, 여기서는
+        # 출하검사와 유효기간이 완제품의 것이라 더 분명하다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{FINISHED_ITEM}'",
+            name="ck_finished_goods_lot_item_type",
+        ),
         UniqueConstraint(
             "item_id",
             "lot_number",
@@ -537,7 +571,11 @@ class FinishedGoodsLot(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=FINISHED_ITEM, server_default=FINISHED_ITEM
+    )
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     # OQC 판정의 캐시다. 진실은 `QualityInspection` 의 OQC 기록이며, 기록이

@@ -115,9 +115,9 @@ def upgrade() -> None:
     sa.Column('code', sa.String(length=50), nullable=False),
     sa.Column('name', sa.String(length=200), nullable=False),
     sa.Column('item_type', sa.String(length=20), nullable=False),
-    sa.Column('process', sa.String(length=20), nullable=True),
+    sa.Column('process', sa.String(length=30), nullable=True),
     sa.Column('process_group', sa.String(length=20), server_default='PROCESS', nullable=False),
-    sa.Column('stock_uom', sa.String(length=10), nullable=False),
+    sa.Column('stock_uom', sa.String(length=30), nullable=False),
     sa.Column('stock_uom_group', sa.String(length=20), server_default='UOM', nullable=False),
     sa.Column('phase', sa.String(length=10), nullable=False),
     sa.Column('shelf_life_days', sa.Integer(), nullable=True),
@@ -135,7 +135,8 @@ def upgrade() -> None:
     sa.CheckConstraint('setup_hours IS NULL OR setup_hours >= 0', name='ck_item_setup_hours_not_negative'),
     sa.ForeignKeyConstraint(['process_group', 'process'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.ForeignKeyConstraint(['stock_uom_group', 'stock_uom'], ['common_codes.group_code', 'common_codes.code'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('id', 'item_type', name='uq_item_id_type')
     )
     with op.batch_alter_table('items', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_items_code'), ['code'], unique=True)
@@ -247,6 +248,7 @@ def upgrade() -> None:
     op.create_table('finished_goods_lots',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
+    sa.Column('item_type', sa.String(length=20), server_default='완제품', nullable=False),
     sa.Column('lot_number', sa.String(length=50), nullable=False),
     sa.Column('warehouse', sa.String(length=20), nullable=False),
     sa.Column('qc_status', sa.String(length=20), nullable=False),
@@ -257,6 +259,7 @@ def upgrade() -> None:
     sa.Column('reworked', sa.Boolean(), nullable=False),
     sa.Column('expiry_date', sa.Date(), nullable=True),
     sa.CheckConstraint("(passed_date IS NOT NULL) = (qc_status = '합격')", name='ck_finished_goods_lot_passed_date_matches_status'),
+    sa.CheckConstraint("item_type = '완제품'", name='ck_finished_goods_lot_item_type'),
     sa.CheckConstraint("qc_status IN ('검사 대기', '합격', '불합격')", name='ck_finished_goods_lot_qc_status'),
     sa.CheckConstraint("stock_type <> '불량품' OR qc_status = '불합격'", name='ck_finished_goods_lot_defective_is_rejected'),
     sa.CheckConstraint("stock_type IN ('양품', '불량품')", name='ck_finished_goods_lot_stock_type'),
@@ -265,7 +268,7 @@ def upgrade() -> None:
     sa.CheckConstraint('expiry_date IS NULL OR expiry_date >= passed_date', name='ck_finished_goods_lot_expiry_after_passed'),
     sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
     sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
-    sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
+    sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('item_id', 'lot_number', 'warehouse', name='uq_finished_goods_lot_warehouse')
     )
@@ -275,13 +278,15 @@ def upgrade() -> None:
     op.create_table('material_lots',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
+    sa.Column('item_type', sa.String(length=20), server_default='원자재', nullable=False),
     sa.Column('lot_number', sa.String(length=50), nullable=False),
     sa.Column('warehouse', sa.String(length=20), nullable=False),
     sa.Column('quantity', sa.Float(), nullable=False),
     sa.Column('received_date', sa.Date(), nullable=False),
     sa.Column('expiry_date', sa.Date(), nullable=True),
+    sa.CheckConstraint("item_type = '원자재'", name='ck_material_lot_item_type'),
     sa.CheckConstraint("warehouse IN ('원재료창고', '생산창고')", name='ck_material_lot_warehouse'),
-    sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
+    sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('item_id', 'lot_number', 'warehouse', name='uq_material_lot_warehouse')
     )
@@ -315,7 +320,7 @@ def upgrade() -> None:
     sa.Column('item_id', sa.Integer(), nullable=False),
     sa.Column('lead_time_hours', sa.Float(), nullable=False),
     sa.Column('purchase_uom_group', sa.String(length=20), nullable=False),
-    sa.Column('purchase_uom', sa.String(length=10), nullable=False),
+    sa.Column('purchase_uom', sa.String(length=30), nullable=False),
     sa.Column('conversion_factor', sa.Float(), nullable=False),
     sa.CheckConstraint("partner_type = '공급사'", name='ck_supplier_item_partner_type'),
     sa.CheckConstraint("purchase_uom_group = 'UOM'", name='ck_supplier_item_uom_group'),

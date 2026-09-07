@@ -910,13 +910,29 @@ def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> 
     # 아직 실적이 없다. 합계에 들어가지 않았으므로 단위도 바뀌지 않는다.
     assert client.get("/api/dashboard").json()["data"]["quantity_uom"] == "EA"
 
+    # 수량이 0 인 실적도 합에 아무것도 보태지 않는다. 날짜만으로 거르면 이 줄
+    # 하나가 개수만 더한 합을 「혼재」로 만든다.
     with db_base.SessionLocal() as session:
-        saved_order = session.scalars(
-            select(Order).where(Order.order_number == "MO-999")
+        order_id = session.scalars(
+            select(Order.id).where(Order.order_number == "MO-999")
         ).one()
         session.add(
             DailyProduction(
-                order_id=saved_order.id,
+                order_id=order_id,
+                work_date=REFERENCE_DATE - timedelta(days=1),
+                planned_quantity=0,
+                actual_quantity=0,
+            )
+        )
+        session.commit()
+
+    assert client.get("/api/dashboard").json()["data"]["quantity_uom"] == "EA"
+
+    # 이제 실제로 더해지는 실적을 얹는다.
+    with db_base.SessionLocal() as session:
+        session.add(
+            DailyProduction(
+                order_id=order_id,
                 work_date=REFERENCE_DATE,
                 planned_quantity=20,
                 actual_quantity=18,
