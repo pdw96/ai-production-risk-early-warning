@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { format_date, format_percentage, format_quantity } from "./format";
+import { format_count, format_date, format_percentage, format_quantity } from "./format";
 
 describe("operation formatters", () => {
   it("formats quantities with Korean numeric grouping", () => {
@@ -13,6 +13,13 @@ describe("operation formatters", () => {
     expect(format_quantity(1234.5, "L")).toBe("1,234.5 L");
     // EA 와 개는 같은 것이다. 코드값을 그대로 적으면 창고 화면만 다른 말을 쓴다.
     expect(format_quantity(80, "EA")).toBe("80개");
+  });
+
+  it("counts things with 건, not by stripping 개 off a quantity", () => {
+    // 대시보드가 `format_quantity(...).replace("개", "건")` 로 적고 있었다.
+    // 붙였다가 지우는 것이라 기본 단위가 바뀌면 조용히 「3개」가 남는다.
+    expect(format_count(3)).toBe("3건");
+    expect(format_count(1234)).toBe("1,234건");
   });
 
   it("formats percentages to one decimal place", () => {

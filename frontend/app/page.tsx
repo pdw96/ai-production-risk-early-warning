@@ -11,7 +11,7 @@ import { getDashboard, type Dashboard } from "../lib/api";
 // 수량 표기는 한 곳에서만 정한다. 여기 사본을 두었더니 자재에 단위가 생겼을 때
 // 이 화면만 「개」로 남았다 — 같은 규칙을 두 곳에 적으면 반드시 갈린다.
 // 날짜와 백분율은 이 화면만의 표기라(「2026년 9월 7일」) 아직 사본이 맞다.
-import { format_quantity } from "../lib/format";
+import { format_count, format_quantity } from "../lib/format";
 
 function format_percentage(value: number): string {
   return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(value)}%`;
@@ -86,11 +86,14 @@ export default function HomePage() {
 
       <section aria-label="핵심 운영 지표" className="kpi-grid">
         <Link aria-label={`납기 위험 오더 ${dashboard.kpis.due_risk_order_count}건 상세 보기`} href="/orders">
-          <KpiCard detail="납기 일정 재확인 필요" label="납기 위험 오더" value={`${format_quantity(dashboard.kpis.due_risk_order_count).replace("개", "건")}`} />
+          <KpiCard detail="납기 일정 재확인 필요" label="납기 위험 오더" value={format_count(dashboard.kpis.due_risk_order_count)} />
         </Link>
         <Link aria-label={`자재 부족 위험 ${dashboard.kpis.material_shortage_count}건 상세 보기`} href="/materials">
-          <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={`${format_quantity(dashboard.kpis.material_shortage_count).replace("개", "건")}`} />
+          <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={format_count(dashboard.kpis.material_shortage_count)} />
         </Link>
+        {/* 아래 둘은 제품을 넘어 더한 값이라 단위를 붙일 수 없다. 지금은 완제품이
+            전부 EA 라 「개」가 맞고, 그 전제가 깨지는 날은 백엔드 회귀 테스트가
+            먼저 잡는다(test_the_cross_product_totals_assume_one_counting_unit). */}
         <Link aria-label={`오늘 생산 계획 ${format_quantity(dashboard.kpis.today_plan_quantity)} 상세 보기`} href="/orders">
           <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_quantity(dashboard.kpis.today_plan_quantity)} />
         </Link>

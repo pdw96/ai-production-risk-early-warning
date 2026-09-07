@@ -22,6 +22,9 @@ export default function SalesPage() {
     return <DataState state="empty" />;
   }
 
+  // 제품을 넘어 더한 값이라 단위를 붙일 수 없다 — 표의 각 줄은 그 제품의
+  // 단위로 적지만 이 합계는 그러지 못한다. 지금은 완제품이 전부 EA 라 「개」가
+  // 맞고, 그 전제가 깨지는 날은 백엔드 회귀 테스트가 먼저 잡는다.
   const releasable_total = finished_goods.reduce(
     (total, product) => total + product.releasable_stock,
     0,

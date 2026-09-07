@@ -17,6 +17,17 @@ export function unit_label(unit = COUNTING_UNIT): string {
   return unit === COUNTING_UNIT ? "개" : unit;
 }
 
+/**
+ * 물건의 양이 아니라 **건수**를 셀 때. 오더 수 · 자재 수 같은 것이다.
+ *
+ * 대시보드가 `format_quantity(...).replace("개", "건")` 로 적고 있었다. 붙였다가
+ * 지우는 것이라 `format_quantity` 의 기본 단위가 바뀌는 순간 조용히 「3개」가
+ * 남는다 — 세는 것과 재는 것은 다른 함수여야 한다.
+ */
+export function format_count(value: number, noun = "건"): string {
+  return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 }).format(value)}${noun}`;
+}
+
 export function format_percentage(value: number): string {
   return `${new Intl.NumberFormat("ko-KR", {
     maximumFractionDigits: 1,

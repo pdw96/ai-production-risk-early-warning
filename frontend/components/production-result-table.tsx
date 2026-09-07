@@ -29,6 +29,8 @@ export function ProductionResultTable({
           </tr>
         </thead>
         <tbody>
+          {/* 계획·실적은 그날 실적이 잡힌 여러 제품을 더한 값이라 단위를 붙일 수
+              없다. 지금은 완제품이 전부 EA 라 「개」가 맞다. */}
           {results.map((result) => (
             <tr key={result.work_date}>
               <td>{format_date(result.work_date)}</td>
