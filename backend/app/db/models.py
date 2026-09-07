@@ -65,6 +65,29 @@ _ALLOWED_UNITS_OF_MEASURE_SQL = _sql_value_list(UNITS_OF_MEASURE)
 _ALLOWED_ITEM_PHASES_SQL = _sql_value_list(ITEM_PHASES)
 _ALLOWED_BOM_LEVELS_SQL = ", ".join(str(level) for level in BOM_LEVELS)
 
+def _reject_overlapping_prefixes(prefixes: dict[str, str]) -> None:
+    """어느 접두도 다른 접두의 앞부분이어서는 안 된다.
+
+    아래 제약은 접두마다 `(유형 = X) = (코드 LIKE 'P%')` 를 **모두** 요구한다.
+    한 접두가 다른 접두의 앞부분이면 긴 쪽에 맞는 코드가 두 LIKE 를 동시에
+    만족하고, 그러면 서로 다른 유형에 대한 등식이 함께 참일 수 없어 **그 코드는
+    어떤 유형으로도 넣을 수 없다.** 지금 값(FG-·SF-·RM-)에는 중첩이 없으므로
+    이것은 다음에 접두를 더하는 사람을 위한 방어다 — 조용히 거부당하는 것보다
+    여기서 터지는 편이 낫다.
+    """
+    for item_type, prefix in prefixes.items():
+        for other_type, other_prefix in prefixes.items():
+            if item_type == other_type:
+                continue
+            if prefix.startswith(other_prefix):
+                raise ValueError(
+                    f"품목 접두가 겹칩니다: {item_type}='{prefix}' 가"
+                    f" {other_type}='{other_prefix}' 로 시작합니다."
+                )
+
+
+_reject_overlapping_prefixes(ITEM_CODE_PREFIXES)
+
 # 접두는 유형과 유일성만 맡는다(지적 ⑯). 유형과 접두는 정의상 서로를 결정하므로
 # 양방향으로 건다 — 창고와 검사 결과처럼 나중에 갈라질 수 있는 두 사실이 아니라,
 # 접두가 곧 유형의 표기이기 때문이다.
@@ -449,6 +472,13 @@ class FinishedGoodsLot(Base):
         CheckConstraint(
             "passed_date IS NULL OR passed_date >= produced_date",
             name="ck_finished_goods_lot_passed_after_produced",
+        ),
+        # 유효기간은 합격일에서 파생된다. 합격일 없이 유효기간만 있는 줄은
+        # 근거 없는 만료일을 들고 다니며, 화면에서는 「만료」로 그려져 실제로
+        # 검사조차 받지 않은 로트가 만료 재고에 잡힌다.
+        CheckConstraint(
+            "expiry_date IS NULL OR passed_date IS NOT NULL",
+            name="ck_finished_goods_lot_expiry_needs_passed_date",
         ),
     )
 

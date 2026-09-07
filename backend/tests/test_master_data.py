@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -45,6 +45,14 @@ def session() -> Session:
     # 등록하지 않으면 이 파일만 따로 돌릴 때 외래키가 대상을 못 찾는다.
     register_models()
     engine = create_engine("sqlite:///:memory:")
+
+    # SQLite 는 외래키를 **기본적으로 강제하지 않는다.** 켜지 않으면 복합
+    # 외래키를 걸어 두고도 없는 코드를 가리키는 줄이 조용히 들어가, 테스트가
+    # PostgreSQL 과 다른 것을 검사하게 된다.
+    @event.listens_for(engine, "connect")
+    def _enforce_foreign_keys(connection, _record) -> None:
+        connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     with session_factory() as database_session:
@@ -510,3 +518,33 @@ def test_a_zero_length_non_working_period_is_not_an_outage(session: Session) -> 
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_a_paired_txn_type_must_be_a_real_txn_type(session: Session) -> None:
+    """짝도 수불유형이어야 한다.
+
+    외래키가 없으면 임의 문자열이 들어가고, 「생산출고 ↔ 생산입고」처럼 서로를
+    가리켜야 할 자리가 없는 코드를 가리킨 채 통과한다.
+    """
+    attribute = session.scalars(select(TxnTypeAttribute)).first()
+    assert attribute is not None
+
+    attribute.paired_code = "없는유형"
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_real_txn_type_may_be_named_as_a_pair(session: Session) -> None:
+    """짝을 거는 것 자체는 막지 않는다 — 있는 코드면 된다."""
+    attribute = session.scalars(select(TxnTypeAttribute)).first()
+    assert attribute is not None
+    partner = session.scalars(
+        select(TxnTypeAttribute).where(TxnTypeAttribute.code != attribute.code)
+    ).first()
+    assert partner is not None
+
+    attribute.paired_code = partner.code
+    session.commit()
+
+    assert attribute.paired_code == partner.code

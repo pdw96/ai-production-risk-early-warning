@@ -125,6 +125,7 @@ def upgrade() -> None:
     sa.CheckConstraint("stock_type <> '불량품' OR qc_status = '불합격'", name='ck_finished_goods_lot_defective_is_rejected'),
     sa.CheckConstraint("(passed_date IS NOT NULL) = (qc_status = '합격')", name='ck_finished_goods_lot_passed_date_matches_status'),
     sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
+    sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
     sa.CheckConstraint("stock_type IN ('양품', '불량품')", name='ck_finished_goods_lot_stock_type'),
     sa.CheckConstraint("warehouse <> '제품창고' OR qc_status = '합격'", name='ck_finished_goods_lot_product_warehouse_holds_passed_only'),
     sa.CheckConstraint("warehouse IN ('생산창고', '제품창고')", name='ck_finished_goods_lot_warehouse'),
@@ -283,6 +284,7 @@ def upgrade() -> None:
     sa.CheckConstraint("group_code = 'TXN_TYPE'", name='ck_txn_type_group'),
     sa.CheckConstraint("total_effect IN ('증가', '감소', '양방향', '불변', '기준점')", name='ck_txn_type_total_effect'),
     sa.ForeignKeyConstraint(['group_code', 'code'], ['common_codes.group_code', 'common_codes.code'], ),
+    sa.ForeignKeyConstraint(['group_code', 'paired_code'], ['common_codes.group_code', 'common_codes.code'], ),
     sa.PrimaryKeyConstraint('group_code', 'code')
     )
     op.create_table('quality_inspections',

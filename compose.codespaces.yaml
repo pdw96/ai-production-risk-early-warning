@@ -10,7 +10,9 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: erp
-      POSTGRES_PASSWORD: erp
+      # host 네트워크라 이 포트가 코드스페이스 밖으로 열릴 수 있다. 저장소에
+      # 적힌 비밀번호를 쓰면 그 포트에 닿는 누구나 그대로 로그인한다.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}
       POSTGRES_DB: production_risk
     volumes:
       - database-data:/var/lib/postgresql/data
@@ -25,7 +27,7 @@ services:
     build: ./backend
     environment:
       # host 네트워크에서는 데이터베이스도 같은 네임스페이스의 127.0.0.1 이다.
-      DATABASE_URL: postgresql+psycopg://erp:erp@127.0.0.1:5432/production_risk
+      DATABASE_URL: postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@127.0.0.1:5432/production_risk
       SEED_SAMPLE_DATA: "1"
     depends_on:
       database:

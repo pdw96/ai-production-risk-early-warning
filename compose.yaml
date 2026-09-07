@@ -11,7 +11,10 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: erp
-      POSTGRES_PASSWORD: erp
+      # 저장소에 비밀번호를 적어 두지 않는다. 값이 없으면 기동이 여기서 멈춘다 —
+      # 기본값을 두면 그 기본값이 곧 저장소에 적힌 비밀번호이기 때문이다.
+      #   echo 'POSTGRES_PASSWORD=...' >> .env   (compose 가 자동으로 읽는다)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}
       POSTGRES_DB: production_risk
     volumes:
       - database-data:/var/lib/postgresql/data
@@ -26,7 +29,7 @@ services:
   backend:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+psycopg://erp:erp@database:5432/production_risk
+      DATABASE_URL: postgresql+psycopg://erp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 를 .env 에 정하십시오}@database:5432/production_risk
       # 합성 시연 데이터를 넣는 스위치. 운영에서 자동 시드는 편의가 아니라
       # 사고이므로 기본값은 꺼짐이고, 여기서만 켠다.
       SEED_SAMPLE_DATA: "1"

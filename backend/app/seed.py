@@ -78,35 +78,6 @@ MATERIAL_SHELF_LIFE_DAYS: tuple[int | None, ...] = (
     240, 300, 180, None, 44, 200, 365, 150, None, 280, 320, 190, 260, 210, 400,
 )
 
-# 자재의 재고 단위(지적 ㉛). 시드 품목이 세 무리로 갈리고 무리마다 세는 방법이
-# 다르다 — 분체 다섯은 달고(kg), 액상·수지 여섯은 되며(L), 시트·필름 넷은
-# 넓이로 잰다(m²). 세라믹 분말을 EA 로 셀 수 없다는 것이 이 칸이 필요한 이유다.
-# rng 를 쓰지 않는 이유는 위 주기 상수들과 같다 — 난수 시퀀스를 흔들면 납기
-# 정상·주의·위험 시나리오가 통째로 바뀐다.
-MATERIAL_STOCK_UOMS: tuple[str, ...] = (
-    "L",    # 폴리머 베이스
-    "kg",   # 세라믹 분말
-    "kg",   # 광학 안료
-    "m2",   # 보강 섬유
-    "L",    # 접착 수지
-    "kg",   # 방열 첨가제
-    "m2",   # 차단 필름
-    "L",    # 표면 코팅제
-    "kg",   # 미세 충전재
-    "L",    # 유연 가소제
-    "m2",   # 보호 라이너
-    "L",    # 안정화 첨가제
-    "L",    # 전도성 페이스트
-    "kg",   # 기능성 염료
-    "m2",   # 포장 라미네이트
-)
-
-# 완제품의 리드타임 계수 둘(지적 ⑬). 리드타임은 품목의 값이 아니라 오더마다
-# 다른 계산 결과이고, 품목이 갖는 것은 이 계수 둘뿐이다 —
-# 소요 시간 = 준비시간 + 개당 시간 × 수량.
-PRODUCT_SETUP_HOURS: tuple[float, ...] = (4.0, 3.5, 5.0, 4.5, 6.0)
-PRODUCT_HOURS_PER_UNIT: tuple[float, ...] = (0.2, 0.15, 0.25, 0.18, 0.3)
-
 # 생산 당일과 그 전날 생산분은 아직 OQC 를 받지 않은 것으로 둔다.
 OQC_PENDING_DAYS = 1
 # 생산 다음 날 검사한다. 합격일 = 생산일 + 이 값이고, 그 차이가 곧
@@ -631,6 +602,12 @@ def main(argv: list[str] | None = None) -> None:
     개발과 테스트에서만 쓴다.
     """
     arguments = sys.argv[1:] if argv is None else argv
+    # 모르는 인자는 조용히 무시하지 않는다. 무시하면 `--ifempty` 같은 오타가
+    # 「비었을 때만」 이 아니라 **표를 지우는 길**로 떨어진다 — 기동 스크립트가
+    # 그렇게 부르면 경고 한 줄 없이 전부 사라진다.
+    unknown = [argument for argument in arguments if argument != "--if-empty"]
+    if unknown:
+        raise SystemExit(f"알 수 없는 인자입니다: {' '.join(unknown)}")
     if "--if-empty" in arguments:
         if seed_if_empty():
             print("합성 샘플 데이터를 넣었습니다.")

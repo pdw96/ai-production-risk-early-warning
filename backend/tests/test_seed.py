@@ -621,3 +621,42 @@ def test_the_master_data_comes_from_sql_and_the_scenario_from_python(
     assert first_orders == len(second_order_numbers)
     # 오더 번호에는 기준일이 박혀 있다 — 시나리오는 움직였다.
     assert all(number.startswith("MO-20260920-") for number in second_order_numbers)
+
+
+def test_a_mistyped_option_does_not_wipe_the_tables(monkeypatch) -> None:
+    """모르는 인자를 조용히 무시하면 `--ifempty` 오타가 「비었을 때만」 이 아니라
+    **표를 지우는 길**로 떨어진다 — 기동 스크립트가 그렇게 부르면 경고 한 줄
+    없이 전부 사라진다.
+    """
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("표를 지우는 길이 돌면 안 된다")
+
+    monkeypatch.setattr(seed_module, "initialize_sample_database", _must_not_run)
+    monkeypatch.setattr(seed_module, "seed_if_empty", _must_not_run)
+
+    with pytest.raises(SystemExit) as raised:
+        seed_module.main(["--ifempty"])
+
+    assert "--ifempty" in str(raised.value)
+
+
+def test_the_supported_option_still_works(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        seed_module, "seed_if_empty", lambda: calls.append("if-empty") or True
+    )
+
+    seed_module.main(["--if-empty"])
+
+    assert calls == ["if-empty"]
+
+
+def test_no_arguments_still_takes_the_reset_path(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        seed_module, "initialize_sample_database", lambda: calls.append("reset")
+    )
+
+    seed_module.main([])
+
+    assert calls == ["reset"]

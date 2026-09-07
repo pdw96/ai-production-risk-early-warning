@@ -209,6 +209,12 @@ npm run dev
 | 로컬 PC·서버 | `compose.yaml` | bridge | `http://backend:8000` |
 | GitHub Codespaces | `compose.codespaces.yaml` | host | `http://127.0.0.1:8000` |
 
+두 경우 모두 **먼저 데이터베이스 비밀번호를 정합니다.** 저장소에 적어 두지 않으므로 값이 없으면 기동이 거기서 멈춥니다 — 기본값을 두면 그 기본값이 곧 저장소에 적힌 비밀번호이기 때문입니다. Codespaces 구성은 `network_mode: host` 라 이 포트가 밖으로 열릴 수 있어 더 그렇습니다.
+
+```bash
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env   # compose 가 자동으로 읽는다
+```
+
 ### 로컬 PC·서버
 
 ```bash

@@ -101,6 +101,15 @@ class TxnTypeAttribute(Base):
     __tablename__ = "txn_type_attributes"
     __table_args__ = (
         *_group_reference(codes.TXN_TYPE),
+        # 짝도 수불유형이어야 한다. 외래키가 없으면 임의 문자열이 들어가고,
+        # 그러면 「생산출고 ↔ 생산입고」 처럼 서로를 가리켜야 할 자리가 없는
+        # 코드를 가리킨 채 통과한다 — 한쪽만 나는 사고를 구조가 막는다던 칸이
+        # 정작 자기 자신은 지켜지지 않는 셈이다. 비어 있으면(짝이 없는 유형)
+        # 복합 외래키는 검사하지 않으므로 nullable 은 그대로 산다.
+        ForeignKeyConstraint(
+            ["group_code", "paired_code"],
+            ["common_codes.group_code", "common_codes.code"],
+        ),
         CheckConstraint(
             f"total_effect IN ({_sql_value_list(codes.TOTAL_EFFECTS)})",
             name="ck_txn_type_total_effect",

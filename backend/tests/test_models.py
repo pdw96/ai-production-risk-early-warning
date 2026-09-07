@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import base as db_base
 from app.db.base import Base
+from app.core.config import ITEM_CODE_PREFIXES
 from app.db.models import (
     BomComponent,
     DailyProduction,
@@ -18,6 +19,7 @@ from app.db.models import (
     PurchaseReceipt,
     QualityInspection,
     RiskStatus,
+    _reject_overlapping_prefixes,
 )
 from tests.factories import finished_item, raw_item, semi_finished_item
 
@@ -676,3 +678,35 @@ def test_a_lot_cannot_pass_before_it_was_produced(session: Session) -> None:
 
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_a_lot_cannot_carry_an_expiry_without_a_pass_date(session: Session) -> None:
+    """유효기간은 합격일에서 파생된다.
+
+    합격일 없이 유효기간만 있는 줄은 근거 없는 만료일을 들고 다니며, 화면에서
+    「만료」로 그려져 검사조차 받지 않은 로트가 만료 재고에 잡힌다.
+    """
+    product = finished_item(code="FG-94", name="가상 제품 N")
+    session.add(
+        _finished_goods_lot(
+            product,
+            warehouse="생산창고",
+            qc_status="검사 대기",
+            expiry_date=date.today() + timedelta(days=30),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_overlapping_item_code_prefixes_are_rejected() -> None:
+    """한 접두가 다른 접두의 앞부분이면, 긴 쪽에 맞는 코드는 두 LIKE 를 동시에
+    만족해 **어떤 유형으로도 넣을 수 없는 코드**가 된다. 조용히 거부당하는
+    것보다 정의하는 자리에서 터지는 편이 낫다."""
+    with pytest.raises(ValueError, match="접두가 겹칩니다"):
+        _reject_overlapping_prefixes({"완제품": "FG-", "반제품": "F"})
+
+
+def test_the_current_prefixes_do_not_overlap() -> None:
+    _reject_overlapping_prefixes(ITEM_CODE_PREFIXES)
