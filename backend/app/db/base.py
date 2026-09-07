@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from app.core.config import DATABASE_URL
+from app.core.config import DATABASE_URL, is_sqlite
 
 
 class Base(DeclarativeBase):
@@ -32,7 +32,12 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
     cursor.close()
 
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# `check_same_thread` 는 SQLite 드라이버에만 있는 인자다. PostgreSQL 에 넘기면
+# 연결이 아예 열리지 않는다.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if is_sqlite() else {},
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 

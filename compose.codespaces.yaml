@@ -6,12 +6,30 @@
 name: ai-production-risk-codespaces
 
 services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: erp
+      POSTGRES_DB: production_risk
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp -d production_risk"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    network_mode: host
+
   backend:
     build: ./backend
     environment:
-      DATABASE_PATH: /data/production_risk.db
-    volumes:
-      - backend-data:/data
+      # host 네트워크에서는 데이터베이스도 같은 네임스페이스의 127.0.0.1 이다.
+      DATABASE_URL: postgresql+psycopg://erp:erp@127.0.0.1:5432/production_risk
+      SEED_SAMPLE_DATA: "1"
+    depends_on:
+      database:
+        condition: service_healthy
     # network_mode: host 에서는 ports 매핑이 무시되고 호스트 포트를 직접 점유한다.
     network_mode: host
 
@@ -27,4 +45,4 @@ services:
       - backend
 
 volumes:
-  backend-data:
+  database-data:

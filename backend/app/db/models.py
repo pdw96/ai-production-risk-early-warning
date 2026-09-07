@@ -12,7 +12,11 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy import and_, literal_column, or_
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql.expression import ColumnElement
+from sqlalchemy.types import String as StringType
 
 from app.core.config import (
     BOM_LEVELS,
@@ -68,9 +72,67 @@ _ITEM_CODE_PREFIX_SQL = " AND ".join(
     for item_type, prefix in ITEM_CODE_PREFIXES.items()
 )
 
-# SQLite 의 1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 통과해
-# 화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 2인자 형태를 쓴다.
-_BLANK_CHARACTERS_SQL = "' ' || char(9) || char(10) || char(13)"
+class BlankTrimmed(ColumnElement):
+    """양끝의 공백·탭·개행을 걷어낸 값.
+
+    1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 그대로 통과해
+    화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 형태가 필요하다.
+
+    그런데 그 형태의 이름이 엔진마다 다르다 — SQLite 는 `trim(x, y)` 이고
+    PostgreSQL 은 `btrim(x, y)` 이며, 문자 코드를 만드는 함수도 `char` 과 `chr`
+    로 갈린다. 그래서 SQL 을 문자열로 박지 않고 **방언이 정하게** 한다. 문자열로
+    박으면 엔진을 옮길 때 CHECK 제약이 조용히 만들어지지 않거나 터진다.
+    """
+
+    type = StringType()
+    inherit_cache = True
+
+    def __init__(self, column_name: str) -> None:
+        self.column_name = column_name
+
+
+@compiles(BlankTrimmed, "sqlite")
+def _compile_trim_blank_sqlite(element: BlankTrimmed, compiler, **_kw: object) -> str:
+    return (
+        f"trim({element.column_name},"
+        " ' ' || char(9) || char(10) || char(13))"
+    )
+
+
+@compiles(BlankTrimmed, "postgresql")
+def _compile_trim_blank_postgresql(
+    element: BlankTrimmed, compiler, **_kw: object
+) -> str:
+    return (
+        f"btrim({element.column_name},"
+        " ' ' || chr(9) || chr(10) || chr(13))"
+    )
+
+
+@compiles(BlankTrimmed)
+def _compile_trim_blank_default(
+    element: BlankTrimmed, compiler, **_kw: object
+) -> str:
+    """표준 SQL 형태. 문자 집합을 리터럴로 적어 함수 이름 차이를 피한다."""
+    return f"trim(both ' \t\n\r' from {element.column_name})"
+
+
+def failure_reason_is_present() -> ColumnElement:
+    """「불합격이면 사유가 비어 있지 않다」를 나타내는 식.
+
+    마이그레이션도 이 함수를 부른다. 자동 생성이 구워 낸 SQL 문자열을 그대로
+    두면 SQLite 문법이 마이그레이션에 박혀, PostgreSQL 에서는 표가 만들어지지
+    않거나 뜻이 다른 제약이 선다 — 제약으로 규칙을 지키는 구조에서 그것은
+    규칙이 조용히 사라지는 일이다.
+    """
+    return or_(
+        literal_column("result") == QC_PASSED,
+        and_(
+            literal_column("reason").is_not(None),
+            BlankTrimmed("reason") != "",
+        ),
+    )
+
 
 # 검사 유형마다 대상 테이블이 다르므로 nullable FK 를 셋 두고, "유형에 맞는
 # 대상 하나만 채워져 있음" 을 DB 가 강제하게 한다. 범용 (target_type,
@@ -427,8 +489,7 @@ class QualityInspection(Base):
         # 빈 문자열과 공백뿐인 문자열도 사유가 없는 것이므로 NULL 검사만으로는
         # 부족하다 — 화면은 그 빈 칸을 그대로 그려 사유 없는 불합격 행을 만든다.
         CheckConstraint(
-            f"result = '{QC_PASSED}' OR"
-            f" (reason IS NOT NULL AND trim(reason, {_BLANK_CHARACTERS_SQL}) <> '')",
+            failure_reason_is_present(),
             name="ck_quality_inspection_failure_reason",
         ),
     )

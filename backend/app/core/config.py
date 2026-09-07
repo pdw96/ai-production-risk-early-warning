@@ -8,7 +8,22 @@ BACKEND_DIRECTORY = Path(__file__).resolve().parents[2]
 DATABASE_PATH = Path(
     os.environ.get("DATABASE_PATH") or BACKEND_DIRECTORY / "production_risk.db"
 )
-DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+
+# DATABASE_URL 이 있으면 그것을 쓰고, 없으면 SQLite 파일로 떨어진다.
+#
+# 두 엔진을 함께 두는 이유는 값이 다르기 때문이다. 운영과 컨테이너는
+# PostgreSQL 을 쓴다 — 쓰기가 늘어나고(ERP 가 되면 입고·이동·검사·출하가 전부
+# 쓰기다) 타입을 강제하며 제약을 고칠 수 있어야 하기 때문이다. 반면 테스트는
+# 파일 하나로 도는 편이 빠르고, 이 저장소의 제약은 두 엔진에서 같은 뜻을 갖도록
+# 방언별로 컴파일된다.
+DATABASE_URL = (
+    os.environ.get("DATABASE_URL") or f"sqlite:///{DATABASE_PATH.as_posix()}"
+)
+
+
+def is_sqlite(url: str = DATABASE_URL) -> bool:
+    """SQLite 인가. 연결 인자와 잠금 방식이 엔진마다 달라 이 판단이 필요하다."""
+    return url.startswith("sqlite")
 
 # 납기일이 임박했음을 알리는 완충 기간(일)
 WARNING_BUFFER_DAYS = 1
