@@ -7,6 +7,15 @@ set -eu
 # 탈출구도 함께 사라지므로, 반쯤 채워진 상태를 만들지 않는 것이 유일한 방어다.
 # 세 조건을 모두 통과할 때만 시드한다.
 
+# ── 0. SQLite 로 떨어질 때는 파일이 앉을 자리를 먼저 만든다 ──────────────
+# DATABASE_URL 이 없으면 SQLite 파일로 떨어진다(app.core.config). 그 파일의 상위
+# 디렉터리가 없으면 마이그레이션이 첫 줄에서 `unable to open database file` 로
+# 죽는다 — 판단이 세 조건으로 바뀌면서 옛 entrypoint 의 이 mkdir 이 빠져 있었다.
+if [ -z "${DATABASE_URL:-}" ]; then
+  database_path="${DATABASE_PATH:-/app/production_risk.db}"
+  mkdir -p "$(dirname "$database_path")"
+fi
+
 # ── 1. 표를 먼저 맞춘다 ──────────────────────────────────────────────────
 # 판단이 아니라 **전제**다. 항상 돌린다 — 표가 없으면 「비어 있는지」를 물어볼
 # 수조차 없다.

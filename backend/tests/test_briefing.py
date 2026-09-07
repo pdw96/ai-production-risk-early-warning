@@ -6,9 +6,12 @@
 
 from datetime import date
 
-from app.db.models import Item, MaterialLot, PurchaseReceipt
+from app.db.models import FinishedGoodsLot, Item, MaterialLot, PurchaseReceipt
 from tests.factories import raw_item
-from app.services.briefing import _build_material_response
+from app.services.briefing import (
+    _build_material_response,
+    _finished_goods_lot_state,
+)
 
 
 REFERENCE_DATE = date(2026, 9, 1)
@@ -194,3 +197,72 @@ def test_a_scheduled_lot_sharing_a_lot_number_keeps_its_own_state() -> None:
     assert response.expiring_quantity == 60
     states = sorted(lot.state for lot in response.lots)
     assert states == ["가용", "기간 내 폐기"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 완제품 로트의 화면 상태. 창고만 보고 판정하면 합격 재고가 불합격으로 잡힌다.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _finished_lot(
+    *,
+    warehouse: str,
+    qc_status: str,
+    expiry_date: date | None = None,
+) -> FinishedGoodsLot:
+    return FinishedGoodsLot(
+        lot_number="LOT-FG-01-260901",
+        warehouse=warehouse,
+        qc_status=qc_status,
+        stock_type="불량품" if qc_status == "불합격" else "양품",
+        quantity=100,
+        produced_date=REFERENCE_DATE,
+        passed_date=REFERENCE_DATE if qc_status == "합격" else None,
+        expiry_date=expiry_date,
+    )
+
+
+def test_a_passed_lot_awaiting_transfer_is_not_counted_as_rejected() -> None:
+    """합격했으나 아직 제품창고로 옮겨지지 않은 로트.
+
+    양방향 CHECK 를 단방향 둘로 가르면서(지적 ①) 표현할 수 있게 된 상태다.
+    창고만 보고 판정하던 때에는 이 자리가 「불합격」으로 떨어져 **합격 재고가
+    불합격 수량에 잡혔다.**
+    """
+    state = _finished_goods_lot_state(
+        _finished_lot(warehouse="생산창고", qc_status="합격"),
+        REFERENCE_DATE,
+    )
+
+    assert state != "불합격"
+    assert state != "출하 가능"
+
+
+def test_a_rejected_lot_is_still_counted_as_rejected() -> None:
+    assert (
+        _finished_goods_lot_state(
+            _finished_lot(warehouse="생산창고", qc_status="불합격"),
+            REFERENCE_DATE,
+        )
+        == "불합격"
+    )
+
+
+def test_a_lot_in_the_product_warehouse_is_releasable() -> None:
+    assert (
+        _finished_goods_lot_state(
+            _finished_lot(warehouse="제품창고", qc_status="합격"),
+            REFERENCE_DATE,
+        )
+        == "출하 가능"
+    )
+
+
+def test_a_lot_awaiting_inspection_is_counted_as_pending() -> None:
+    assert (
+        _finished_goods_lot_state(
+            _finished_lot(warehouse="생산창고", qc_status="검사 대기"),
+            REFERENCE_DATE,
+        )
+        == "검사 대기"
+    )

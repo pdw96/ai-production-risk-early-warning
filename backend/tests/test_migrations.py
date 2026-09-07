@@ -145,3 +145,27 @@ def test_both_engines_render_the_same_constraint_meaning() -> None:
         assert "reason IS NOT NULL" in rendered
         assert "result = " in rendered
     assert expressions["sqlite"] != expressions["postgresql"]
+
+
+def test_a_database_url_with_percent_encoding_survives_alembic_config() -> None:
+    """alembic 의 설정은 ConfigParser 이고 그것은 `%` 를 보간 문법으로 읽는다.
+
+    비밀번호에 `%40`(=`@`) 같은 퍼센트 인코딩이 들어 있으면 접속을 해 보기도
+    전에 ValueError 로 죽는다. entrypoint 가 마이그레이션을 **항상 먼저**
+    돌리므로, 그 순간 백엔드는 아예 기동하지 못한다.
+    """
+    url = "postgresql+psycopg://user:p%40ssw0rd@db:5432/prod"
+    config = Config()
+
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+
+    # 읽는 쪽에서 다시 한 글자로 돌아온다 — 주소 자체는 바뀌지 않는다.
+    assert config.get_main_option("sqlalchemy.url") == url
+    assert config.get_section(config.config_ini_section, {})["sqlalchemy.url"] == url
+
+
+def test_the_migration_environment_escapes_percent_signs() -> None:
+    """위 규칙을 env.py 가 실제로 지키는지 본다."""
+    source = (BACKEND_DIRECTORY / "migrations" / "env.py").read_text(encoding="utf-8")
+
+    assert 'replace("%", "%%")' in source

@@ -528,11 +528,22 @@ def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> st
     """
     if _is_expired(lot.expiry_date, reference_date):
         return "만료"
-    if lot.warehouse == PRODUCT_WAREHOUSE:
-        return "출하 가능"
     if lot.qc_status == QC_PENDING:
         return "검사 대기"
-    return "불합격"
+    if lot.qc_status == QC_FAILED:
+        return "불합격"
+    # 여기부터는 합격이다. 합격이라고 곧바로 출하할 수 있는 것은 아니다 —
+    # 제품창고에 들어와 있어야 한다.
+    if lot.warehouse == PRODUCT_WAREHOUSE:
+        return "출하 가능"
+    # 합격했으나 아직 제품창고로 옮겨지지 않은 로트. 창고만 보고 판정하던
+    # 때에는 이 자리가 「불합격」으로 떨어져 **합격 재고가 불합격 수량에
+    # 잡혔다**. 양방향 CHECK 를 단방향 둘로 가르면서(지적 ①) 표현할 수 있게 된
+    # 상태이며, 이 응답의 네 수량 중 어디에도 넣지 않는다 — 출하할 수 없으니
+    # 「출하 가능」이 아니고, 판정은 끝났으니 「검사 대기」도 「불합격」도
+    # 아니다. 자기 칸을 얻는 것은 관문 6(재고이동 요청·처리)이 서는 단계의
+    # 일이고, 그때까지도 `total_lot_quantity` 에는 그대로 들어 있다.
+    return "입고 대기"
 
 
 def _build_finished_goods_response(

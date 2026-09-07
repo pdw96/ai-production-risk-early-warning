@@ -7,6 +7,8 @@ SQL 파일에 같은 목록이 따로 있으면 반드시 갈리고, 갈리면 �
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import IntegrityError
@@ -21,12 +23,13 @@ from app.core.config import (
     UNITS_OF_MEASURE,
     WAREHOUSES,
 )
-from app.db.base import Base
+from app.db.base import Base, register_models
 from app.db.master_data import (
     CodeGroup,
     CommonCode,
     NonconformityAttribute,
     NonconformityStageRule,
+    NonWorkingPeriod,
     Partner,
     ProcessInspectionStandard,
     PurchaseCloseAttribute,
@@ -38,6 +41,9 @@ from app.db.master_data_loader import load_master_data, statements
 
 @pytest.fixture
 def session() -> Session:
+    # 기준정보 표는 거래 표를 참조한다(supplier_items → items). 모델을 전부
+    # 등록하지 않으면 이 파일만 따로 돌릴 때 외래키가 대상을 못 찾는다.
+    register_models()
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -430,3 +436,77 @@ def test_statement_splitting_survives_a_semicolon_inside_a_description() -> None
         "INSERT INTO t (a) VALUES ('세미콜론; 하나')",
         "INSERT INTO t (a) VALUES ('따옴표'' 하나')",
     ]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 리뷰가 찾아낸 제약의 구멍 넷. 넷 다 「스키마가 허용하는데 읽는 쪽이 터지는」
+# 모양이라, 값이 들어간 뒤 조회에서야 드러난다 — 그래서 넣는 자리에서 막는다.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_measured_reason_cannot_point_at_half_an_inspection_item(
+    session: Session,
+) -> None:
+    """복합 외래키는 한 칸이라도 비면 검사를 건너뛴다.
+
+    그래서 「그룹은 비었고 코드만 있는」 줄은 없는 검사 항목을 가리킨 채로
+    통과해 버린다. 짝을 강제하지 않으면 외래키가 있어도 지켜 주지 않는다.
+    """
+    session.add(
+        NonconformityAttribute(
+            code="IQ-XXX",
+            measure_kind=codes.MEASURED_KIND,
+            inspection_item_group=None,
+            inspection_item_code="두께",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_sigma_cannot_be_zero_or_negative(session: Session) -> None:
+    """σ 는 표준편차다. 0 이면 Cpk 의 나눗셈이 터지고, 음수면 관리한계가
+    뒤집힌 채 조용히 그려진다 — 뒤집힌 선은 아무 경보도 내지 않는다."""
+    session.add(
+        ProcessInspectionStandard(
+            process_code=PROCESSES[0],
+            item_code="두께",
+            upper_spec_limit=10.0,
+            lower_spec_limit=5.0,
+            center_line=7.5,
+            sigma=0.0,
+            sigma_source=codes.SIGMA_ASSUMED,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_non_working_period_cannot_end_before_it_starts(session: Session) -> None:
+    """뒤집힌 구간은 리드타임에서 음수 시간을 빼 착수 시각을 뒤로 민다."""
+    session.add(
+        NonWorkingPeriod(
+            starts_at=datetime(2026, 9, 30, 17, 30),
+            ends_at=datetime(2026, 9, 30, 9, 0),
+            reason="뒤집힌 구간",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_zero_length_non_working_period_is_not_an_outage(session: Session) -> None:
+    """길이가 0 인 구간은 멈춘 적이 없는 정지를 장부에 남긴다."""
+    session.add(
+        NonWorkingPeriod(
+            starts_at=datetime(2026, 9, 30, 9, 0),
+            ends_at=datetime(2026, 9, 30, 9, 0),
+            reason="길이 없는 구간",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()

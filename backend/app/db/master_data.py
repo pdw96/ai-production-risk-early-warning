@@ -151,6 +151,14 @@ class NonconformityAttribute(Base):
             " OR inspection_item_code IS NOT NULL",
             name="ck_nonconformity_measured_needs_item",
         ),
+        # 그룹과 코드는 함께 있거나 함께 없다. 복합 외래키는 **한 칸이라도
+        # 비면 검사를 건너뛰므로**, 짝을 강제하지 않으면 「그룹은 비었고 코드만
+        # 있는」 줄이 없는 검사 항목을 가리킨 채 통과한다 — 그 줄은 나중에
+        # 조회에서만 터진다.
+        CheckConstraint(
+            "(inspection_item_group IS NULL) = (inspection_item_code IS NULL)",
+            name="ck_nonconformity_item_reference_is_whole",
+        ),
     )
 
     group_code: Mapped[str] = mapped_column(
@@ -305,6 +313,16 @@ class NonWorkingPeriod(Base):
 
     __tablename__ = "non_working_periods"
 
+    __table_args__ = (
+        # 끝이 시작보다 늦어야 구간이다. 뒤집힌 구간은 리드타임에서 **음수
+        # 시간을 빼** 착수 시각을 앞이 아니라 뒤로 밀고, 길이 0 인 구간은
+        # 멈춘 적이 없는 정지를 장부에 남긴다.
+        CheckConstraint(
+            "ends_at > starts_at",
+            name="ck_non_working_period_ends_after_start",
+        ),
+    )
+
     id: Mapped[int] = mapped_column(primary_key=True)
     starts_at: Mapped[datetime] = mapped_column(DateTime)
     ends_at: Mapped[datetime] = mapped_column(DateTime)
@@ -365,6 +383,13 @@ class ProcessInspectionStandard(Base):
         CheckConstraint(
             f"(sigma IS NULL) = (sigma_source = '{codes.SIGMA_UNDECIDED}')",
             name="ck_standard_sigma_matches_source",
+        ),
+        # σ 는 표준편차라 0 이거나 음수일 수 없다. 관리한계는 이 값을 곱하고
+        # Cpk 는 나누므로, 0 이면 나눗셈이 터지고 음수면 상·하한이 뒤집힌 채
+        # 조용히 그려진다 — 뒤집힌 선은 아무 경보도 내지 않는다.
+        CheckConstraint(
+            "sigma IS NULL OR sigma > 0",
+            name="ck_standard_sigma_is_positive",
         ),
     )
 

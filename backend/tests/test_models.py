@@ -342,9 +342,15 @@ def _finished_goods_lot(product: Item, **overrides: Any) -> FinishedGoodsLot:
         "stock_type": "양품",
         "quantity": 100,
         "produced_date": date.today(),
-        "passed_date": date.today(),
     }
     values.update(overrides)
+    # 합격일은 판정에서 따라 나온다 — 시계가 합격에서 시작하기 때문이다.
+    # 여기서 파생시키지 않으면 판정만 바꾼 테스트가 「불합격인데 합격일이
+    # 있는」 로트를 만들고, 그것은 제약이 막아야 할 바로 그 줄이다.
+    values.setdefault(
+        "passed_date",
+        date.today() if values["qc_status"] == "합격" else None,
+    )
     return FinishedGoodsLot(**values)
 
 
@@ -603,5 +609,70 @@ def test_detaching_an_inspection_from_its_target_does_not_delete_it(
 
     lot.inspections.clear()
     # 대상 없는 검사 기록은 존재할 수 없으므로 CHECK 제약이 막는다.
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_raw_item_must_keep_its_safety_stock(session: Session) -> None:
+    """통합 전 `materials.safety_stock` 은 NOT NULL 이었다.
+
+    칸이 완제품과 겸용이 되면서 nullable 로 넓어졌는데, 자재 리스크는 이 값을
+    재고와 곧바로 견주므로 원자재만은 그 불변식이 남아야 한다 — 비어 있으면
+    비교가 아니라 계산이 터진다.
+    """
+    session.add(raw_item(code="RM-90", name="안전재고 없는 자재", safety_stock=None))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_finished_item_may_still_leave_its_safety_stock_empty(
+    session: Session,
+) -> None:
+    """완제품은 칸이 생겼을 뿐 아직 정한 사람이 없다 — 비어 있는 것이 맞다."""
+    session.add(finished_item(code="FG-90", name="안전재고 미정 제품"))
+    session.commit()
+
+    assert session.query(Item).filter_by(code="FG-90").one().safety_stock is None
+
+
+def test_a_lot_that_has_not_passed_cannot_carry_a_pass_date(session: Session) -> None:
+    """시계는 합격에서 시작한다(지적 ⑰). 불합격 로트에 합격일이 있으면
+    유효기간이 없는 판정에서 파생된다."""
+    product = finished_item(code="FG-91", name="가상 제품 K")
+    session.add(
+        _finished_goods_lot(
+            product,
+            warehouse="생산창고",
+            qc_status="불합격",
+            stock_type="불량품",
+            passed_date=date.today(),
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_passed_lot_must_carry_a_pass_date(session: Session) -> None:
+    """합격인데 합격일이 없으면 시계가 시작되지 않는다."""
+    product = finished_item(code="FG-92", name="가상 제품 L")
+    session.add(_finished_goods_lot(product, passed_date=None))
+
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_a_lot_cannot_pass_before_it_was_produced(session: Session) -> None:
+    """뒤집히면 「검사에 며칠 걸렸나」가 음수가 된다."""
+    product = finished_item(code="FG-93", name="가상 제품 M")
+    session.add(
+        _finished_goods_lot(
+            product,
+            produced_date=date.today(),
+            passed_date=date.today() - timedelta(days=1),
+        )
+    )
+
     with pytest.raises(IntegrityError):
         session.commit()

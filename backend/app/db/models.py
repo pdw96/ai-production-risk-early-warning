@@ -37,6 +37,7 @@ from app.core.config import (
     QC_FAILED,
     QC_PASSED,
     QC_STATUSES,
+    RAW_ITEM,
     SEMI_FINISHED_ITEM,
     STOCK_TYPES,
     UNITS_OF_MEASURE,
@@ -193,6 +194,15 @@ class Item(Base):
         CheckConstraint(
             f"item_type <> '{SEMI_FINISHED_ITEM}' OR shelf_life_days IS NULL",
             name="ck_item_semi_finished_has_no_shelf_life",
+        ),
+        # 통합 전 `materials.safety_stock` 은 NOT NULL 이었다. 칸이 완제품과
+        # 겸용이 되면서 nullable 로 넓어졌는데, **원자재만은 그 불변식을
+        # 유지해야** 한다 — 자재 리스크가 이 값을 재고와 곧바로 견주므로
+        # (`material_risk.calculate_material_risk`) 비어 있으면 비교에서 터진다.
+        # 완제품은 아직 정한 사람이 없어 비어 있는 것이 맞다.
+        CheckConstraint(
+            f"item_type <> '{RAW_ITEM}' OR safety_stock IS NOT NULL",
+            name="ck_item_raw_has_safety_stock",
         ),
     )
 
@@ -426,6 +436,19 @@ class FinishedGoodsLot(Base):
         CheckConstraint(
             f"stock_type <> '{DEFECTIVE_STOCK}' OR qc_status = '{QC_FAILED}'",
             name="ck_finished_goods_lot_defective_is_rejected",
+        ),
+        # 합격일은 합격에만 붙는다(지적 ⑰). 시계가 합격에서 시작한다고 정한
+        # 이상, 검사 대기·불합격 로트에 합격일이 있으면 유효기간이 없는 판정에서
+        # 파생되고, 합격인데 합격일이 없으면 시계가 시작되지 않는다.
+        CheckConstraint(
+            f"(passed_date IS NOT NULL) = (qc_status = '{QC_PASSED}')",
+            name="ck_finished_goods_lot_passed_date_matches_status",
+        ),
+        # 합격일이 생산일보다 앞설 수 없다. 뒤집히면 「검사에 며칠 걸렸나」가
+        # 음수가 된다 — 지적 ⑰ 이 공짜로 얻는다고 한 그 지표다.
+        CheckConstraint(
+            "passed_date IS NULL OR passed_date >= produced_date",
+            name="ck_finished_goods_lot_passed_after_produced",
         ),
     )
 
