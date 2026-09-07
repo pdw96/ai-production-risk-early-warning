@@ -11,8 +11,9 @@ const items: MasterItem[] = [
     item_name: "아크솔 시트",
     item_type: "제품",
     linked_item_count: 3,
-    lot_count: null,
+    lot_count: 30,
     safety_stock: null,
+    shelf_life_days: 180,
   },
   {
     item_code: "RM-01",
@@ -21,6 +22,7 @@ const items: MasterItem[] = [
     linked_item_count: 1,
     lot_count: 2,
     safety_stock: 224,
+    shelf_life_days: null,
   },
 ];
 
@@ -50,11 +52,22 @@ describe("MasterItemTable", () => {
     expect(markup).toContain("사용 제품 1종");
   });
 
-  it("marks safety stock and lots as not applicable for products", () => {
+  it("marks only safety stock as not applicable for products", () => {
+    // 제품도 완제품 로트를 가지므로 로트 수는 값이 있다. 안전재고만 자재 개념이다.
     const markup = renderToStaticMarkup(<MasterItemTable items={[items[0]]} />);
 
-    expect(markup.match(/해당 없음/g)).toHaveLength(2);
+    expect(markup.match(/해당 없음/g)).toHaveLength(1);
+    expect(markup).toContain("30건");
     expect(markup).not.toContain("224개");
+  });
+
+  it("shows the shelf life setting and names the open-ended case", () => {
+    // 설정기간이 없는 것은 값을 아직 안 정한 것이 아니라 유효기간을 두지 않는
+    // 품목이라는 뜻이다.
+    const markup = renderToStaticMarkup(<MasterItemTable items={items} />);
+
+    expect(markup).toContain("180일");
+    expect(markup).toContain("무기한");
   });
 
   it("shows safety stock and lot count for materials", () => {

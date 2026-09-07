@@ -3,23 +3,40 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import PRODUCTION_WAREHOUSE, RAW_MATERIAL_WAREHOUSE
+from app.core.config import (
+    FINISHED_GOODS_WAREHOUSES,
+    INCOMING_INSPECTION,
+    MATERIAL_WAREHOUSES,
+    OUTGOING_INSPECTION,
+    PRODUCT_WAREHOUSE,
+    PROCESS_INSPECTION,
+    PRODUCTION_WAREHOUSE,
+    QC_FAILED,
+    QC_PASSED,
+    QC_PENDING,
+    RAW_MATERIAL_WAREHOUSE,
+    WAREHOUSE_SLUGS,
+)
 from app.db.models import (
     BomRequirement,
     DailyProduction,
+    FinishedGoodsLot,
     Material,
+    MaterialLot,
     Order,
     Product,
     PurchaseReceipt,
+    QualityInspection,
     RiskStatus,
 )
 from app.schemas.contracts import (
     BomRequirementResponse,
     DashboardKpis,
     DashboardResponse,
+    FinishedGoodsResponse,
     MasterDataResponse,
     MasterItemResponse,
     MaterialLotResponse,
@@ -30,6 +47,11 @@ from app.schemas.contracts import (
     ProductionResultResponse,
     ProductTrend,
     PurchaseReceiptResponse,
+    QualityDataResponse,
+    WarehouseLotResponse,
+    WarehouseStockResponse,
+    QualityInspectionResponse,
+    QualityInspectionSummary,
     RiskResponse,
     RiskWorkflowStatus,
 )
@@ -39,6 +61,26 @@ from app.services.order_risk import calculate_order_risk
 
 HORIZON_DAYS = 14
 RISK_STATUS_NEW: RiskWorkflowStatus = "신규"
+
+# 검사 기록은 영구히 쌓이므로 조회에 상한을 둔다. 전체에서 최신순으로 자르면
+# IQC 가 한 건도 안 남는다 — IQC 의 검사일은 자재 입고일이라 늘 PQC·OQC 보다
+# 과거이기 때문이다. 그래서 유형별로 자른다. 요약 건수는 잘라낸 것까지 포함한
+# 전체를 세므로, 화면의 합격·불합격 집계는 목록 길이와 무관하게 정확하다.
+RECENT_INSPECTIONS_PER_TYPE = 20
+
+# 창고가 무엇을 담는지. 화면 설명에 그대로 나가므로 규칙을 한 곳에만 적는다.
+WAREHOUSE_DESCRIPTIONS = {
+    RAW_MATERIAL_WAREHOUSE: "입고된 자재를 보관합니다.",
+    PRODUCTION_WAREHOUSE: (
+        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격한 완제품이 있습니다."
+    ),
+    PRODUCT_WAREHOUSE: "출하검사에 합격한 완제품만 적재됩니다. 출하는 여기서만 일어납니다.",
+}
+INSPECTION_TYPE_ORDER = (
+    INCOMING_INSPECTION,
+    PROCESS_INSPECTION,
+    OUTGOING_INSPECTION,
+)
 
 
 def get_reference_date(session: Session) -> date:
@@ -156,6 +198,18 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
     return results
 
 
+def _distinct_lot_counts(session: Session, owner_column, lot_number_column) -> dict[int, int]:
+    """품목별 물리적 로트 수. 한 로트가 두 창고에 나뉘어 있어도 한 건으로 센다."""
+    return {
+        owner_id: int(count)
+        for owner_id, count in session.execute(
+            select(owner_column, func.count(distinct(lot_number_column))).group_by(
+                owner_column
+            )
+        ).all()
+    }
+
+
 def get_master_data(session: Session) -> MasterDataResponse:
     """기준정보관리 화면용 품목 마스터와 BOM을 만든다."""
     products = session.scalars(
@@ -165,17 +219,28 @@ def get_master_data(session: Session) -> MasterDataResponse:
     ).all()
     materials = session.scalars(
         select(Material)
-        .options(selectinload(Material.bom_requirements), selectinload(Material.lots))
+        .options(selectinload(Material.bom_requirements))
         .order_by(Material.code)
     ).all()
+    # 로트는 영구 기록이라 계속 쌓인다. 화면이 쓰는 것은 품목당 정수 하나뿐이므로
+    # 행을 다 적재하지 않고 집계 질의로 센다.
+    finished_lot_counts = _distinct_lot_counts(
+        session, FinishedGoodsLot.product_id, FinishedGoodsLot.lot_number
+    )
+    material_lot_counts = _distinct_lot_counts(
+        session, MaterialLot.material_id, MaterialLot.lot_number
+    )
 
     items = [
         MasterItemResponse(
             item_type="제품",
             item_code=product.code,
             item_name=product.name,
+            # 안전재고는 자재만 관리한다.
             safety_stock=None,
-            lot_count=None,
+            # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
+            lot_count=finished_lot_counts.get(product.id, 0),
+            shelf_life_days=product.shelf_life_days,
             linked_item_count=len(product.bom_requirements),
         )
         for product in products
@@ -186,7 +251,8 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_name=material.name,
             safety_stock=round(material.safety_stock, 2),
             # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
-            lot_count=len({lot.lot_number for lot in material.lots}),
+            lot_count=material_lot_counts.get(material.id, 0),
+            shelf_life_days=material.shelf_life_days,
             linked_item_count=len(material.bom_requirements),
         )
         for material in materials
@@ -237,6 +303,251 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
         )
         for receipt in receipts
     ]
+
+
+def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
+    reference_date = get_reference_date(session)
+    products = session.scalars(
+        select(Product)
+        .options(selectinload(Product.finished_goods_lots))
+        .order_by(Product.code)
+    ).all()
+    return [
+        _build_finished_goods_response(product, reference_date)
+        for product in products
+    ]
+
+
+def get_warehouse_stock(
+    session: Session,
+    warehouse_slug: str,
+) -> WarehouseStockResponse | None:
+    """창고 한 곳에 실제로 놓여 있는 것을 그대로 보여 준다.
+
+    창고마다 담는 것이 정해져 있다.
+
+    - 원재료창고 — 입고된 자재
+    - 생산창고 — 원재료창고에서 이동한 자재, 그리고 검사 대기·불합격 완제품
+    - 제품창고 — 출하검사 합격 완제품만
+
+    이 규칙은 DB 제약으로 강제되므로 여기서 다시 거르지 않는다. 창고 값으로
+    가져온 것이 곧 그 창고에 있는 것이다.
+    """
+    warehouse = WAREHOUSE_SLUGS.get(warehouse_slug)
+    if warehouse is None:
+        return None
+
+    reference_date = get_reference_date(session)
+    rows: list[WarehouseLotResponse] = []
+
+    if warehouse in MATERIAL_WAREHOUSES:
+        material_lots = session.scalars(
+            select(MaterialLot)
+            .options(selectinload(MaterialLot.material))
+            .where(MaterialLot.warehouse == warehouse)
+        ).all()
+        rows.extend(
+            WarehouseLotResponse(
+                item_type="자재",
+                item_code=lot.material.code,
+                item_name=lot.material.name,
+                lot_number=lot.lot_number,
+                quantity=round(lot.quantity, 2),
+                stocked_date=lot.received_date,
+                expiry_date=lot.expiry_date,
+                # 자재의 수입검사는 입고 시점에 이미 끝나 있다.
+                qc_status=None,
+                expired=_is_expired(lot.expiry_date, reference_date),
+            )
+            for lot in material_lots
+        )
+
+    if warehouse in FINISHED_GOODS_WAREHOUSES:
+        product_lots = session.scalars(
+            select(FinishedGoodsLot)
+            .options(selectinload(FinishedGoodsLot.product))
+            .where(FinishedGoodsLot.warehouse == warehouse)
+        ).all()
+        rows.extend(
+            WarehouseLotResponse(
+                item_type="제품",
+                item_code=lot.product.code,
+                item_name=lot.product.name,
+                lot_number=lot.lot_number,
+                quantity=round(lot.quantity, 2),
+                stocked_date=lot.produced_date,
+                expiry_date=lot.expiry_date,
+                qc_status=lot.qc_status,
+                expired=_is_expired(lot.expiry_date, reference_date),
+            )
+            for lot in product_lots
+        )
+
+    # 먼저 쓰거나 먼저 나갈 것이 위로 오도록 유효기간 순으로 세운다. 자재
+    # 화면의 로트 목록과 같은 규칙이다.
+    rows.sort(key=lambda row: (row.expiry_date or date.max, row.stocked_date, row.lot_number))
+    materials = [row for row in rows if row.item_type == "자재"]
+    products = [row for row in rows if row.item_type == "제품"]
+
+    return WarehouseStockResponse(
+        warehouse=warehouse,
+        warehouse_slug=warehouse_slug,
+        description=WAREHOUSE_DESCRIPTIONS[warehouse],
+        material_lot_count=len({row.lot_number for row in materials}),
+        material_quantity=round(sum(row.quantity for row in materials), 2),
+        product_lot_count=len({row.lot_number for row in products}),
+        product_quantity=round(sum(row.quantity for row in products), 2),
+        expired_quantity=round(sum(row.quantity for row in rows if row.expired), 2),
+        lots=rows,
+    )
+
+
+def list_quality_inspections(session: Session) -> QualityDataResponse:
+    """유형별 합격·불합격 전체 집계와, 유형별 최신 기록을 모아 돌려준다.
+
+    전체를 실어 보내지 않는 이유는 기록이 영구히 쌓이기 때문이다. 화면이 다
+    그리지도 못할 양을 직렬화하면 응답과 파싱 비용만 무한정 커진다. 대신 건수는
+    집계 질의로 세어 잘라낸 기록까지 반영한다.
+    """
+    summaries = _build_inspection_summaries(session)
+    rows = [
+        _build_inspection_response(inspection)
+        for inspection_type in INSPECTION_TYPE_ORDER
+        for inspection in _recent_inspections_of_type(session, inspection_type)
+    ]
+    # 유형별로 뽑았으므로 다시 검사일 내림차순으로 되돌린다.
+    rows.sort(key=lambda row: (row.inspected_date, row.inspection_id), reverse=True)
+    return QualityDataResponse(summaries=summaries, inspections=rows)
+
+
+def _build_inspection_summaries(session: Session) -> list[QualityInspectionSummary]:
+    """유형×판정 건수를 집계 질의로 센다(잘라낸 기록까지 포함한 전체)."""
+    counts: defaultdict[tuple[str, str], int] = defaultdict(int)
+    for inspection_type, result, count in session.execute(
+        select(
+            QualityInspection.inspection_type,
+            QualityInspection.result,
+            func.count(),
+        ).group_by(QualityInspection.inspection_type, QualityInspection.result)
+    ).all():
+        counts[(inspection_type, result)] = int(count)
+
+    return [
+        QualityInspectionSummary(
+            inspection_type=inspection_type,
+            total_count=(
+                counts[(inspection_type, QC_PASSED)]
+                + counts[(inspection_type, QC_FAILED)]
+            ),
+            passed_count=counts[(inspection_type, QC_PASSED)],
+            failed_count=counts[(inspection_type, QC_FAILED)],
+        )
+        for inspection_type in INSPECTION_TYPE_ORDER
+    ]
+
+
+def _recent_inspections_of_type(
+    session: Session,
+    inspection_type: str,
+) -> list[QualityInspection]:
+    return list(
+        session.scalars(
+            select(QualityInspection)
+            .options(
+                selectinload(QualityInspection.material_lot).selectinload(
+                    MaterialLot.material
+                ),
+                selectinload(QualityInspection.daily_production)
+                .selectinload(DailyProduction.order)
+                .selectinload(Order.product),
+                selectinload(QualityInspection.finished_goods_lot).selectinload(
+                    FinishedGoodsLot.product
+                ),
+            )
+            .where(QualityInspection.inspection_type == inspection_type)
+            .order_by(
+                QualityInspection.inspected_date.desc(),
+                QualityInspection.id.desc(),
+            )
+            .limit(RECENT_INSPECTIONS_PER_TYPE)
+        ).all()
+    )
+
+
+def _build_inspection_response(
+    inspection: QualityInspection,
+) -> QualityInspectionResponse:
+    """검사 대상이 유형마다 다르므로 화면이 쓸 품목·대상 표기로 풀어 준다."""
+    if inspection.material_lot is not None:
+        target_type = "자재 로트"
+        item_code = inspection.material_lot.material.code
+        item_name = inspection.material_lot.material.name
+        target_label = inspection.material_lot.lot_number
+    elif inspection.daily_production is not None:
+        order = inspection.daily_production.order
+        target_type = "생산 실적"
+        item_code = order.product.code
+        item_name = order.product.name
+        target_label = order.order_number
+    else:
+        target_type = "완제품 로트"
+        item_code = inspection.finished_goods_lot.product.code
+        item_name = inspection.finished_goods_lot.product.name
+        target_label = inspection.finished_goods_lot.lot_number
+
+    return QualityInspectionResponse(
+        inspection_id=inspection.id,
+        inspection_type=inspection.inspection_type,
+        inspected_date=inspection.inspected_date,
+        result=inspection.result,
+        reason=inspection.reason,
+        target_type=target_type,
+        item_code=item_code,
+        item_name=item_name,
+        target_label=target_label,
+    )
+
+
+def _is_expired(expiry_date: date | None, reference_date: date) -> bool:
+    """유효기간 당일은 이미 쓸 수 없다 — 자재의 가용 조건과 같은 규칙이다."""
+    return expiry_date is not None and expiry_date <= reference_date
+
+
+def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> str:
+    """완제품 로트의 화면 상태. 요약의 네 수량과 1:1로 대응한다.
+
+    만료를 먼저 보는 이유는, 만료된 로트가 제품창고에 남아 있어도 출하할 수 없기
+    때문이다. 그 다음은 창고가 곧 검사 결과라 창고만 보면 된다.
+    """
+    if _is_expired(lot.expiry_date, reference_date):
+        return "만료"
+    if lot.warehouse == PRODUCT_WAREHOUSE:
+        return "출하 가능"
+    if lot.qc_status == QC_PENDING:
+        return "검사 대기"
+    return "불합격"
+
+
+def _build_finished_goods_response(
+    product: Product,
+    reference_date: date,
+) -> FinishedGoodsResponse:
+    lots = product.finished_goods_lots
+    quantity_by_state: defaultdict[str, float] = defaultdict(float)
+    for lot in lots:
+        quantity_by_state[_finished_goods_lot_state(lot, reference_date)] += lot.quantity
+
+    return FinishedGoodsResponse(
+        product_id=product.id,
+        product_code=product.code,
+        product_name=product.name,
+        shelf_life_days=product.shelf_life_days,
+        releasable_stock=round(quantity_by_state["출하 가능"], 2),
+        inspection_pending_stock=round(quantity_by_state["검사 대기"], 2),
+        rejected_stock=round(quantity_by_state["불합격"], 2),
+        expired_stock=round(quantity_by_state["만료"], 2),
+        total_lot_quantity=round(sum(lot.quantity for lot in lots), 2),
+    )
 
 
 def list_risks(session: Session) -> list[RiskResponse]:

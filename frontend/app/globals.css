@@ -171,6 +171,9 @@ a {
 .operation-table--bom { min-width: 620px; }
 .operation-table--purchases { min-width: 940px; }
 .operation-table--results { min-width: 720px; }
+.operation-table--finished-goods { min-width: 920px; }
+.operation-table--quality { min-width: 900px; }
+.operation-table--finished-goods td:not(:first-child), .operation-table--quality td:not(.operation-table__reason) { white-space: nowrap; }
 .operation-table--master td, .operation-table--purchases td, .operation-table--bom td, .operation-table--results td { white-space: nowrap; }
 .operation-table th { background: #101820; color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: .68rem; letter-spacing: .045em; padding: 10px 12px; text-align: left; text-transform: uppercase; white-space: nowrap; }
 .operation-table td { background: var(--panel); border-top: 1px solid var(--line); font-size: .79rem; padding: 12px; vertical-align: top; }
@@ -243,3 +246,30 @@ a {
 .trend-panel__filter button { background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; font-family: inherit; font-size: .74rem; padding: 6px 11px; transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease; }
 .trend-panel__filter button:hover, .trend-panel__filter button:focus-visible { border-color: var(--signal); color: var(--text); outline: none; }
 .trend-panel__filter button[aria-pressed="true"] { background: var(--panel); border-color: var(--signal); color: var(--signal); font-weight: 700; }
+
+.quality-summary { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 18px; }
+.quality-summary__card { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; }
+.quality-summary__label { color: var(--muted); font-size: .72rem; letter-spacing: .04em; margin: 0 0 6px; }
+.quality-summary__value { display: block; font-size: 1.35rem; letter-spacing: -.03em; }
+.quality-summary__detail { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; margin: 6px 0 0; }
+
+@media (max-width: 900px) {
+  .quality-summary { grid-template-columns: 1fr; }
+}
+
+/* 메뉴 트리 — 깊이만큼 들여쓴다. 링크가 없는 노드는 하위를 묶는 이름표다. */
+.control-room__navigation a[data-depth="1"], .control-room__navigation-branch[data-depth="1"] { padding-left: 26px; }
+.control-room__navigation a[data-depth="2"], .control-room__navigation-branch[data-depth="2"] { padding-left: 40px; }
+.control-room__navigation-branch { color: var(--muted); font-size: .78rem; letter-spacing: -.01em; margin: 0; padding: 9px 12px 3px; }
+
+.warehouse-summary { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 18px; }
+.warehouse-summary__card { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; }
+.warehouse-summary__label { color: var(--muted); font-size: .72rem; letter-spacing: .04em; margin: 0 0 6px; }
+.warehouse-summary__value { display: block; font-size: 1.35rem; letter-spacing: -.03em; }
+.warehouse-summary__detail { color: var(--muted); font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; margin: 6px 0 0; }
+.operation-table--warehouse { min-width: 1000px; }
+.operation-table--warehouse td { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .warehouse-summary { grid-template-columns: 1fr; }
+}

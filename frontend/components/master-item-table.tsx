@@ -7,6 +7,12 @@ function format_optional_quantity(value: number | null): string {
   return value === null ? "해당 없음" : format_quantity(value);
 }
 
+// 설정기간이 없다는 것은 유효기간을 두지 않는 품목이라는 뜻이다. "해당 없음"
+// 으로 쓰면 값을 아직 안 정한 것처럼 읽힌다.
+function format_shelf_life(value: number | null): string {
+  return value === null ? "무기한" : `${value}일`;
+}
+
 function format_linked_label(item: MasterItem): string {
   return item.item_type === "제품"
     ? `소요 자재 ${item.linked_item_count}종`
@@ -23,6 +29,7 @@ export function MasterItemTable({ items }: Readonly<{ items: MasterItem[] }>) {
             <th scope="col">품목 코드</th>
             <th scope="col">품목명</th>
             <th scope="col">안전 재고</th>
+            <th scope="col">유효기간 설정</th>
             <th scope="col">보유 로트</th>
             <th scope="col">연결 품목</th>
           </tr>
@@ -34,6 +41,7 @@ export function MasterItemTable({ items }: Readonly<{ items: MasterItem[] }>) {
               <td><span className="table-primary-link">{item.item_code}</span></td>
               <td><strong>{item.item_name}</strong></td>
               <td className="numeric-cell">{format_optional_quantity(item.safety_stock)}</td>
+              <td className="numeric-cell">{format_shelf_life(item.shelf_life_days)}</td>
               <td className="numeric-cell">
                 {item.lot_count === null ? "해당 없음" : `${item.lot_count}건`}
               </td>

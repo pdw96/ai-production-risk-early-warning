@@ -3,6 +3,12 @@ export type RiskWorkflowStatus = "신규" | "확인 중" | "조치 완료";
 export type Warehouse = "원재료창고" | "생산창고";
 export type LotState = "가용" | "예정 입고" | "기간 내 폐기" | "만료";
 export type ItemType = "제품" | "자재";
+export type FinishedGoodsWarehouse = "생산창고" | "제품창고";
+export type AnyWarehouse = "원재료창고" | "생산창고" | "제품창고";
+export type QcStatus = "검사 대기" | "합격" | "불합격";
+export type InspectionType = "IQC" | "PQC" | "OQC";
+export type InspectionResult = "합격" | "불합격";
+export type InspectionTargetType = "자재 로트" | "생산 실적" | "완제품 로트";
 
 export interface ProductionPoint {
   work_date: string;
@@ -78,9 +84,78 @@ export interface MasterItem {
   item_type: ItemType;
   item_code: string;
   item_name: string;
+  /** 안전재고는 자재만 관리한다. */
   safety_stock: number | null;
   lot_count: number | null;
+  /** 사내 프로세스가 정한 유효기간 설정기간(일). null 이면 무기한 품목이다. */
+  shelf_life_days: number | null;
   linked_item_count: number;
+}
+
+export interface FinishedGoods {
+  product_id: number;
+  product_code: string;
+  product_name: string;
+  shelf_life_days: number | null;
+  /** 제품창고에 있고 만료되지 않은 재고. 출하는 여기서만 일어난다. */
+  releasable_stock: number;
+  /** 아직 출하검사를 받지 않은 재고(생산창고) */
+  inspection_pending_stock: number;
+  /** 출하검사 불합격 재고(생산창고) */
+  rejected_stock: number;
+  expired_stock: number;
+  /** 위 네 수량의 합. 로트를 지우지 않으므로 만료분도 들어 있다. */
+  total_lot_quantity: number;
+}
+
+export interface WarehouseLot {
+  item_type: ItemType;
+  item_code: string;
+  item_name: string;
+  lot_number: string;
+  quantity: number;
+  /** 자재는 입고일, 완제품은 생산일 */
+  stocked_date: string;
+  expiry_date: string | null;
+  /** 완제품만 값을 가진다. 자재의 수입검사는 입고 시점에 이미 끝나 있다. */
+  qc_status: QcStatus | null;
+  expired: boolean;
+}
+
+export interface WarehouseStock {
+  warehouse: AnyWarehouse;
+  warehouse_slug: string;
+  description: string;
+  material_lot_count: number;
+  material_quantity: number;
+  product_lot_count: number;
+  product_quantity: number;
+  expired_quantity: number;
+  lots: WarehouseLot[];
+}
+
+export interface QualityInspection {
+  inspection_id: number;
+  inspection_type: InspectionType;
+  inspected_date: string;
+  result: InspectionResult;
+  reason: string | null;
+  target_type: InspectionTargetType;
+  item_code: string;
+  item_name: string;
+  target_label: string;
+}
+
+export interface QualityInspectionSummary {
+  inspection_type: InspectionType;
+  total_count: number;
+  passed_count: number;
+  failed_count: number;
+}
+
+export interface QualityData {
+  summaries: QualityInspectionSummary[];
+  inspections: QualityInspection[];
 }
 
 export interface BomRequirement {
@@ -187,6 +262,18 @@ export function getMasterData(): Promise<MasterData> {
 
 export function getPurchases(): Promise<PurchaseReceipt[]> {
   return requestData<PurchaseReceipt[]>("/api/purchases");
+}
+
+export function getWarehouseStock(warehouse_slug: string): Promise<WarehouseStock> {
+  return requestData<WarehouseStock>(`/api/warehouses/${warehouse_slug}`);
+}
+
+export function getFinishedGoods(): Promise<FinishedGoods[]> {
+  return requestData<FinishedGoods[]>("/api/finished-goods");
+}
+
+export function getQualityInspections(): Promise<QualityData> {
+  return requestData<QualityData>("/api/quality-inspections");
 }
 
 export function getRisks(): Promise<Risk[]> {
