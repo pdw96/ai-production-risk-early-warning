@@ -980,3 +980,33 @@ def test_an_unseeded_database_does_not_look_like_a_healthy_factory(
     assert data["product_trends"] == []
     assert data["top_order_risks"] == []
     assert data["top_material_risks"] == []
+
+
+def test_an_empty_aggregate_is_not_reported_as_mixed_units(client: TestClient) -> None:
+    """더한 것이 없는 날과 단위가 섞인 날은 다르다.
+
+    둘 다 `quantity_uom` 이 `None` 이지만, 앞의 것은 합이 0 이다 — 수량은 음수가
+    될 수 없으므로 보태는 줄이 하나도 없으면 합은 반드시 0 이다. 화면이 그 둘을
+    가르는 근거가 이 불변식이고, 그것이 깨지면 평범한 0 인 날이 「0 (단위 혼재)」로
+    적힌다.
+    """
+    # 시드는 14일 창에 매일 실적이 있어 빈 날이 없다. 표를 비워 그 상태를 만든다.
+    db_base.drop_all()
+    db_base.create_all()
+
+    results = client.get("/api/production-results").json()["data"]
+    assert results, "일자별 실적은 실적이 없어도 날짜를 채워 보낸다."
+
+    for row in results:
+        assert row["quantity_uom"] is None
+        assert row["planned_quantity"] == 0
+        assert row["actual_quantity"] == 0
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] is None
+    assert dashboard["kpis"]["today_plan_quantity"] == 0
+    assert dashboard["kpis"]["today_actual_quantity"] == 0
+    assert all(
+        point["planned_quantity"] == 0 and point["actual_quantity"] == 0
+        for point in dashboard["production_trend"]
+    )

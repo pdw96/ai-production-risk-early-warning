@@ -60,6 +60,12 @@ export function ProductionTrendChart({
   // 값이라 응답이 그 단위를 따로 말해 주며, 완제품 단위가 갈리면 `null` 이다.
   const unit = selected_trend ? selected_trend.stock_uom : totalUnit;
   const quantity_label = (value: number) => format_mixed_quantity(value, unit);
+  // 단위가 없는 이유가 둘이다 — 실제로 섞였거나, 더한 것이 하나도 없거나.
+  // 아무 실적도 없는 창에 「단위: 혼재」라고 적으면 없던 일을 있었다고 말한다.
+  const has_quantity = points.some(
+    (point) => point.planned_quantity !== 0 || point.actual_quantity !== 0,
+  );
+  const unit_heading = unit === null && !has_quantity ? "—" : unit_label(unit);
 
   return (
     <section aria-labelledby="production-trend-title" className="dashboard-panel trend-panel">
@@ -68,7 +74,7 @@ export function ProductionTrendChart({
           <p className="section-kicker">OUTPUT TREND</p>
           <h2 id="production-trend-title">최근 7일 생산 계획 대비 실적</h2>
         </div>
-        <span className="dashboard-panel__meta">{scope_label} · 단위: {unit_label(unit)}</span>
+        <span className="dashboard-panel__meta">{scope_label} · 단위: {unit_heading}</span>
       </div>
       {productTrends.length > 0 && (
         <div aria-label="추이를 볼 제품 선택" className="trend-panel__filter" role="group">

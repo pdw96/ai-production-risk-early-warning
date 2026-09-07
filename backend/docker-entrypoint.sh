@@ -19,7 +19,7 @@ if [ -z "${DATABASE_URL:-}" ]; then
   mkdir -p "$(dirname "$database_path")"
 else
   case "${DATABASE_URL}" in
-    sqlite:*)
+    sqlite:*|sqlite+*:*)
       # 슬래시 셋과 넷이 **다른 뜻**이다. `sqlite:///data/x.db` 는 작업
       # 디렉터리 기준 상대경로(`data/x.db`)이고, `sqlite:////data/x.db` 는
       # 절대경로(`/data/x.db`)다. `://` 까지만 걷어내면 앞의 것이 `/data/x.db`
@@ -27,8 +27,11 @@ else
       # 없는 채로 남는다.
       #
       # 그래서 `://` 뒤에 남는 슬래시를 **정확히 하나** 더 걷어낸다. 그러면
-      # 셋은 상대경로가, 넷은 절대경로가 그대로 남는다. 방언 접미
-      # (`sqlite+pysqlite:`)와 `?mode=ro` 같은 질의 문자열도 함께 걷어낸다.
+      # 셋은 상대경로가, 넷은 절대경로가 그대로 남는다. `?mode=ro` 같은 질의
+      # 문자열도 함께 걷어낸다.
+      #
+      # 위 갈래가 둘인 것은 방언 접미 때문이다 — `sqlite+pysqlite:` 는 콜론이
+      # `sqlite` 바로 뒤에 오지 않아 `sqlite:*` 에 걸리지 않는다.
       database_path="${DATABASE_URL#*://}"
       database_path="${database_path%%\?*}"
       database_path="${database_path#/}"

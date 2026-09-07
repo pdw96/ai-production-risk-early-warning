@@ -818,3 +818,50 @@ def test_a_raw_item_cannot_hold_a_finished_goods_lot(session: Session) -> None:
 
     with pytest.raises(IntegrityError):
         session.flush()
+
+
+def test_a_raw_item_cannot_carry_a_production_order(session: Session) -> None:
+    """생산오더의 품목은 **완제품이어야 한다.**
+
+    원자재가 오더에 들어가면 그 실적이 전 제품 합계 추이에는 들어가는데 제품별
+    계열은 완제품만 세우므로, 고를 수 없는 계열의 실적이 합계에만 남는다. 오더
+    API 도 그 원자재를 「제품」으로 적는다. 표가 둘이던 때는 외래키가 막았다.
+    """
+    material = raw_item(code="RM-81", name="가상 원자재 V", safety_stock=10)
+    session.add(material)
+    session.flush()
+
+    session.add(
+        Order(
+            order_number="MO-WRONG",
+            item_id=material.id,
+            due_date=date.today(),
+            planned_quantity=10,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_a_finished_item_cannot_be_a_scheduled_receipt(session: Session) -> None:
+    """예정 입고의 품목은 **원자재여야 한다.**
+
+    완제품이 들어가면 구매관리 화면은 그것을 자재 입고로 내보내는데 자재관리는
+    원자재만 거르므로, 자재 입고로 보이면서 어느 자재의 14일 수급 전망에도
+    잡히지 않는 줄이 된다.
+    """
+    product = finished_item(code="FG-81", name="가상 소재 V")
+    session.add(product)
+    session.flush()
+
+    session.add(
+        PurchaseReceipt(
+            item_id=product.id,
+            scheduled_date=date.today(),
+            scheduled_quantity=10,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()

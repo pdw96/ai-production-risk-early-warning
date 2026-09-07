@@ -297,9 +297,11 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('order_number', sa.String(length=50), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
+    sa.Column('item_type', sa.String(length=20), server_default='완제품', nullable=False),
     sa.Column('due_date', sa.Date(), nullable=False),
     sa.Column('planned_quantity', sa.Float(), nullable=False),
-    sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
+    sa.CheckConstraint("item_type = '완제품'", name='ck_order_item_type'),
+    sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id')
     )
     with op.batch_alter_table('orders', schema=None) as batch_op:
@@ -308,10 +310,12 @@ def upgrade() -> None:
     op.create_table('purchase_receipts',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('item_id', sa.Integer(), nullable=False),
+    sa.Column('item_type', sa.String(length=20), server_default='원자재', nullable=False),
     sa.Column('scheduled_date', sa.Date(), nullable=False),
     sa.Column('scheduled_quantity', sa.Float(), nullable=False),
     sa.Column('expiry_date', sa.Date(), nullable=True),
-    sa.ForeignKeyConstraint(['item_id'], ['items.id'], ),
+    sa.CheckConstraint("item_type = '원자재'", name='ck_purchase_receipt_item_type'),
+    sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('supplier_items',

@@ -38,6 +38,14 @@ describe("operation formatters", () => {
     expect(unit_label(null)).toBe("혼재");
   });
 
+  it("does not call an empty total a mixed-unit total", () => {
+    // 단위가 없는 이유가 둘이다 — 실제로 섞였거나, 더한 것이 하나도 없거나.
+    // 뒤의 것은 합이 0 이므로 값으로 가른다. 아무 일도 없었던 날에
+    // 「0 (단위 혼재)」라고 적으면 그것 자체가 거짓말이다.
+    expect(format_mixed_quantity(0, null)).toBe("0");
+    expect(format_mixed_quantity(120, null)).toBe("120 (단위 혼재)");
+  });
+
   it("formats percentages to one decimal place", () => {
     expect(format_percentage(81.25)).toBe("81.3%");
   });

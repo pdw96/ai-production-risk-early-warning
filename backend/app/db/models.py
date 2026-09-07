@@ -368,10 +368,28 @@ class BomComponent(Base):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        # 생산오더의 품목은 **완제품이어야 한다.** 표가 둘이던 때는
+        # `orders.product_id → products.id` 가 그것을 지켰다. 원자재가 오더에
+        # 들어가면 그 실적이 전 제품 합계 추이에는 들어가는데 제품별 계열은
+        # 완제품만 세우므로, **고를 수 없는 계열의 실적**이 합계에만 남는다.
+        # 오더 API 도 그 원자재를 「제품」으로 적는다.
+        #
+        # 반제품오더는 아직 없다 — 생기는 단계에서 이 CHECK 가 함께 넓어진다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(f"item_type = '{FINISHED_ITEM}'", name="ck_order_item_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=FINISHED_ITEM, server_default=FINISHED_ITEM
+    )
     due_date: Mapped[date] = mapped_column(Date)
     planned_quantity: Mapped[float] = mapped_column(Float)
 
@@ -400,9 +418,27 @@ class DailyProduction(Base):
 
 class PurchaseReceipt(Base):
     __tablename__ = "purchase_receipts"
+    __table_args__ = (
+        # 예정 입고의 품목은 **원자재여야 한다.** 표가 둘이던 때는
+        # `material_id → materials.id` 가 지켰다. 완제품이 들어가면 구매관리
+        # 화면은 그것을 `material_code`/`material_name` 으로 내보내는데
+        # 자재관리는 원자재만 거르므로, **자재 입고로 보이면서 어느 자재의 14일
+        # 수급 전망에도 잡히지 않는** 줄이 된다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{RAW_ITEM}'", name="ck_purchase_receipt_item_type"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=RAW_ITEM, server_default=RAW_ITEM
+    )
     scheduled_date: Mapped[date] = mapped_column(Date)
     scheduled_quantity: Mapped[float] = mapped_column(Float)
     # 도착하면 로트가 되므로 예정 입고도 유효기간을 가진다. 도착지는 원재료창고다.

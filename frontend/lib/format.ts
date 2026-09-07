@@ -26,12 +26,20 @@ export function unit_label(unit: string | null = COUNTING_UNIT): string {
 }
 
 /**
- * 제품을 넘어 더한 수량. 단위가 갈리면(`null`) 숫자 뒤에 단위를 붙이지 않고
- * 갈렸다고 적는다 — 킬로그램과 개수를 더한 값에 붙일 단위는 없다.
+ * 제품을 넘어 더한 수량.
+ *
+ * `null` 은 **단위를 정할 수 없다**는 뜻이고, 그 이유는 둘이다 — 실제로 섞였거나,
+ * 더한 것이 하나도 없거나. 뒤의 것은 합이 0 이다(수량은 음수가 될 수 없다).
+ * 값으로 그 둘을 가른다: 0 이면 붙일 단위가 없을 뿐이니 「0」을 그냥 적고, 0 이
+ * 아니면 실제로 섞인 것이다. 아무 일도 없었던 날에 「0 (단위 혼재)」라고 적으면
+ * 그것 자체가 거짓말이다.
  */
 export function format_mixed_quantity(value: number, unit: string | null): string {
   const formatted = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value);
-  return unit === null ? `${formatted} (단위 혼재)` : format_quantity(value, unit);
+  if (unit !== null) {
+    return format_quantity(value, unit);
+  }
+  return value === 0 ? formatted : `${formatted} (단위 혼재)`;
 }
 
 /**

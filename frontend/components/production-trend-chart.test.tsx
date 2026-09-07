@@ -95,6 +95,19 @@ describe("ProductionTrendChart", () => {
     expect(within(accessible_table()).getByText("357.22 (단위 혼재)")).toBeDefined();
   });
 
+  it("does not label an empty window as mixed units", () => {
+    // 실적이 하나도 없는 창은 단위가 갈린 것이 아니라 더한 것이 없는 것이다.
+    const empty = total.map((point) => ({
+      ...point,
+      planned_quantity: 0,
+      actual_quantity: 0,
+    }));
+    render(<ProductionTrendChart data={empty} productTrends={[]} totalUnit={null} />);
+
+    expect(screen.queryByText(/단위: 혼재/)).toBeNull();
+    expect(within(accessible_table()).queryByText(/단위 혼재/)).toBeNull();
+  });
+
   it("marks only the selected product as pressed", async () => {
     const user = userEvent.setup();
     render(<ProductionTrendChart data={total} productTrends={product_trends} />);
