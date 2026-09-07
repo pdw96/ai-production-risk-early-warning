@@ -101,10 +101,15 @@ class MaterialResponse(BaseModel):
 
 
 class ProductTrend(BaseModel):
-    """추이 차트에서 제품 하나를 따로 볼 때 쓰는 계열."""
+    """추이 차트에서 제품 하나를 따로 볼 때 쓰는 계열.
+
+    제품 하나를 보는 계열이므로 **단위가 하나로 정해진다.** 전 제품 합계 추이와
+    다른 점이 그것이다.
+    """
 
     product_code: str
     product_name: str
+    stock_uom: str
     points: list[ProductionPoint]
 
 

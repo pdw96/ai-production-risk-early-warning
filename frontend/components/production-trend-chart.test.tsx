@@ -25,6 +25,7 @@ const product_trends: ProductTrend[] = [
     ],
     product_code: "FG-01",
     product_name: "아크솔 시트",
+    stock_uom: "EA",
   },
   {
     points: [
@@ -33,6 +34,9 @@ const product_trends: ProductTrend[] = [
     ],
     product_code: "FG-05",
     product_name: "테라패널",
+    // 세는 단위가 아닌 제품 하나를 섞어 둔다 — 계열마다 단위가 다를 수 있다는
+    // 것이 이 칸의 존재 이유이고, 하나뿐이면 이 파일이 그것을 지키지 못한다.
+    stock_uom: "m2",
   },
 ];
 
@@ -62,6 +66,22 @@ describe("ProductionTrendChart", () => {
     expect(within(table).getByText("69.96개")).toBeDefined();
     expect(within(table).queryByText("357.22개")).toBeNull();
     expect(table.querySelector("caption")?.textContent).toContain("아크솔 시트");
+  });
+
+  it("labels the picked product's quantities in that product's own unit", async () => {
+    // 제품 하나를 고르면 단위가 정해진다. 전 제품 합계는 여러 제품을 더한 값이라
+    // 정해지지 않으므로 세는 단위를 그대로 쓴다.
+    const user = userEvent.setup();
+    render(<ProductionTrendChart data={total} productTrends={product_trends} />);
+
+    await user.click(screen.getByRole("button", { name: "테라패널" }));
+
+    expect(within(accessible_table()).getByText("76.32 m2")).toBeDefined();
+    expect(screen.getByText(/단위: m2/)).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "전체" }));
+
+    expect(screen.getByText(/단위: 개/)).toBeDefined();
   });
 
   it("marks only the selected product as pressed", async () => {

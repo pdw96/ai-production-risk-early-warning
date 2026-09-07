@@ -12,6 +12,11 @@ export function format_quantity(value: number, unit = COUNTING_UNIT): string {
   return unit === COUNTING_UNIT ? `${formatted}개` : `${formatted} ${unit}`;
 }
 
+/** 숫자 없이 단위만 적을 때. 「단위: 개」 · 「단위: kg」 */
+export function unit_label(unit = COUNTING_UNIT): string {
+  return unit === COUNTING_UNIT ? "개" : unit;
+}
+
 export function format_percentage(value: number): string {
   return `${new Intl.NumberFormat("ko-KR", {
     maximumFractionDigits: 1,

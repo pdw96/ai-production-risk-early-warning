@@ -873,3 +873,11 @@ def test_the_cross_product_totals_assume_one_counting_unit(client: TestClient) -
     # 오더도 제품 하나를 가리키므로 단위를 든다.
     for order in client.get("/api/orders").json()["data"]:
         assert order["stock_uom"] == "EA"
+
+    # 제품별 추이도 계열마다 제품 하나라 단위가 정해진다. 전 제품 합계 추이만
+    # 여러 제품을 더하므로 단위를 갖지 않는다.
+    dashboard = client.get("/api/dashboard").json()["data"]
+    product_units = {trend["product_code"]: trend["stock_uom"] for trend in dashboard["product_trends"]}
+    assert product_units
+    assert set(product_units.values()) == {"EA"}
+    assert "stock_uom" not in dashboard["production_trend"][0]

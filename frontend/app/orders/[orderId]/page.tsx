@@ -46,7 +46,7 @@ export default function OrderDetailPage() {
       <section aria-label="오더 계산 결과" className="page-panel">
         <div className="page-panel__header">
           <h2>납기 계산 결과</h2>
-          <span>잔여 {format_quantity(order.remaining_quantity)}</span>
+          <span>잔여 {format_quantity(order.remaining_quantity, order.stock_uom)}</span>
         </div>
         <OrderTable orders={[order]} />
       </section>
@@ -72,8 +72,8 @@ export default function OrderDetailPage() {
                 {order.recent_productions.map((production) => (
                   <tr key={production.work_date}>
                     <td>{format_date(production.work_date)}</td>
-                    <td className="numeric-cell">{format_quantity(production.planned_quantity)}</td>
-                    <td className="numeric-cell">{format_quantity(production.actual_quantity)}</td>
+                    <td className="numeric-cell">{format_quantity(production.planned_quantity, order.stock_uom)}</td>
+                    <td className="numeric-cell">{format_quantity(production.actual_quantity, order.stock_uom)}</td>
                   </tr>
                 ))}
               </tbody>

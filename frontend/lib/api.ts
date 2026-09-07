@@ -73,6 +73,8 @@ export interface Material {
 export interface ProductTrend {
   product_code: string;
   product_name: string;
+  /** 제품 하나를 보는 계열이므로 단위가 하나로 정해진다. */
+  stock_uom: string;
   points: ProductionPoint[];
 }
 

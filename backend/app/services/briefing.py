@@ -736,8 +736,8 @@ def _build_product_trends(
     """
     # 제품 목록은 실적과 무관하게 전부 가져온다. 조인으로만 뽑으면 최근 7일에
     # 실적이 한 줄도 없는 제품이 선택지에서 통째로 사라진다.
-    names: dict[int, tuple[str, str]] = {
-        product.id: (product.code, product.name)
+    names: dict[int, tuple[str, str, str]] = {
+        product.id: (product.code, product.name, product.stock_uom)
         for product in session.scalars(
             select(Item).where(Item.item_type == FINISHED_ITEM).order_by(Item.code)
         ).all()
@@ -764,7 +764,7 @@ def _build_product_trends(
         totals[product_id][work_date] = (float(planned or 0), float(actual or 0))
 
     trends = []
-    for product_id, (code, name) in sorted(names.items(), key=lambda item: item[1][0]):
+    for product_id, (code, name, uom) in sorted(names.items(), key=lambda item: item[1][0]):
         points = []
         for offset in range(6, -1, -1):
             day = reference_date - timedelta(days=offset)
@@ -777,7 +777,12 @@ def _build_product_trends(
                 )
             )
         trends.append(
-            ProductTrend(product_code=code, product_name=name, points=points)
+            ProductTrend(
+                product_code=code,
+                product_name=name,
+                stock_uom=uom,
+                points=points,
+            )
         )
     return trends
 
