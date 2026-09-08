@@ -40,13 +40,26 @@ def _stub_directory(tmp_path: Path, commands: dict[str, str]) -> Path:
     return directory
 
 
+def _environment_without_a_url(overrides: dict[str, str]) -> dict[str, str]:
+    """물려받은 `DATABASE_URL` 을 걷어낸 환경.
+
+    이 검사들은 「주소가 정해져 있지 않을 때 무엇을 하는가」를 묻는다. 그런데
+    PostgreSQL 실행에서는 `DATABASE_URL` 이 설정되어 있고, 그것을 그대로 물려주면
+    묻고 싶은 갈래로 아예 들어가지 못한다 — 검사가 엔진에 따라 다른 것을 보게 된다.
+    """
+    environment = dict(os.environ)
+    environment.pop("DATABASE_URL", None)
+    environment.pop("PRODUCTION_RISK_DATABASE_AUTOSELECTED", None)
+    environment.update(overrides)
+    return environment
+
+
 def _run_database_script(
     stub: Path, extra_environment: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    environment = dict(os.environ)
-    # 이미 정해진 주소가 있으면 이 스크립트는 곧바로 그것을 돌려주고 끝난다.
-    environment.pop("DATABASE_URL", None)
-    environment["PATH"] = f"{stub}{os.pathsep}{environment['PATH']}"
+    environment = _environment_without_a_url(
+        {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}
+    )
     environment.update(extra_environment or {})
     return subprocess.run(
         ["bash", str(DATABASE_SCRIPT)],
@@ -58,10 +71,15 @@ def _run_database_script(
     )
 
 
-# 역할 조회가 성공하는 평범한 클러스터. `1` 하나로 세 번의 조회를 모두 만족한다 —
-# 권한 조회는 `f` 도 빈 값도 아니므로 손대지 않고, 존재 조회는 있다고 답하며,
-# 접속 조회는 0 으로 끝난다.
-HEALTHY_PSQL = 'echo 1'
+# 아무 문제 없는 클러스터 흉내. 스키마 권한 질의에는 `t` 를, 나머지에는 `1` 을
+# 낸다 — 역할 권한 조회의 `1` 은 `f` 도 빈 값도 아니므로 손대지 않고, 존재 조회는
+# 있다고 답한다.
+HEALTHY_PSQL = (
+    'case "$*" in\n'
+    "  *has_schema_privilege*) echo t;;\n"
+    "  *) echo 1;;\n"
+    "esac"
+)
 
 
 def test_a_failing_role_probe_does_not_kill_the_script(tmp_path: Path) -> None:
@@ -121,7 +139,7 @@ def test_an_unreachable_database_is_not_advertised(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ""
-    assert "붙지 못했습니다" in result.stderr
+    assert "표를 만들 수 없습니다" in result.stderr
 
 
 def test_ambient_libpq_variables_do_not_steer_the_script(tmp_path: Path) -> None:
@@ -253,7 +271,9 @@ def test_no_postgres_command_can_stop_and_ask_for_a_password(tmp_path: Path) -> 
     # `pg_isready` 는 이 목록에 없다 — 접속을 물어보기만 하고 비밀번호를 묻지
     # 않으며, `-w` 를 받지도 않는다. 묻는 것은 `psql` 과 `createdb` 뿐이다.
     recording = tmp_path / "argv.txt"
-    record = f'printf \'%s\\n\' "$*" >> {recording}'
+    # SQL 이 여러 줄일 수 있으므로 **한 줄로 접어** 적는다. 그러지 않으면 한 번의
+    # 호출이 여러 줄로 쪼개져 `-w` 가 없는 것처럼 보인다.
+    record = f'printf \'%s\\n\' "$*" | tr \'\\n\' \' \' >> {recording}; printf \'\\n\' >> {recording}'
     stub = _stub_directory(
         tmp_path,
         {
@@ -297,7 +317,7 @@ def test_an_inaccessible_maintenance_database_does_not_discard_postgresql(
                 '    echo "FATAL: permission denied for database" >&2\n'
                 "    exit 2;;\n"
                 "esac\n"
-                "echo 1"
+                + HEALTHY_PSQL
             ),
             "createdb": "exit 1",
             # 권한을 올리는 길을 막아 둔다 — 역할을 만들 필요가 없어야 한다.
@@ -339,3 +359,134 @@ def test_both_engine_selectors_prepare_what_they_selected() -> None:
         assert "prepare-database.sh" in body, f"{selector.name} 이 준비를 부르지 않는다"
         # 차례를 여기에 다시 적으면 두 곳이 갈린다.
         assert "alembic upgrade head" not in body, selector.name
+
+
+def test_only_the_cluster_serving_the_configured_port_is_started(tmp_path: Path) -> None:
+    """클러스터가 여럿이면 **우리가 보는 포트를 지키는 것**을 기동한다.
+
+    첫 줄을 무조건 집으면 그것이 우리와 무관한 클러스터일 수 있다. 그러면 엉뚱한
+    것을 기동한 뒤 30초를 기다렸다가 물러나고, **정작 내려가 있는 5432 는 손도
+    대지 않는다.** 실측으로 재현했다: `16/aaa`(5433, online)와
+    `16/main`(5432, down)이 있을 때 이름 순으로 앞선 `aaa` 를 기동하려 했고
+    31초 뒤 SQLite 로 물러났다.
+    """
+    started = tmp_path / "started.txt"
+    stub = _stub_directory(
+        tmp_path,
+        {
+            # 처음에는 죽어 있고, 기동한 뒤에는 살아난다.
+            "pg_isready": f'[ -f {started} ]',
+            "pg_lsclusters": (
+                "printf '%s\\n' "
+                "'16  aaa  5433 online postgres /var/lib/postgresql/16/aaa  /log/aaa' "
+                "'16  main 5432 down   postgres /var/lib/postgresql/16/main /log/main'"
+            ),
+            "pg_ctlcluster": f'printf \'%s\\n\' "$*" >> {started}',
+            "psql": HEALTHY_PSQL,
+            "createdb": "exit 0",
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip(), f"기동에 실패했다: {result.stderr}"
+    assert started.exists(), "아무 클러스터도 기동하지 않았다"
+    requested = started.read_text(encoding="utf-8")
+    assert "main" in requested, f"5432 를 지키는 클러스터가 아니다: {requested}"
+    assert "aaa" not in requested, f"무관한 클러스터를 기동했다: {requested}"
+
+
+def test_a_database_we_cannot_create_tables_in_is_not_advertised(tmp_path: Path) -> None:
+    """붙을 수 있다는 것과 **표를 만들 수 있다는 것**은 다르다.
+
+    바로 다음에 오는 것이 `alembic upgrade head` 이고 그것이 하는 일은 `public`
+    스키마에 표를 만드는 것이다. PostgreSQL 15 부터 그 스키마의 `CREATE` 가
+    `PUBLIC` 에서 회수됐으므로, 남이 만들어 둔 데이터베이스에는 **붙기는 되는데
+    표는 못 만드는** 상태가 흔하다. 실측(PostgreSQL 16.13): `SELECT 1` 은 `1` 을
+    돌려주고 `CREATE TABLE` 은 `permission denied for schema public` 였다.
+    """
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            # 접속과 카탈로그 조회에는 답하지만, 스키마 권한 질의에는 거짓을 낸다.
+            "psql": (
+                'case "$*" in\n'
+                "  *has_schema_privilege*) echo f;;\n"
+                "  *) echo 1;;\n"
+                "esac"
+            ),
+            "createdb": "exit 0",
+            "su": "exit 1",
+            "sudo": "exit 1",
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "", "표를 만들 수 없는 데이터베이스의 주소를 내밀었다"
+    assert "표를 만들 수 없습니다" in result.stderr
+
+
+def test_the_shell_hook_does_not_export_a_dead_url() -> None:
+    """프로파일 줄은 **살아 있는지 보고 나서** 주소를 내보낸다.
+
+    devcontainer 가 다시 뜰 때 도는 것은 `postStartCommand` 하나뿐이라
+    `setup.sh` 도 `start.sh` 도 돌지 않는다. 그 상태에서 이 줄이 지난 세션의 주소를
+    그대로 내보내면 사람이 곧바로 치는 `pytest` 가 내려가 있는 서버를 향해 돈다.
+
+    그리고 조건이 거짓일 때 **0 으로 끝나야 한다** — `&&` 사슬은 0 아닌 값을
+    남기고 그것이 새 셸의 `$?` 가 된다(실측: 파일 없음 1, 서버 죽음 2).
+    """
+    setup = SETUP_SCRIPT.read_text(encoding="utf-8")
+    assert "pg_isready" in setup, "프로파일 줄이 살아 있는지 보지 않는다"
+    # 사슬이 아니라 `if` 여야 조건이 거짓일 때 0 으로 끝난다.
+    assert "if [ -f %q ]" in setup
+    assert "[ -f %q ] &&" not in setup
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_the_generated_shell_hook_behaves(tmp_path: Path, alive: bool) -> None:
+    """만들어지는 줄을 **실제로 실행해 본다.**
+
+    글자만 보면 그 줄이 문법에 맞는지도, 조건이 거짓일 때 무엇을 남기는지도
+    모른다. 그래서 `setup.sh` 가 쓰는 것과 같은 모양을 만들어 돌려 본다.
+    """
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    environment_file = repository / "database.env"
+    environment_file.write_text("export DATABASE_URL=chosen\n", encoding="utf-8")
+
+    probe = tmp_path / "stub-bin" / "pg_isready"
+    _stub_directory(tmp_path, {"pg_isready": "exit 0" if alive else "exit 2"})
+
+    hook = tmp_path / "hook.sh"
+    hook.write_text(
+        f'case "$PWD/" in {repository}/*)\n'
+        f"  if [ -f {environment_file} ] \\\n"
+        "     && command -v pg_isready > /dev/null 2>&1 \\\n"
+        "     && pg_isready -q -h /var/run/postgresql -p 5432 > /dev/null 2>&1\n"
+        "  then\n"
+        f"    . {environment_file}\n"
+        "  fi ;;\n"
+        "esac\n"
+        'printf \'%s\\n\' "${DATABASE_URL:-<none>}"\n',
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(hook)],
+        capture_output=True,
+        text=True,
+        cwd=repository,
+        env=_environment_without_a_url(
+            {"PATH": f"{probe.parent}{os.pathsep}{os.environ['PATH']}"}
+        ),
+        timeout=60,
+    )
+
+    # 조건이 거짓이어도 프로파일은 깨끗하게 끝나야 한다.
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ("chosen" if alive else "<none>")

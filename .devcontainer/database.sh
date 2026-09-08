@@ -101,10 +101,17 @@ if ! pg_isready --quiet 2>/dev/null; then
   if ! command -v pg_ctlcluster > /dev/null 2>&1; then
     fall_back_to_sqlite "PostgreSQL 클러스터를 기동할 도구가 없습니다."
   fi
-  version="$(pg_lsclusters --no-header 2>/dev/null | awk 'NR==1 {print $1}')"
-  cluster="$(pg_lsclusters --no-header 2>/dev/null | awk 'NR==1 {print $2}')"
+  # **첫 줄이 아니라 그 포트를 지키는 클러스터**를 고른다. 개발 호스트에 클러스터가
+  # 둘 이상이면 첫 줄은 우리가 보는 자리와 무관할 수 있고, 그러면 엉뚱한 클러스터를
+  # 기동한 뒤 30초를 기다렸다가 물러난다 — **정작 내려가 있는 5432 는 손도 대지
+  # 않은 채**로. 실측(2026-09-08): `16/aaa`(5433)와 `16/main`(5432, down)이 있을 때
+  # 이름 순으로 앞선 `aaa` 를 기동하려 했고, 31초 뒤 SQLite 로 물러났으며 `main` 은
+  # 그대로 내려가 있었다.
+  clusters="$(pg_lsclusters --no-header 2>/dev/null)"
+  version="$(echo "$clusters" | awk -v port="$DATABASE_PORT" '$3 == port {print $1; exit}')"
+  cluster="$(echo "$clusters" | awk -v port="$DATABASE_PORT" '$3 == port {print $2; exit}')"
   if [ -z "$version" ] || [ -z "$cluster" ]; then
-    fall_back_to_sqlite "기동할 PostgreSQL 클러스터가 없습니다."
+    fall_back_to_sqlite "포트 ${DATABASE_PORT} 을 지키는 PostgreSQL 클러스터가 없습니다."
   fi
 
   log "PostgreSQL ${version}/${cluster} 를 기동합니다."
@@ -210,7 +217,7 @@ if ! $PSQL -d "$maintenance_database" -qtAc \
   fi
 fi
 
-# **있다는 것과 쓸 수 있다는 것은 다르다.** 위의 카탈로그 조회는 남이 만들어 둔
+# **붙을 수 있다는 것과 쓸 수 있다는 것도 다르다.** 위의 카탈로그 조회는 남이 만들어 둔
 # `production_risk` 도 「있다」로 답한다. 그 데이터베이스에 이 역할의 `CONNECT`
 # 이 없으면 생성을 건너뛴 채 멀쩡한 주소를 내밀게 되고, 그러면 `setup.sh` 가
 # 약속된 SQLite 로 물러나는 대신 `set -e` 아래 기동 전 검사나 Alembic 에서
@@ -218,10 +225,23 @@ fi
 # 데이터베이스에 대해 카탈로그 조회는 `1` 을 돌려주고 접속은
 # `permission denied for database` 로 거부됐다.
 #
-# 그래서 내밀기 전에 **그 자리로 한 번 붙어 본다.** 못 붙으면 그것도 SQLite 로
-# 가는 길이다.
-if ! $PSQL -d "$DATABASE_NAME" -qtAc "SELECT 1" > /dev/null 2>&1; then
-  fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 에 붙지 못했습니다."
+# 그래서 내밀기 전에 **그 자리에서 할 일을 할 수 있는지** 묻는다. 바로 다음에
+# 오는 것이 `alembic upgrade head` 이고 그것이 하는 일은 `public` 스키마에 표를
+# 만드는 것이므로, 물어야 하는 것은 접속이 아니라 **그 스키마의 `CREATE`** 다.
+#
+# PostgreSQL 15 부터 `public` 스키마의 `CREATE` 가 `PUBLIC` 에서 회수됐다. 그래서
+# 남이 만들어 둔 데이터베이스에는 붙기는 되는데 표는 못 만드는 상태가 흔하다.
+# 실측(2026-09-08, PostgreSQL 16.13): `postgres` 가 소유한 데이터베이스에 다른
+# 역할로 붙으니 `SELECT 1` 은 `1` 을 돌려주고 `CREATE TABLE` 은
+# `permission denied for schema public` 로 거부됐다 — 지금까지의 검사는 그 사이를
+# 보지 못해 주소를 내밀었고, 죽는 것은 준비의 마이그레이션이었다.
+#
+# 이 질의는 접속도 함께 본다 — 못 붙으면 여기서 실패한다.
+if ! $PSQL -d "$DATABASE_NAME" -qtAc \
+  "SELECT has_schema_privilege(current_user, 'public', 'USAGE')
+      AND has_schema_privilege(current_user, 'public', 'CREATE')" \
+  2>/dev/null | grep -qx t; then
+  fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 에 표를 만들 수 없습니다."
 fi
 
 # 비밀번호가 들어갈 자리가 아예 없는 주소다. 소켓과 포트는 위에서 못 박은 그

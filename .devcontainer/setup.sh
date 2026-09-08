@@ -103,6 +103,21 @@ fi
 # 훅(direnv 류)인데, 준비 스크립트가 의존성을 하나 늘릴 자리는 아니다 —
 # `bash .devcontainer/start.sh` 와 `setup.sh` 는 스스로 주소를 정하므로
 # 이 줄이 없어도 돈다.
+#
+# **그리고 읽기 전에 살아 있는지 본다.** devcontainer 가 다시 뜰 때 도는 것은
+# `postStartCommand`(= `docker-gc.sh`) 하나뿐이라 `setup.sh` 도 `start.sh` 도
+# 돌지 않는다. 그 상태에서 이 줄이 지난 세션의 주소를 그대로 내보내면, 사람이
+# 곧바로 치는 `cd backend && .venv/bin/python -m pytest` 가 **내려가 있는 서버를
+# 향해** 돈다. 실측(2026-09-08): 클러스터를 내린 뒤 그 파일을 읽은 셸에서
+# `connection to server on socket ... failed`.
+#
+# `pg_isready` 는 접속 한 번이라 셸이 뜨는 데 얹히지 않는다. 죽어 있으면 아무것도
+# 내보내지 않고, 그러면 예전처럼 SQLite 파일로 돈다 — 죽은 주소를 들고 있는 것보다
+# 낫다. 서버를 세우는 것은 여전히 `database.sh` 하나뿐이고, 그것을 부르는 것은
+# `setup.sh` 와 `start.sh` 다.
+database_host="$(printf '%s' "${DATABASE_URL:-}" | sed -n 's/.*[?&]host=\([^&]*\).*/\1/p')"
+database_port="$(printf '%s' "${DATABASE_URL:-}" | sed -n 's/.*[?&]port=\([^&]*\).*/\1/p')"
+
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue
@@ -112,9 +127,19 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     # `$PWD` 는 **여기서 펴지면 안 된다.** 프로파일에 적히는 줄이고, 그 줄이
     # 읽히는 시점의 작업 디렉터리를 봐야 한다. 지금 값을 구워 넣으면 준비를
     # 돌린 자리에서만 발동한다.
+    # `&&` 사슬이 아니라 `if` 다. 사슬은 마지막 조건이 거짓일 때 **0 아닌 값을
+    # 남기고**, 그 값이 프로파일의 마지막 종료 상태가 되어 새 셸의 `$?` 가
+    # 더럽혀진다(실측: 파일이 없으면 1, 서버가 죽어 있으면 2). `if` 는 조건이
+    # 거짓이어도 0 이다.
     # shellcheck disable=SC2016
-    printf 'case "$PWD/" in %q*) [ -f %q ] && . %q ;; esac\n' \
-      "$REPOSITORY_ROOT/" "$DATABASE_ENVIRONMENT_FILE" "$DATABASE_ENVIRONMENT_FILE"
+    printf 'case "$PWD/" in %q*)\n' "$REPOSITORY_ROOT/"
+    printf '  if [ -f %q ]' "$DATABASE_ENVIRONMENT_FILE"
+    if [ -n "$database_host" ] && [ -n "$database_port" ]; then
+      printf ' \\\n     && command -v pg_isready > /dev/null 2>&1'
+      printf ' \\\n     && pg_isready -q -h %q -p %q > /dev/null 2>&1' \
+        "$database_host" "$database_port"
+    fi
+    printf '\n  then\n    . %q\n  fi ;;\nesac\n' "$DATABASE_ENVIRONMENT_FILE"
   } >> "$profile"
 done
 
