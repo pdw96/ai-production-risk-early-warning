@@ -118,21 +118,9 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   } >> "$profile"
 done
 
-cd backend
-
-# **엔진과 무관하게 같은 길로 간다** — 기동 전 검사 → 마이그레이션 → 비었을 때만 시드.
-# 컨테이너가 오는 길이 그것이고(`docker-entrypoint.sh`), 이제 개발 세션도 같다.
-#
-# 예전에는 SQLite 갈래만 `app.seed`(인자 없음)로 **표를 지우고 다시 만들었다.**
-# 「그 파일에는 지울 수 없는 데이터가 없다」는 전제였는데, 세션 시작 훅이 이
-# 스크립트를 **재개할 때마다** 부르면서 그 전제가 깨졌다 — 화면에서 기록한 리스크
-# 상태가 재개 한 번에 사라진다. 실측으로 재현했다: 행 1개 → 재개 → 0개.
-#
-# 남아 있던 파일이 옛 스키마일 위험은 `preflight` 가 본다. 그것이 이 순서의
-# 첫 줄에 있는 이유이며, 지우는 것보다 **멈추고 사람에게 묻는 쪽**이 옳다.
-.venv/bin/python -m app.db.preflight
-.venv/bin/python -m alembic upgrade head
-.venv/bin/python -m app.seed --if-empty
+# 고른 엔진을 쓸 수 있는 상태로 만든다. 차례는 `prepare-database.sh` 한 곳에만
+# 적혀 있고, 엔진을 고르는 곳(`setup.sh` · `start.sh`)이 둘 다 그것을 부른다.
+bash "$REPOSITORY_ROOT/.devcontainer/prepare-database.sh"
 
 if [ -n "${DATABASE_URL:-}" ]; then
   # 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은

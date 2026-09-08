@@ -23,6 +23,9 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_SCRIPT = REPOSITORY_ROOT / ".devcontainer" / "database.sh"
 AUTOSELECTED_SCRIPT = REPOSITORY_ROOT / ".devcontainer" / "autoselected.sh"
+PREPARE_SCRIPT = REPOSITORY_ROOT / ".devcontainer" / "prepare-database.sh"
+START_SCRIPT = REPOSITORY_ROOT / ".devcontainer" / "start.sh"
+SETUP_SCRIPT = REPOSITORY_ROOT / ".devcontainer" / "setup.sh"
 SETTINGS_FILE = REPOSITORY_ROOT / ".claude" / "settings.json"
 
 
@@ -233,3 +236,106 @@ def test_the_session_start_hook_survives_a_path_with_spaces(tmp_path: Path) -> N
     )
 
     assert result.stdout.strip() == "ran", result.stderr
+
+
+def test_no_postgres_command_can_stop_and_ask_for_a_password(tmp_path: Path) -> None:
+    """이 도우미가 부르는 모든 명령이 「묻지 말라」를 달고 나간다.
+
+    `psql` 과 `createdb` 는 서버가 비밀번호를 요구하면 터미널에 대고 물어보고
+    답이 올 때까지 기다린다. 이것을 부르는 것은 준비 스크립트와 세션 시작 훅이고
+    그 자리에는 답할 사람이 없으므로, 물러나는 대신 **영원히 매달린다.**
+    소켓 인증을 `scram-sha-256` 으로 바꿔 실제로 재현했다 —
+    `Password for user root:` 에서 멈춰 시간 제한에 걸렸다.
+
+    이 검사는 서버를 세우지 않는다. 가짜 명령이 자기가 받은 인자를 적게 하고,
+    **한 번이라도 `-w` 없이 불린 적이 있는지**를 묻는다.
+    """
+    # `pg_isready` 는 이 목록에 없다 — 접속을 물어보기만 하고 비밀번호를 묻지
+    # 않으며, `-w` 를 받지도 않는다. 묻는 것은 `psql` 과 `createdb` 뿐이다.
+    recording = tmp_path / "argv.txt"
+    record = f'printf \'%s\\n\' "$*" >> {recording}'
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            "psql": f"{record}\n{HEALTHY_PSQL}",
+            "createdb": f"{record}\nexit 0",
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    calls = recording.read_text(encoding="utf-8").splitlines()
+    assert calls, "가짜 명령이 한 번도 불리지 않았다"
+    asking = [c for c in calls if "-w" not in c.split()]
+    assert not asking, f"비밀번호를 물을 수 있는 호출이 있다: {asking}"
+
+
+def test_an_inaccessible_maintenance_database_does_not_discard_postgresql(
+    tmp_path: Path,
+) -> None:
+    """`postgres` 에 못 붙는다고 쓸 수 있는 PostgreSQL 을 버리지 않는다.
+
+    관례상 쓰는 `postgres` 데이터베이스에 이 역할의 `CONNECT` 이 없어도 응용
+    데이터베이스에는 붙을 수 있다. 그때 역할 조회가 빈 답을 내면 「역할이 없다」로
+    읽히고, 이어지는 생성이 이미 있는 역할을 만들려다 실패해 **멀쩡한 엔진이
+    통째로 버려진다.**
+    """
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            "psql": (
+                "database=''\nwant=0\n"
+                'for argument in "$@"; do\n'
+                '  if [ "$want" = 1 ]; then database="$argument"; want=0; fi\n'
+                '  [ "$argument" = "-d" ] && want=1\n'
+                "done\n"
+                'case "$database" in\n'
+                "  postgres|template1)\n"
+                '    echo "FATAL: permission denied for database" >&2\n'
+                "    exit 2;;\n"
+                "esac\n"
+                "echo 1"
+            ),
+            "createdb": "exit 1",
+            # 권한을 올리는 길을 막아 둔다 — 역할을 만들 필요가 없어야 한다.
+            "su": "exit 1",
+            "sudo": "exit 1",
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip(), f"쓸 수 있는 엔진을 버렸다: {result.stderr}"
+
+
+def test_both_engine_selectors_prepare_what_they_selected() -> None:
+    """엔진을 고르는 곳은 둘 다 준비 차례를 밟는다.
+
+    준비(`setup.sh`)만 밟고 기동(`start.sh`)이 밟지 않으면, 기동이 다시 고른
+    엔진에 표가 없을 수 있다 — 데이터베이스가 사라져 새로 만들어졌거나 SQLite 로
+    물러난 경우다. 그대로 서버를 띄우면 **기동은 성공했다고 적히고 요청마다
+    「표가 없다」로 죽는다.**
+
+    차례 자체는 `prepare-database.sh` 한 곳에만 적는다 — 두 벌로 적으면 한쪽을
+    고칠 때 다른 쪽이 조용히 뒤처진다.
+    """
+    preparation = PREPARE_SCRIPT.read_text(encoding="utf-8")
+    for step in ("app.db.preflight", "alembic upgrade head", "app.seed --if-empty"):
+        assert step in preparation, step
+
+    for selector in (SETUP_SCRIPT, START_SCRIPT):
+        # **주석은 세지 않는다.** 「`prepare-database.sh` 를 부른다」고 적어 두기만
+        # 하고 부르지 않아도 글자 검사는 통과한다 — 이 검사가 한 번 그렇게 통과했다.
+        body = "\n".join(
+            line
+            for line in selector.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "database.sh" in body, f"{selector.name} 이 엔진을 고르지 않는다"
+        assert "prepare-database.sh" in body, f"{selector.name} 이 준비를 부르지 않는다"
+        # 차례를 여기에 다시 적으면 두 곳이 갈린다.
+        assert "alembic upgrade head" not in body, selector.name

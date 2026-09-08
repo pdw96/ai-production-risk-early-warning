@@ -42,6 +42,17 @@ unset PGHOSTADDR PGUSER PGDATABASE PGSERVICE PGSERVICEFILE PGPASSFILE \
 export PGHOST="$SOCKET_DIRECTORY"
 export PGPORT="$DATABASE_PORT"
 
+# **묻지 않게 한다.** `psql` 과 `createdb` 는 서버가 비밀번호를 요구하면 터미널에
+# 대고 물어보고, 답이 올 때까지 기다린다. 이 스크립트를 부르는 것은 사람이 아니라
+# 준비(`setup.sh`)와 세션 시작 훅이고 그 자리에는 답할 사람이 없다 — 물러나는 대신
+# **영원히 매달린다.** 실측(2026-09-08): 소켓 인증을 `scram-sha-256` 으로 바꾸고
+# 가상 터미널을 물려 돌리니 `Password for user root:` 에서 멈춰 20초 제한에 걸렸다.
+#
+# `-w` 는 「절대 묻지 말라」다. 비밀번호가 필요하면 그 자리에서 실패하고, 실패는
+# 이 파일이 이미 아는 것 — SQLite 로 가는 길이다.
+PSQL="psql -w"
+CREATEDB="createdb -w"
+
 # 못 세우고 물러나는 단 하나의 출구. 표준출력에 아무것도 남기지 않는다.
 fall_back_to_sqlite() {
   log "$1"
@@ -134,14 +145,32 @@ fi
 # 그래서 실패를 **빈 답으로 받는다.** 빈 답은 아래에서 「역할이 없다」로 읽히고,
 # 그것이 이 조회가 실패하는 가장 흔한 이유다. 역할이 있는데도 다른 이유로 못
 # 붙은 것이었다면 이어지는 생성이 실패하고, 그때는 SQLite 로 물러난다.
+# 조회를 받아 줄 데이터베이스를 **고른다.** `postgres` 를 관례로 믿지 않는다 —
+# 그 데이터베이스에 이 역할의 `CONNECT` 이 없어도 응용 데이터베이스에는 붙을 수
+# 있고, 그러면 아래 조회가 빈 답을 내 「역할이 없다」로 읽힌다. 이어지는 생성은
+# 이미 있는 역할을 만들려다 실패하고, **쓸 수 있는 PostgreSQL 이 통째로 버려진다.**
+# 실측(2026-09-08): `postgres` 만 거부하는 클러스터를 흉내 내니 정확히 그렇게 됐다.
+select_maintenance_database() {
+  for candidate in "$DATABASE_NAME" postgres template1; do
+    if $PSQL -d "$candidate" -qtAc "SELECT 1" > /dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+}
+
 role="$(id -un)"
-role_can_create="$(psql -d postgres -qtAc \
-  "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
-  2>/dev/null | tr -d '[:space:]' || true)"
+maintenance_database="$(select_maintenance_database)"
+role_can_create=""
+if [ -n "$maintenance_database" ]; then
+  role_can_create="$($PSQL -d "$maintenance_database" -qtAc \
+    "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
+    2>/dev/null | tr -d '[:space:]' || true)"
+fi
 
 if [ "$role_can_create" = "f" ]; then
   log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
-  if ! run_as postgres "psql -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
+  if ! run_as postgres "$PSQL -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
     > /dev/null 2>&1; then
     fall_back_to_sqlite "역할 ${role} 에 CREATEDB 를 줄 권한을 얻지 못했습니다."
   fi
@@ -155,20 +184,28 @@ elif [ -z "$role_can_create" ]; then
   # `SUPERUSER` 를 주면 **클러스터의 모든 데이터베이스**에 대한 권한이 이
   # 개발 계정으로 도는 모든 프로세스에 영구히 붙는다 — 이 저장소와 무관한
   # 데이터베이스까지. 준비 스크립트가 조용히 할 일이 아니다.
-  if ! run_as postgres "psql -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
+  if ! run_as postgres "$PSQL -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
     > /dev/null 2>&1; then
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
 fi
 # 세 번째 갈래(`t`)는 아무것도 하지 않는다 — 이미 권한이 있다.
 
+# 역할을 방금 만들었다면 이제는 붙을 곳이 생겼다. 한 번 더 고른다.
+if [ -z "$maintenance_database" ]; then
+  maintenance_database="$(select_maintenance_database)"
+fi
+if [ -z "$maintenance_database" ]; then
+  fall_back_to_sqlite "붙을 수 있는 데이터베이스가 없습니다."
+fi
+
 # 유지보수용 데이터베이스를 **명시한다.** 생략하면 psql 이 사용자 이름과 같은
 # 데이터베이스에 붙으려 하고, 그런 것은 없으므로 검사가 늘 「없음」으로 답한다.
-if ! psql -d postgres -qtAc \
+if ! $PSQL -d "$maintenance_database" -qtAc \
   "SELECT 1 FROM pg_database WHERE datname = '${DATABASE_NAME}'" \
   2>/dev/null | grep -q 1; then
   log "데이터베이스 ${DATABASE_NAME} 을 만듭니다."
-  if ! createdb "$DATABASE_NAME" 2>/dev/null; then
+  if ! $CREATEDB "$DATABASE_NAME" 2>/dev/null; then
     fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 을 만들지 못했습니다."
   fi
 fi
@@ -183,7 +220,7 @@ fi
 #
 # 그래서 내밀기 전에 **그 자리로 한 번 붙어 본다.** 못 붙으면 그것도 SQLite 로
 # 가는 길이다.
-if ! psql -d "$DATABASE_NAME" -qtAc "SELECT 1" > /dev/null 2>&1; then
+if ! $PSQL -d "$DATABASE_NAME" -qtAc "SELECT 1" > /dev/null 2>&1; then
   fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 에 붙지 못했습니다."
 fi
 

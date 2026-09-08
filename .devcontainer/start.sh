@@ -22,6 +22,12 @@ if [ -z "${DATABASE_URL:-}" ]; then
   export DATABASE_URL
 fi
 
+# **고른 엔진을 준비한다.** 위에서 다시 골랐다면 그것은 준비가 손댄 그 엔진이
+# 아닐 수 있다 — 데이터베이스가 사라져 새로 만들어졌을 수도, SQLite 로 물러났을
+# 수도 있다. 그대로 서버를 띄우면 기동은 성공했다고 적히고 요청마다 「표가 없다」로
+# 죽는다. 차례는 `prepare-database.sh` 한 곳에만 있고 두 번 돌아도 안전하다.
+bash "$(dirname "${BASH_SOURCE[0]}")/prepare-database.sh"
+
 server_pids=()
 
 cleanup() {

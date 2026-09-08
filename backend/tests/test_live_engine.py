@@ -50,7 +50,7 @@ THROWAWAY_PREFIX = "live_engine_"
 MAXIMUM_IDENTIFIER_BYTES = 63
 
 
-def _throwaway_name(source: str) -> str:
+def _throwaway_name(source: str | None) -> str:
     """상한 안에서 만들되, 이번 실행에만 있는 값은 **반드시 남긴다.**
 
     이름을 그냥 이어 붙이면 63바이트에서 잘리는데, 잘려 나가는 쪽이 하필 뒤에
@@ -67,8 +67,15 @@ def _throwaway_name(source: str) -> str:
     그래서 깎는 쪽을 **앞부분으로 바꾼다.** 앞부분은 읽는 사람을 위한 것이고,
     뒤의 값은 안전을 위한 것이다. 바이트로 자르므로 다중바이트 글자가 반 토막
     날 수 있어, 깨진 조각은 버린다.
+
+    **앞부분은 없을 수도 있다.** `postgresql+psycopg://user@localhost` 처럼
+    데이터베이스를 적지 않은 주소도 동작하는 주소이고(libpq 가 기본값으로 붙는다),
+    그때 `url.database` 는 `None` 이다. 이름의 앞부분은 읽는 사람을 위한 것이므로
+    없으면 없는 대로 짓는다 — 뒤의 값만 있으면 이 파일이 필요한 성질은 다 선다.
     """
     suffix = f"_{THROWAWAY_PREFIX}{uuid.uuid4().hex[:12]}"
+    if not source:
+        return suffix
     room = MAXIMUM_IDENTIFIER_BYTES - len(suffix.encode("utf-8"))
     stem = source.encode("utf-8")[:room].decode("utf-8", "ignore")
     return f"{stem}{suffix}"
@@ -387,3 +394,21 @@ def test_the_throwaway_name_never_splits_a_multibyte_character() -> None:
     assert len(name.encode("utf-8")) <= MAXIMUM_IDENTIFIER_BYTES
     # 되감아 인코딩해도 같아야 한다 = 깨진 조각이 없다.
     assert name.encode("utf-8").decode("utf-8") == name
+
+
+def test_the_throwaway_name_survives_a_url_without_a_database() -> None:
+    """데이터베이스를 적지 않은 주소에서도 이름이 지어진다.
+
+    `postgresql+psycopg://user@localhost` 는 동작하는 주소다 — libpq 가 기본
+    데이터베이스로 붙는다. 그런데 SQLAlchemy 는 그 자리를 `None` 으로 내주므로,
+    이름 짓기가 그것을 그대로 받으면 이 파일 전체가 시작조차 못 한다.
+    """
+    assert make_url("postgresql+psycopg://user@localhost").database is None
+
+    for source in (None, ""):
+        name = _throwaway_name(source)
+
+        assert name
+        assert THROWAWAY_PREFIX in name
+        assert len(name.encode("utf-8")) <= MAXIMUM_IDENTIFIER_BYTES
+        assert _throwaway_name(source) != name
