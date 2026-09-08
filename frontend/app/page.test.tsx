@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,7 @@ function dashboard(overrides: Partial<api.Dashboard> = {}): api.Dashboard {
       material_shortage_count: 0,
       today_plan_quantity: 0,
       today_actual_quantity: 0,
+      today_quantity_uom: "EA",
     },
     quantity_uom: "EA",
     // 추이는 실적이 없어도 7일치 0을 채워 보낸다. 비어 있음의 표식이 될 수 없다.
@@ -44,9 +45,11 @@ describe("HomePage", () => {
 
     render(<HomePage />);
 
-    await waitFor(() => {
-      expect(screen.queryByText(/최근 7일 생산 계획 대비 실적/)).toBeNull();
-    });
+    // **빈 상태를 직접 확인한다.** 「차트가 없다」만 보면 아직 로딩 중인 첫
+    // 렌더에서 이미 참이라, 판단을 통째로 꺼도 테스트가 통과한다(그렇게 되는
+    // 것을 확인했다). 응답을 받은 뒤에만 나올 수 있는 문구를 기다린다.
+    expect(await screen.findByText("운영 데이터 없음")).toBeDefined();
+    expect(screen.queryByText(/최근 7일 생산 계획 대비 실적/)).toBeNull();
   });
 
   it("shows the dashboard when master data exists even with no risks", async () => {
@@ -68,8 +71,7 @@ describe("HomePage", () => {
 
     render(<HomePage />);
 
-    await waitFor(() => {
-      expect(screen.getByText(/최근 7일 생산 계획 대비 실적/)).toBeDefined();
-    });
+    expect(await screen.findByText(/최근 7일 생산 계획 대비 실적/)).toBeDefined();
+    expect(screen.queryByText("운영 데이터 없음")).toBeNull();
   });
 });

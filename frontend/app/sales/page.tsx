@@ -31,7 +31,15 @@ export default function SalesPage() {
       (releasable_by_unit.get(product.stock_uom) ?? 0) + product.releasable_stock,
     );
   }
+  // 0 인 단위는 적지 않는다. 출하 가능이 하나도 없는 m² 제품이 마스터에 있다는
+  // 이유로 「500개 · 0 m2」가 되면 읽는 사람이 없는 재고를 세게 된다 — 창고별
+  // 재고도 없는 단위는 빼고 적는다.
+  //
+  // 전부 0 일 때 `format_quantity(0)` 으로 「0개」라고 적지 않는 것도 같은
+  // 이유다. m² 제품만 있는 회사에서 그것은 이 화면이 없애려던 바로 그 오류다 —
+  // 없는 것에는 단위가 없다.
   const releasable_total = [...releasable_by_unit.entries()]
+    .filter(([, quantity]) => quantity !== 0)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([unit, quantity]) => format_quantity(quantity, unit))
     .join(" · ");
@@ -43,8 +51,10 @@ export default function SalesPage() {
           <p className="section-kicker">SHIPPABLE STOCK</p>
           <h1>영업관리</h1>
           <p>
-            지금 내보낼 수 있는 완제품입니다. 출하 가능 재고는{" "}
-            {releasable_total}입니다.
+            지금 내보낼 수 있는 완제품입니다.{" "}
+            {releasable_total
+              ? `출하 가능 재고는 ${releasable_total}입니다.`
+              : "지금 내보낼 수 있는 재고가 없습니다."}
           </p>
         </div>
         <span className="page-header__count">{finished_goods.length} PRODUCTS</span>

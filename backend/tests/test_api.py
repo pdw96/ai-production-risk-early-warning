@@ -62,8 +62,9 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
     data = response.json()["data"]
     assert set(data) == {
         "kpis",
-        # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 완제품
-        # 단위가 갈리면 None 이 되고, 그때 화면은 「개」 대신 혼재를 말한다.
+        # 7일 합계 추이가 쓰는 단위. 완제품 단위가 갈리면 None 이 되고, 그때
+        # 화면은 「개」 대신 혼재를 말한다. 오늘 하루치 KPI 는 기간이 달라
+        # 단위도 따로 싣는다(`kpis.today_quantity_uom`).
         "quantity_uom",
         "production_trend",
         "product_trends",
@@ -77,7 +78,9 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
         "material_shortage_count",
         "today_plan_quantity",
         "today_actual_quantity",
+        "today_quantity_uom",
     }
+    assert data["kpis"]["today_quantity_uom"] == "EA"
     assert len(data["production_trend"]) == 7
     assert len(data["top_order_risks"]) <= 5
     assert len(data["top_material_risks"]) <= 5
@@ -953,6 +956,51 @@ def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> 
     assert today["quantity_uom"] is None
 
 
+def test_todays_kpi_unit_is_not_decided_by_the_rest_of_the_week(
+    client: TestClient,
+) -> None:
+    """오늘의 합계 단위는 오늘 보탠 것만 보고 정한다.
+
+    추이는 7일이고 KPI 는 오늘 하루다. 단위를 하나만 실으면 **이번 주에 m² 를
+    한 번 만들었다는 이유로 오늘의 개수 합계가 「단위 혼재」로 적힌다** — 오늘
+    더한 것은 전부 개인데도 그렇다. 7일 창은 오늘을 품으므로 거짓은 늘 이
+    방향으로만 난다(오늘이 섞였는데 7일이 안 섞일 수는 없다).
+    """
+    with db_base.SessionLocal() as session:
+        product = finished_item(code="FG-98", name="가상 광학필름", stock_uom="m2")
+        session.add(product)
+        session.flush()
+        order = Order(
+            order_number="MO-998",
+            item=product,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(order)
+        session.flush()
+        # 어제는 m² 를 만들었고, 오늘은 만들지 않았다.
+        session.add(
+            DailyProduction(
+                order_id=order.id,
+                work_date=REFERENCE_DATE - timedelta(days=1),
+                planned_quantity=20,
+                actual_quantity=18,
+            )
+        )
+        session.commit()
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+
+    # 7일 합계에는 실제로 m² 가 섞였다.
+    assert dashboard["quantity_uom"] is None
+    # 오늘 합계에는 섞이지 않았다.
+    assert dashboard["kpis"]["today_quantity_uom"] == "EA", (
+        "오늘 보탠 것은 전부 개인데 지난 주의 m² 가 오늘의 단위를 바꿨습니다 —"
+        " 화면은 개수 합계를 「단위 혼재」라고 적게 됩니다."
+    )
+    assert dashboard["kpis"]["today_actual_quantity"] > 0
+
+
 def test_an_unseeded_database_does_not_look_like_a_healthy_factory(
     client: TestClient,
 ) -> None:
@@ -1004,6 +1052,7 @@ def test_an_empty_aggregate_is_not_reported_as_mixed_units(client: TestClient) -
 
     dashboard = client.get("/api/dashboard").json()["data"]
     assert dashboard["quantity_uom"] is None
+    assert dashboard["kpis"]["today_quantity_uom"] is None
     assert dashboard["kpis"]["today_plan_quantity"] == 0
     assert dashboard["kpis"]["today_actual_quantity"] == 0
     assert all(

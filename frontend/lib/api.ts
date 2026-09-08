@@ -230,10 +230,15 @@ export interface Dashboard {
     material_shortage_count: number;
     today_plan_quantity: number;
     today_actual_quantity: number;
+    /**
+     * 위 두 수량이 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의 단위이며,
+     * 아래 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+     */
+    today_quantity_uom: string | null;
   };
   /**
-   * KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위.
-   * 완제품 단위가 갈리면 null 이고, 그때 그 합에는 붙일 단위가 없다.
+   * 아래 `production_trend` 의 7일 합계가 쓰는 단위. 완제품 단위가 갈리면
+   * null 이고, 그때 그 합에는 붙일 단위가 없다.
    */
   quantity_uom: string | null;
   production_trend: ProductionPoint[];

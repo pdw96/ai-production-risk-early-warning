@@ -315,11 +315,15 @@ class DashboardKpis(BaseModel):
     material_shortage_count: int
     today_plan_quantity: float
     today_actual_quantity: float
+    # 위 두 수량이 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의 단위이며,
+    # 추이의 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+    today_quantity_uom: CrossProductUom = None
 
 
 class DashboardResponse(BaseModel):
     kpis: DashboardKpis
-    # KPI 의 오늘 계획·실적과 아래 `production_trend` 가 함께 쓰는 단위.
+    # 아래 `production_trend` 의 7일 합계가 쓰는 단위. 오늘 하루치 KPI 는
+    # 기간이 달라 단위도 따로 싣는다(`kpis.today_quantity_uom`).
     quantity_uom: CrossProductUom = None
     # 전 제품 합계 추이. 차트의 기본값이다.
     production_trend: list[ProductionPoint]

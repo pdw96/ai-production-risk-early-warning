@@ -737,14 +737,19 @@ def get_dashboard(session: Session) -> DashboardResponse:
     if not actions:
         actions = ["현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."]
 
-    # KPI 의 오늘 계획·실적과 전 제품 합계 추이가 함께 쓰는 단위. 갈리면 None 이고,
-    # 그때 화면은 「개」라고 적는 대신 혼재를 말한다.
+    # 전 제품 합계에 붙일 단위. 갈리면 None 이고, 그때 화면은 「개」라고 적는
+    # 대신 혼재를 말한다.
     #
     # 묻는 것은 **그 합에 실제로 들어간 제품들의 단위**다. 완제품 마스터를 전부
     # 보면, 최근 7일에 생산이 하나도 없는 m² 제품 때문에 개수만 더한 합이
     # 「혼재」로 표시된다 — 더해지지도 않은 것이 합의 단위를 바꾸는 셈이다.
-    contributing_units = session.scalars(
-        select(Item.stock_uom)
+    #
+    # **기간이 다른 합에는 단위도 따로 붙는다.** 추이는 7일이고 KPI 는 오늘
+    # 하루인데 단위를 하나만 실으면, 이번 주에 m² 를 한 번 만들었다는 이유로
+    # 오늘의 개수 합계가 「단위 혼재」로 적힌다 — 오늘 더한 것은 전부 개인데도
+    # 그렇다. 7일은 오늘을 품으므로 거짓은 늘 이 방향으로만 난다.
+    contributing_rows = session.execute(
+        select(DailyProduction.work_date, Item.stock_uom)
         .join(Order, Order.item_id == Item.id)
         .join(DailyProduction, DailyProduction.order_id == Order.id)
         .where(
@@ -761,9 +766,15 @@ def get_dashboard(session: Session) -> DashboardResponse:
         )
         .distinct()
     ).all()
+    trend_units = {stock_uom for _work_date, stock_uom in contributing_rows}
+    today_units = {
+        stock_uom
+        for work_date, stock_uom in contributing_rows
+        if work_date == reference_date
+    }
 
     return DashboardResponse(
-        quantity_uom=_single_uom(contributing_units),
+        quantity_uom=_single_uom(trend_units),
         kpis=DashboardKpis(
             due_risk_order_count=sum(
                 order.severity == "위험" for order in orders
@@ -771,6 +782,7 @@ def get_dashboard(session: Session) -> DashboardResponse:
             material_shortage_count=len(material_risks),
             today_plan_quantity=round(today_plan, 2),
             today_actual_quantity=round(today_actual, 2),
+            today_quantity_uom=_single_uom(today_units),
         ),
         production_trend=production_trend,
         product_trends=product_trends,
