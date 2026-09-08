@@ -97,9 +97,24 @@ fi
 
 # peer 인증은 **운영체제 사용자와 같은 이름의 역할**을 요구한다. 그 역할이
 # 없으면 소켓 접속이 그 자리에서 거부된다.
+#
+# 그리고 **있다는 것만으로는 모자란다.** 이미 있는 역할이 평범한 `LOGIN`(=
+# `NOCREATEDB`)이면 존재 검사만 하는 코드는 권한 부여를 건너뛰고, 그러면 둘 중
+# 하나가 된다 — 데이터베이스가 없을 때는 `createdb` 가 실패해 SQLite 로 물러나고,
+# 있을 때는 준비가 성공한 뒤 **검사가 `CREATE DATABASE` 에서 죽는다.**
+# 그래서 존재가 아니라 **권한**을 묻는다.
 role="$(id -un)"
-if ! psql -d postgres -qtAc "SELECT 1 FROM pg_roles WHERE rolname = '${role}'" \
-  2>/dev/null | grep -q 1; then
+role_can_create="$(psql -d postgres -qtAc \
+  "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
+  2>/dev/null | tr -d '[:space:]')"
+
+if [ "$role_can_create" = "f" ]; then
+  log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
+  if ! run_as postgres "psql -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
+    > /dev/null 2>&1; then
+    fall_back_to_sqlite "역할 ${role} 에 CREATEDB 를 줄 권한을 얻지 못했습니다."
+  fi
+elif [ -z "$role_can_create" ]; then
   log "역할 ${role} 을 만듭니다."
   # `SUPERUSER` 가 아니라 `CREATEDB` 다. 이 역할이 해야 하는 것은 두 가지뿐이다 —
   # `production_risk` 를 만들어 갖는 것과, 검사가 쓰는 일회용 데이터베이스를
@@ -114,6 +129,7 @@ if ! psql -d postgres -qtAc "SELECT 1 FROM pg_roles WHERE rolname = '${role}'" \
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
 fi
+# 세 번째 갈래(`t`)는 아무것도 하지 않는다 — 이미 권한이 있다.
 
 # 유지보수용 데이터베이스를 **명시한다.** 생략하면 psql 이 사용자 이름과 같은
 # 데이터베이스에 붙으려 하고, 그런 것은 없으므로 검사가 늘 「없음」으로 답한다.

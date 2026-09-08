@@ -9,8 +9,15 @@ DATABASE_ENVIRONMENT_FILE="$REPOSITORY_ROOT/.devcontainer/database.env"
 
 # 주소에서 비밀번호만 가린다. 어느 엔진·어느 데이터베이스인지는 사람이 봐야
 # 하므로 통째로 숨기지 않는다.
+#
+# 자격증명이 들어오는 자리가 **둘**이다. `://사용자:비밀번호@` 만 가리면 부족한데,
+# SQLAlchemy 는 질의 문자열의 키를 psycopg 에 그대로 접속 인자로 넘기므로
+# `?password=...` · `?sslpassword=...` 도 **동작하는 주소**다. 잘못된 입력이
+# 아니라 다른 표기이며, 가리지 않으면 그대로 로그에 박힌다.
 redact_url() {
-  printf '%s' "$1" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#'
+  printf '%s' "$1" | sed -E \
+    -e 's#://([^:/@]+):[^@]*@#://\1:***@#' \
+    -e 's#([?&](password|sslpassword)=)[^&]*#\1***#g'
 }
 
 python -m venv backend/.venv
@@ -103,20 +110,26 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 
 cd backend
+
+# **엔진과 무관하게 같은 길로 간다** — 기동 전 검사 → 마이그레이션 → 비었을 때만 시드.
+# 컨테이너가 오는 길이 그것이고(`docker-entrypoint.sh`), 이제 개발 세션도 같다.
+#
+# 예전에는 SQLite 갈래만 `app.seed`(인자 없음)로 **표를 지우고 다시 만들었다.**
+# 「그 파일에는 지울 수 없는 데이터가 없다」는 전제였는데, 세션 시작 훅이 이
+# 스크립트를 **재개할 때마다** 부르면서 그 전제가 깨졌다 — 화면에서 기록한 리스크
+# 상태가 재개 한 번에 사라진다. 실측으로 재현했다: 행 1개 → 재개 → 0개.
+#
+# 남아 있던 파일이 옛 스키마일 위험은 `preflight` 가 본다. 그것이 이 순서의
+# 첫 줄에 있는 이유이며, 지우는 것보다 **멈추고 사람에게 묻는 쪽**이 옳다.
+.venv/bin/python -m app.db.preflight
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m app.seed --if-empty
+
 if [ -n "${DATABASE_URL:-}" ]; then
-  # 운영과 컨테이너가 오는 길 그대로다 — 마이그레이션으로 표를 맞추고, 품목 표가
-  # 비어 있을 때만 채운다. 표를 지우는 길(`app.seed` 인자 없음)로 오지 않는 이유는
-  # 그쪽이 세션을 다시 열 때마다 사람이 넣어 둔 것을 지우기 때문이다.
-  .venv/bin/python -m app.db.preflight
-  .venv/bin/python -m alembic upgrade head
-  .venv/bin/python -m app.seed --if-empty
   # 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은
   # 로그로 남으므로, 사람이 준 주소에 비밀번호가 있으면 그것이 로그에 박힌다.
   echo "PostgreSQL 을 씁니다: $(redact_url "$DATABASE_URL")"
 else
-  # SQLite 파일은 세션마다 새로 만드는 것이 안전하다 — 남아 있던 파일이 옛
-  # 스키마일 수 있고, 그 파일에는 지울 수 없는 데이터가 없다.
-  .venv/bin/python -m app.seed
   echo "SQLite 파일로 진행합니다."
 fi
 

@@ -48,8 +48,24 @@ THROWAWAY_PREFIX = "live_engine_"
 
 
 def _admin_engine(url: sa.engine.URL) -> sa.Engine:
-    """지우려는 데이터베이스가 **아닌 곳**에 붙는 관리용 접속."""
-    return sa.create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    """일회용 데이터베이스를 만들고 지울 때 붙는 관리용 접속.
+
+    **설정이 가리키는 데이터베이스에 그대로 붙는다.** 관례를 믿고 `postgres` 로
+    갈아타지 않는다 — 그 데이터베이스는 지워졌을 수도, 이 역할의 `CONNECT` 가
+    회수됐을 수도 있다. 그러면 앱 주소는 멀쩡한데 이 검사만 시작조차 못 한다.
+    만들려는 것은 **다른 이름**이므로 여기 붙어 있어도 부딪히지 않는다.
+    """
+    return sa.create_engine(url, isolation_level="AUTOCOMMIT")
+
+
+def _quoted(engine: sa.Engine, identifier: str) -> str:
+    """식별자를 그 방언의 규칙으로 감싼다.
+
+    이름은 **밖에서 오는 값**이다(설정 주소에서 왔다). 큰따옴표가 들어 있으면
+    따옴표 사이에 그대로 끼워 넣은 SQL 이 깨져, 마이그레이션에 닿기도 전에
+    이 픽스처가 죽는다. 이미 안전한 것으로 다루지 않는다.
+    """
+    return engine.dialect.identifier_preparer.quote(identifier)
 
 
 def _make_throwaway_database(url: sa.engine.URL) -> sa.engine.URL:
@@ -69,7 +85,9 @@ def _make_throwaway_database(url: sa.engine.URL) -> sa.engine.URL:
     admin = _admin_engine(url)
     try:
         with admin.connect() as connection:
-            connection.execute(sa.text(f'CREATE DATABASE "{throwaway}"'))
+            connection.execute(
+                sa.text(f"CREATE DATABASE {_quoted(admin, throwaway)}")
+            )
     finally:
         admin.dispose()
     # 주소를 **객체로** 돌려준다. `str(URL)` 은 비밀번호를 `***` 로 가리므로,
@@ -77,17 +95,19 @@ def _make_throwaway_database(url: sa.engine.URL) -> sa.engine.URL:
     return url.set(database=throwaway)
 
 
-def _drop_throwaway_database(url: sa.engine.URL) -> None:
+def _drop_throwaway_database(source: sa.engine.URL, throwaway: str) -> None:
     """이번 실행이 만든 것만 지운다.
 
     `WITH (FORCE)` 를 쓰는 것은 여기서는 안전하다 — 지우는 대상이 방금 이
     실행이 만든 이름이라 남의 접속이 붙어 있을 수 없다.
     """
-    admin = _admin_engine(url)
+    admin = _admin_engine(source)
     try:
         with admin.connect() as connection:
             connection.execute(
-                sa.text(f'DROP DATABASE IF EXISTS "{url.database}" WITH (FORCE)')
+                sa.text(
+                    f"DROP DATABASE IF EXISTS {_quoted(admin, throwaway)} WITH (FORCE)"
+                )
             )
     finally:
         admin.dispose()
@@ -105,11 +125,13 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
     """
     register_models()
     sqlite = is_sqlite(DATABASE_URL)
+    source = None
     if sqlite:
         path = tmp_path_factory.mktemp("live-engine") / "throwaway.db"
         url = make_url(f"sqlite:///{path.as_posix()}")
     else:
-        url = _make_throwaway_database(make_url(DATABASE_URL))
+        source = make_url(DATABASE_URL)
+        url = _make_throwaway_database(source)
     engine = sa.create_engine(url)
 
     # **만든 직후부터** 치우는 약속 안에 있어야 한다. 마이그레이션을 밖에 두면
@@ -132,8 +154,8 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
         # 만든 것을 **여기서** 치운다. 다음 실행의 앞머리에서 치우면 그 사이에
         # 남아 있고, 이름이 고정되어야만 찾을 수 있어서 위의 위험이 되돌아온다.
         engine.dispose()
-        if not sqlite:
-            _drop_throwaway_database(url)
+        if source is not None:
+            _drop_throwaway_database(source, url.database)
 
 
 @pytest.fixture(scope="module")
