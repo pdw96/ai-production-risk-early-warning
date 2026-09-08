@@ -1059,6 +1059,34 @@ def test_planned_and_actual_units_are_decided_apart(client: TestClient) -> None:
     )
     assert today["planned_quantity_uom"] == "m2"
     assert today["actual_quantity_uom"] == "EA"
+    # 단위가 갈리면 실적÷계획은 뜻을 갖지 않는다. m² 계획을 개수 실적으로 나눈
+    # 숫자로 화면이 「계획 달성/미달」까지 적으므로, 값을 내지 않는다.
+    assert today["achievement_rate"] is None, (
+        "m² 계획을 개수 실적으로 나눈 값을 달성률이라 부르고 있습니다 —"
+        " 그 숫자로 판정까지 적힙니다."
+    )
+
+    # 계획을 통째로 놓친 날의 0% 는 살아 있어야 한다. 실적이 0 이면 단위가
+    # 갈릴 수 없으므로 그 나눗셈은 여전히 뜻을 갖는다. 기준일은 **실적이 있는
+    # 가장 최근 날**이라 오늘의 실적을 지우면 기준일 자체가 물러나므로, 지난
+    # 날 하나로 확인한다.
+    missed_day = REFERENCE_DATE - timedelta(days=2)
+    with db_base.SessionLocal() as session:
+        session.query(DailyProduction).filter(
+            DailyProduction.work_date == missed_day
+        ).update({DailyProduction.actual_quantity: 0}, synchronize_session=False)
+        session.commit()
+
+    missed = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == missed_day.isoformat()
+    )
+    assert missed["planned_quantity"] > 0
+    assert missed["achievement_rate"] == 0.0, (
+        "실적이 0 인 날은 단위가 갈릴 수 없습니다 —"
+        " 계획을 놓친 날이 「비교 불가」로 바뀌면 구별 하나를 잃습니다."
+    )
 
 
 def test_an_unseeded_database_does_not_look_like_a_healthy_factory(

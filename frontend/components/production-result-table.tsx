@@ -3,11 +3,18 @@ import React from "react";
 import type { ProductionResult } from "../lib/api";
 import { format_date, format_mixed_quantity, format_percentage } from "../lib/format";
 
+const INCOMPARABLE = "비교 불가";
+
 function achievement_label(result: ProductionResult): string {
   // 실적이 0이어도 달성률은 0이 된다. 계획 수량을 함께 봐야 "계획이 없던 날"과
   // "계획을 통째로 놓친 날"이 갈린다.
   if (result.planned_quantity === 0) {
     return "계획 없음";
+  }
+  // 계획과 실적의 단위가 갈린 날. 나눗셈이 뜻을 갖지 않으므로 **달성도 미달도
+  // 아니다** — 없는 숫자로 판정을 지어내지 않는다.
+  if (result.achievement_rate === null) {
+    return INCOMPARABLE;
   }
   return result.achievement_rate >= 100 ? "계획 달성" : "계획 미달";
 }
@@ -37,7 +44,11 @@ export function ProductionResultTable({
               <td>{format_date(result.work_date)}</td>
               <td className="numeric-cell">{format_mixed_quantity(result.planned_quantity, result.planned_quantity_uom)}</td>
               <td className="numeric-cell">{format_mixed_quantity(result.actual_quantity, result.actual_quantity_uom)}</td>
-              <td className="numeric-cell">{format_percentage(result.achievement_rate)}</td>
+              <td className="numeric-cell">
+                {result.achievement_rate === null
+                  ? "—"
+                  : format_percentage(result.achievement_rate)}
+              </td>
               <td>{achievement_label(result)}</td>
               <td className="numeric-cell">{result.active_order_count}건</td>
             </tr>

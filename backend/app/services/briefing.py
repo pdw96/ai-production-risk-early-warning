@@ -183,6 +183,36 @@ def _single_uom(units: Iterable[str]) -> str | None:
     return distinct.pop() if len(distinct) == 1 else None
 
 
+def _achievement_rate(
+    planned: float,
+    actual: float,
+    planned_uom: str | None,
+    actual_uom: str | None,
+) -> float | None:
+    """실적 ÷ 계획. **그 나눗셈이 뜻을 가질 때만** 값이 있다.
+
+    계획과 실적은 서로 다른 제품 집합에서 나오므로 단위가 갈릴 수 있다. m² 로
+    세운 계획과 개수로 오른 실적을 나누면 90% 같은 숫자가 나오는데 **그 숫자는
+    아무것도 뜻하지 않는다** — 화면은 그것으로 「계획 달성/미달」까지 적는다.
+    그때는 값을 내지 않고 화면이 비교 불가를 말하게 한다.
+
+    실적이 0 인 날은 단위가 갈릴 수 없다(보탠 것이 없으므로). 그래서 계획을
+    통째로 놓친 날의 0% 는 그대로 살아 있다 — 이 구별을 잃으면 「계획을 놓친
+    날」이 「비교할 수 없는 날」로 바뀐다.
+
+    계획이 0 인 날은 나눌 것이 없어 예전처럼 0 이다. 그날을 화면은 달성률이
+    아니라 **「계획 없음」**으로 읽으므로 이 값이 판정을 만들지 않는다.
+    """
+    if not planned:
+        return 0.0
+    if planned_uom is None:
+        # 계획 자체가 여러 단위를 더한 값이다. 분모가 이미 뜻이 없다.
+        return None
+    if actual and actual_uom != planned_uom:
+        return None
+    return round(actual / planned * 100, 1)
+
+
 def list_production_results(session: Session) -> list[ProductionResultResponse]:
     """생산관리 화면용 일자별 생산실적(생산일보)을 최근 날짜부터 만든다."""
     reference_date = get_reference_date(session)
@@ -226,15 +256,19 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
         day = reference_date - timedelta(days=offset)
         planned = planned_by_day.get(day, 0.0)
         actual = actual_by_day.get(day, 0.0)
+        planned_uom = _single_uom(planned_units_by_day.get(day, ()))
+        actual_uom = _single_uom(actual_units_by_day.get(day, ()))
         results.append(
             ProductionResultResponse(
                 work_date=day,
                 planned_quantity=round(planned, 2),
                 actual_quantity=round(actual, 2),
-                achievement_rate=round(actual / planned * 100, 1) if planned else 0.0,
+                achievement_rate=_achievement_rate(
+                    planned, actual, planned_uom, actual_uom
+                ),
                 active_order_count=len(orders_by_day.get(day, ())),
-                planned_quantity_uom=_single_uom(planned_units_by_day.get(day, ())),
-                actual_quantity_uom=_single_uom(actual_units_by_day.get(day, ())),
+                planned_quantity_uom=planned_uom,
+                actual_quantity_uom=actual_uom,
             )
         )
     return results

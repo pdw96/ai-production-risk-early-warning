@@ -82,7 +82,12 @@ export interface ProductionResult {
   work_date: string;
   planned_quantity: number;
   actual_quantity: number;
-  achievement_rate: number;
+  /**
+   * 실적 ÷ 계획. **그 나눗셈이 뜻을 가질 때만** 값이 있다 — 계획과 실적의
+   * 단위가 갈리면 null 이다. m² 계획을 개수 실적으로 나눈 90% 는 아무것도
+   * 뜻하지 않으므로, 화면은 그 숫자도 판정도 적지 않는다.
+   */
+  achievement_rate: number | null;
   active_order_count: number;
   /**
    * 위 두 수량이 **각각** 쓰는 단위. 그날 보탠 제품들의 단위가 갈리면 null 이다.

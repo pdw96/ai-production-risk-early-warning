@@ -134,7 +134,10 @@ class ProductionResultResponse(BaseModel):
     planned_quantity: float
     actual_quantity: float
     # 계획이 0이면 0으로 둔다(나눗셈 불가).
-    achievement_rate: float
+    # 실적 ÷ 계획. **그 나눗셈이 뜻을 가질 때만** 값이 있다 — 계획과 실적의
+    # 단위가 갈리면(둘이 서로 다른 제품 집합에서 나오므로 갈릴 수 있다) `None`
+    # 이다. m² 계획을 개수 실적으로 나눈 90% 는 아무것도 뜻하지 않는다.
+    achievement_rate: float | None
     # 그날 실적이 잡힌 오더 수
     active_order_count: int
     # 위 두 수량이 각각 쓰는 단위. **계획과 실적은 서로 다른 제품 집합에서
