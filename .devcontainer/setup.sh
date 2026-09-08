@@ -80,14 +80,25 @@ else
   rm -f "$DATABASE_ENVIRONMENT_FILE"
 fi
 
-# 대화형 셸이 그 파일을 읽게 한다. 한 번만 적는다.
-SHELL_HOOK_MARKER="# ai-production-risk: 개발 세션의 데이터베이스 주소"
+# 대화형 셸이 그 파일을 읽게 한다. **이 저장소 안에서 연 셸만** 읽는다.
+#
+# 조건 없이 걸면 이 집의 모든 셸에 `DATABASE_URL` 이 export 되고, 그러면 그
+# 관용 변수를 보는 **다른 프로그램이 production_risk 에 붙어 고칠 수 있다.**
+# 표식에 저장소 경로를 넣는 것도 같은 이유다 — 고정 표식이면 같은 집의 두 번째
+# 체크아웃이 자기 줄을 영영 넣지 못한다.
+#
+# `cd` 로 들어온 뒤에는 다시 평가되지 않는다. 그 값을 얻는 정확한 방법은 셸
+# 훅(direnv 류)인데, 준비 스크립트가 의존성을 하나 늘릴 자리는 아니다 —
+# `bash .devcontainer/start.sh` 와 `setup.sh` 는 스스로 주소를 정하므로
+# 이 줄이 없어도 돈다.
+SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue
   grep -qF "$SHELL_HOOK_MARKER" "$profile" && continue
   {
     printf '\n%s\n' "$SHELL_HOOK_MARKER"
-    printf '[ -f %q ] && . %q\n' "$DATABASE_ENVIRONMENT_FILE" "$DATABASE_ENVIRONMENT_FILE"
+    printf 'case "$PWD/" in %q*) [ -f %q ] && . %q ;; esac\n' \
+      "$REPOSITORY_ROOT/" "$DATABASE_ENVIRONMENT_FILE" "$DATABASE_ENVIRONMENT_FILE"
   } >> "$profile"
 done
 

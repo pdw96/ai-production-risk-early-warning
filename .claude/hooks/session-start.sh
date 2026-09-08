@@ -21,6 +21,18 @@ bash .devcontainer/setup.sh
 # 도는 상태가 만들어진다. 그 줄은 `setup.sh` 가 `printf %q` 로 이미 셸에 안전하게
 # 적어 두었으므로 그대로 옮긴다.
 DATABASE_ENVIRONMENT_FILE=".devcontainer/database.env"
-if [ -f "$DATABASE_ENVIRONMENT_FILE" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  cat "$DATABASE_ENVIRONMENT_FILE" >> "$CLAUDE_ENV_FILE"
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  if [ -f "$DATABASE_ENVIRONMENT_FILE" ]; then
+    cat "$DATABASE_ENVIRONMENT_FILE" >> "$CLAUDE_ENV_FILE"
+  elif [ "${PRODUCTION_RISK_DATABASE_AUTOSELECTED:-}" = "1" ]; then
+    # 지난 세션이 고른 PostgreSQL 주소를 물려받았는데 이번에는 그 서버를 세우지
+    # 못해 `setup.sh` 가 SQLite 로 물러난 경우다. `setup.sh` 의 `unset` 은 그
+    # 자식 프로세스에서 끝나고 파일도 지워졌으므로, 아무것도 적지 않으면 세션의
+    # 이후 명령들이 **죽은 PostgreSQL 주소를 계속 들고 있다** — 준비는 SQLite 로
+    # 했는데 검사는 거기에 붙는다. 그 어긋남이 이 PR 이 없애려던 것이다.
+    #
+    # 사람이 준 주소에는 이 표식이 없으므로 여기 걸리지 않는다.
+    printf 'unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED\n' \
+      >> "$CLAUDE_ENV_FILE"
+  fi
 fi

@@ -112,15 +112,21 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
         url = _make_throwaway_database(make_url(DATABASE_URL))
     engine = sa.create_engine(url)
 
-    config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
-    config.set_main_option("script_location", str(BACKEND_DIRECTORY / "migrations"))
-    # 주소가 아니라 연결을 넘긴다. 주소만 넘기면 `env.py` 가 설정의
-    # `DATABASE_URL` 로 새 엔진을 열어 **진짜 데이터베이스**를 고친다.
-    with engine.begin() as connection:
-        config.attributes["connection"] = connection
-        command.upgrade(config, "head")
-
+    # **만든 직후부터** 치우는 약속 안에 있어야 한다. 마이그레이션을 밖에 두면
+    # 그것이 터질 때 데이터베이스가 남는데, 하필 **그 실패가 이 픽스처가 드러내려는
+    # 것**이다 — 한 엔진의 문법이 마이그레이션에 굳으면 여기서 터진다. 실패할수록
+    # 고아가 쌓이는 구조였다.
     try:
+        config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
+        config.set_main_option(
+            "script_location", str(BACKEND_DIRECTORY / "migrations")
+        )
+        # 주소가 아니라 연결을 넘긴다. 주소만 넘기면 `env.py` 가 설정의
+        # `DATABASE_URL` 로 새 엔진을 열어 **진짜 데이터베이스**를 고친다.
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+
         yield engine
     finally:
         # 만든 것을 **여기서** 치운다. 다음 실행의 앞머리에서 치우면 그 사이에

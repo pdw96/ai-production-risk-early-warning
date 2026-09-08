@@ -101,7 +101,15 @@ role="$(id -un)"
 if ! psql -d postgres -qtAc "SELECT 1 FROM pg_roles WHERE rolname = '${role}'" \
   2>/dev/null | grep -q 1; then
   log "역할 ${role} 을 만듭니다."
-  if ! run_as postgres "psql -qc \"CREATE ROLE \\\"${role}\\\" LOGIN SUPERUSER\"" \
+  # `SUPERUSER` 가 아니라 `CREATEDB` 다. 이 역할이 해야 하는 것은 두 가지뿐이다 —
+  # `production_risk` 를 만들어 갖는 것과, 검사가 쓰는 일회용 데이터베이스를
+  # 만드는 것. `CREATEDB` 가 그 둘을 모두 준다(만든 데이터베이스의 주인이 되므로
+  # 지우는 것도 된다).
+  #
+  # `SUPERUSER` 를 주면 **클러스터의 모든 데이터베이스**에 대한 권한이 이
+  # 개발 계정으로 도는 모든 프로세스에 영구히 붙는다 — 이 저장소와 무관한
+  # 데이터베이스까지. 준비 스크립트가 조용히 할 일이 아니다.
+  if ! run_as postgres "psql -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
     > /dev/null 2>&1; then
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
