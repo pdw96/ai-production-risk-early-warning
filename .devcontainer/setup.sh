@@ -141,6 +141,12 @@ unset PRODUCTION_RISK_DATABASE_AUTOSELECTED
 
 # 개발 세션도 운영과 같은 엔진을 본다. 세우지 못하는 환경이면 빈 값이 오고,
 # 그때는 예전처럼 SQLite 파일 하나로 돈다.
+# **고르기 전에 놓는다.** `database.sh` 는 「있으면 세우고 없으면 물러난다」인데,
+# 이 저장소의 devcontainer 이미지에는 PostgreSQL 이 **없었다** — 그래서 새로 만든
+# Codespace 에서는 늘 SQLite 로 물러났고, 이 PR 이 세우려던 「개발 세션도 운영과
+# 같은 엔진」이 정작 서지 않았다. 못 놓으면 예전 그대로 SQLite 다.
+bash "$REPOSITORY_ROOT/.devcontainer/install-postgresql.sh"
+
 database_url_is_ours=0
 if [ -z "${DATABASE_URL:-}" ]; then
   DATABASE_URL="$(bash .devcontainer/database.sh)"
@@ -276,7 +282,14 @@ SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
   # 남의 셸에 우리 함수를 두고 나오지 않는다.
   printf '  unset -f production_risk_url_is_inherited_ours\n'
   printf 'fi\n'
-} > "$SHELL_HOOK_FILE"
+} > "${SHELL_HOOK_FILE}.$$"
+# **한 순간에 갈아 끼운다.** 위의 리다이렉션은 파일을 먼저 자르고 `printf` 를
+# 여러 번 부르므로, 그 사이에 뜬 셸이 **반쯤 쓰인 파일**을 읽는다 — 문법 오류가
+# 나거나 엔진 판단의 절반만 돈다. 실측(2026-09-08): 쓰는 쪽과 읽는 쪽을 8초 동안
+# 겹쳐 돌리니 2,895번 중 **95번**(빈 파일 46 · 반쯤 46+)이 완성되지 않은 파일을
+# 봤다. 이름에 프로세스 번호를 넣는 것은 준비 둘이 겹쳐도 서로를 밟지 않게
+# 하려는 것이다.
+mv "${SHELL_HOOK_FILE}.$$" "$SHELL_HOOK_FILE"
 
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
 
@@ -297,6 +310,17 @@ production_risk_lock_note "$profile_lock_status"
 
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue
+  # **심볼릭 링크는 따라간다.** dotfiles 저장소를 링크로 걸어 두는 것이 흔한데,
+  # 아래에서 `mv` 로 갈아 끼우면 **링크 자체가 일반 파일로 바뀐다** — 내용은
+  # 남지만 그 뒤로 dotfiles 의 갱신이 이 프로파일에 닿지 않는다. 실측
+  # (2026-09-08): 링크를 걸어 두고 돌리니 `lrwxrwxrwx ... -> dotfiles/bashrc` 가
+  # `-rw-r--r--` 로 바뀌었고, 우리 토막은 원본과 사본 양쪽에 남았다.
+  #
+  # 링크가 가리키는 **그 파일**을 고친다. 사람이 링크를 건 뜻이 그것이다.
+  if [ -L "$profile" ]; then
+    profile="$(readlink -f "$profile")" || continue
+    [ -f "$profile" ] || continue
+  fi
   # 예전 형태로 적힌 것이 남아 있을 수 있다. 표식부터 그 토막의 `esac` 까지를
   # 걷어내고 새로 적는다 — 이 줄은 이제 늘 같으므로 결과는 안정된다.
   if grep -qF "$SHELL_HOOK_MARKER" "$profile"; then

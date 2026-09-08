@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -1248,3 +1250,162 @@ def test_createdb_names_the_maintenance_database() -> None:
         if not line.lstrip().startswith("#")
     )
     assert '--maintenance-db="$maintenance_database"' in body
+
+
+def test_the_devcontainer_provisions_postgresql() -> None:
+    """개발 컨테이너에 PostgreSQL 이 **실제로 놓인다.**
+
+    `database.sh` 는 「있으면 세우고 없으면 SQLite 로 물러난다」로 지어졌는데,
+    이 저장소의 devcontainer 에는 **없었다** — 이미지는
+    `mcr.microsoft.com/devcontainers/python` 이고 붙은 기능은 Node 하나뿐이며
+    저장소 어디에도 설치 단계가 없었다. 그러면 새로 만든 Codespace 에서는
+    `command -v pg_isready` 가 늘 실패해 **언제나 SQLite** 로 물러나고, 이 PR 이
+    세우려던 「개발 세션도 운영과 같은 엔진」이 정작 서지 않는다. CI 는 서 있으므로
+    아무도 알아채지 못한다.
+
+    판을 못 박는 것도 함께 본다 — 배포판 기본은 15 이고 운영·CI 는 16 이다.
+    개발만 한 판 뒤처지면 이 PR 이 없애려던 어긋남이 판 번호로 되돌아온다.
+    """
+    install = REPOSITORY_ROOT / ".devcontainer" / "install-postgresql.sh"
+    assert install.exists(), "devcontainer 가 PostgreSQL 을 놓지 않는다"
+
+    body = install.read_text(encoding="utf-8")
+    # compose 가 쓰는 판과 같아야 한다 — 두 곳에 숫자를 적었으면 견준다.
+    compose = (REPOSITORY_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    major = re.search(r"^MAJOR_VERSION=(\d+)$", body, re.MULTILINE)
+    assert major, "놓을 판이 적혀 있지 않다"
+    assert f"postgres:{major.group(1)}" in compose, (
+        f"개발이 놓는 판({major.group(1)})이 compose 의 판과 다르다"
+    )
+
+    # 그리고 준비가 그것을 **엔진을 고르기 전에** 부른다.
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    installs = next(
+        index for index, line in enumerate(lines) if "install-postgresql.sh" in line
+    )
+    chooses = next(
+        index for index, line in enumerate(lines) if "bash .devcontainer/database.sh" in line
+    )
+    assert installs < chooses, "엔진을 고른 뒤에 놓는다"
+
+
+def test_failing_to_provision_postgresql_is_not_fatal(tmp_path: Path) -> None:
+    """못 놓는 것은 **고장이 아니다.**
+
+    부르는 쪽이 `set -e` 아래이므로 여기서 나가는 0 아닌 값은 준비 전체를 끌고
+    내려간다. 못 놓으면 `database.sh` 가 예전처럼 SQLite 로 물러나는 것이 맞다 —
+    이 저장소가 실패에 대해 약속한 자리다.
+    """
+    # `pg_isready` 가 보이지 않는 좁은 `PATH` 를 만든다. 스텁으로는 「없음」을
+    # 흉내 낼 수 없어(`command -v` 가 찾는다) 필요한 것만 골라 넣는다.
+    #
+    # **시스템 바이너리를 가리키는 링크는 두지 않는다.** 그 자리에 무언가를
+    # 덮어쓰면 링크를 따라가 진짜 명령을 망가뜨린다 — 이 검사를 손으로 만들다
+    # 실제로 `/usr/bin/id` 를 날려 본 적이 있다. 필요한 것은 `bash` 하나뿐이고,
+    # `id` 는 처음부터 스텁으로 둔다.
+    narrow = tmp_path / "bin"
+    narrow.mkdir()
+    (narrow / "bash").symlink_to(shutil.which("bash"))
+    stub_identity = narrow / "id"
+    stub_identity.write_text(
+        '#!/bin/sh\nif [ "$1" = "-u" ]; then echo 1000; else echo nobody; fi\n',
+        encoding="utf-8",
+    )
+    stub_identity.chmod(0o755)
+
+    install = REPOSITORY_ROOT / ".devcontainer" / "install-postgresql.sh"
+
+    def _run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(narrow / "bash"), str(install)],
+            capture_output=True,
+            text=True,
+            env={"PATH": str(narrow), "HOME": str(tmp_path)},
+            timeout=120,
+        )
+
+    # ① 놓을 방법을 모르는 환경 (apt-get 없음)
+    done = _run()
+    assert done.returncode == 0, done.stderr
+    assert "SQLite" in done.stderr
+
+    # ② 권한이 없는 환경 (비root · sudo 없음)
+    (narrow / "apt-get").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (narrow / "apt-get").chmod(0o755)
+    done = _run()
+    assert done.returncode == 0, done.stderr
+    assert "SQLite" in done.stderr
+
+
+def test_the_shell_hook_file_is_published_atomically() -> None:
+    """훅 파일도 **한 순간에** 갈아 끼운다.
+
+    리다이렉션은 파일을 먼저 자르고 `printf` 를 여러 번 부르므로, 그 사이에 뜬
+    셸이 반쯤 쓰인 파일을 읽는다 — 문법 오류가 나거나 엔진 판단의 절반만 돈다.
+    실측(2026-09-08): 쓰는 쪽과 읽는 쪽을 8초 동안 겹쳐 돌리니 **2,895번 중
+    95번**이 완성되지 않은 파일을 봤다(빈 파일 46 · 반쯤 49).
+    """
+    body = "\n".join(
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert '} > "${SHELL_HOOK_FILE}.$$"' in body, "훅 파일을 곧바로 덮어쓴다"
+    assert 'mv "${SHELL_HOOK_FILE}.$$" "$SHELL_HOOK_FILE"' in body
+    assert '} > "$SHELL_HOOK_FILE"' not in body
+
+
+def test_a_symlinked_profile_survives(tmp_path: Path) -> None:
+    """프로파일이 **심볼릭 링크**여도 링크가 살아남는다.
+
+    dotfiles 저장소를 링크로 걸어 두는 것이 흔한데, `mv` 로 갈아 끼우면 링크
+    자체가 일반 파일로 바뀐다 — 내용은 남지만 그 뒤로 dotfiles 의 갱신이 이
+    프로파일에 닿지 않는다. 실측(2026-09-08): `lrwxrwxrwx ... -> dotfiles/bashrc`
+    가 `-rw-r--r--` 로 바뀌었고 우리 토막이 원본과 사본 양쪽에 남았다.
+
+    링크가 가리키는 **그 파일**을 고친다 — 사람이 링크를 건 뜻이 그것이다.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    repository = tmp_path / "repo"
+    (repository / ".devcontainer").mkdir(parents=True)
+
+    marker = f"# ai-production-risk({repository}): 개발 세션의 데이터베이스 주소"
+    (dotfiles / "bashrc").write_text(
+        "export FROM_DOTFILES=1\n\n"
+        + marker
+        + "\n"
+        + f'case "$PWD/" in {repository}/*)\n  if [ -f /x ]; then\n    . /x\n  fi ;;\nesac\n',
+        encoding="utf-8",
+    )
+    (home / ".bashrc").symlink_to(dotfiles / "bashrc")
+
+    region = _shell_region(
+        SETUP_SCRIPT, "SHELL_HOOK_MARKER=", "close_production_risk_lock 7"
+    )
+    script = tmp_path / "rewrite.sh"
+    script.write_text(
+        "set -uo pipefail\n"
+        f"REPOSITORY_ROOT={repository}\n"
+        f"SHELL_HOOK_FILE={repository}/.devcontainer/shell-hook.sh\n"
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n" + region + "\n",
+        encoding="utf-8",
+    )
+    environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
+    done = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, env=environment, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+
+    assert (home / ".bashrc").is_symlink(), "링크가 일반 파일로 바뀌었다"
+    written = (dotfiles / "bashrc").read_text(encoding="utf-8")
+    assert "export FROM_DOTFILES=1" in written
+    assert written.count("ai-production-risk(") == 1
+    assert "shell-hook.sh" in written
