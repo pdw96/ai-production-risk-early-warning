@@ -64,7 +64,7 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
         "kpis",
         # 7일 합계 추이가 쓰는 단위. 완제품 단위가 갈리면 None 이 되고, 그때
         # 화면은 「개」 대신 혼재를 말한다. 오늘 하루치 KPI 는 기간이 달라
-        # 단위도 따로 싣는다(`kpis.today_quantity_uom`).
+        # 단위도, 계획·실적을 나누어 따로 싣는다(`kpis.today_*_quantity_uom`).
         "quantity_uom",
         "production_trend",
         "product_trends",
@@ -78,9 +78,11 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
         "material_shortage_count",
         "today_plan_quantity",
         "today_actual_quantity",
-        "today_quantity_uom",
+        "today_plan_quantity_uom",
+        "today_actual_quantity_uom",
     }
-    assert data["kpis"]["today_quantity_uom"] == "EA"
+    assert data["kpis"]["today_plan_quantity_uom"] == "EA"
+    assert data["kpis"]["today_actual_quantity_uom"] == "EA"
     assert len(data["production_trend"]) == 7
     assert len(data["top_order_risks"]) <= 5
     assert len(data["top_material_risks"]) <= 5
@@ -892,7 +894,9 @@ def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> 
     dashboard = client.get("/api/dashboard").json()["data"]
     assert dashboard["quantity_uom"] == "EA"
     results = client.get("/api/production-results").json()["data"]
-    assert {row["quantity_uom"] for row in results if row["active_order_count"]} == {"EA"}
+    assert {row["actual_quantity_uom"] for row in results if row["active_order_count"]} == {
+        "EA"
+    }
 
     # m² 로 세는 완제품을 하나 들인다. 시트·필름 공장에서 이상한 품목이 아니다.
     # **생산 실적까지 넣는 것이 요점이다** — 합계에 들어가지 않은 품목은 그 합의
@@ -953,7 +957,7 @@ def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> 
         for row in client.get("/api/production-results").json()["data"]
         if row["work_date"] == REFERENCE_DATE.isoformat()
     )
-    assert today["quantity_uom"] is None
+    assert today["planned_quantity_uom"] is None
 
 
 def test_todays_kpi_unit_is_not_decided_by_the_rest_of_the_week(
@@ -994,11 +998,67 @@ def test_todays_kpi_unit_is_not_decided_by_the_rest_of_the_week(
     # 7일 합계에는 실제로 m² 가 섞였다.
     assert dashboard["quantity_uom"] is None
     # 오늘 합계에는 섞이지 않았다.
-    assert dashboard["kpis"]["today_quantity_uom"] == "EA", (
+    assert dashboard["kpis"]["today_actual_quantity_uom"] == "EA", (
         "오늘 보탠 것은 전부 개인데 지난 주의 m² 가 오늘의 단위를 바꿨습니다 —"
         " 화면은 개수 합계를 「단위 혼재」라고 적게 됩니다."
     )
     assert dashboard["kpis"]["today_actual_quantity"] > 0
+
+
+def test_planned_and_actual_units_are_decided_apart(client: TestClient) -> None:
+    """계획과 실적은 **서로 다른 제품 집합에서 나온다.**
+
+    계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면, 단위를
+    하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다. 오늘
+    계획은 m² 뿐이고 오늘 실적은 개수뿐인 날을 만들어 그것을 확인한다.
+    """
+    with db_base.SessionLocal() as session:
+        # 계획만 서는 m² 오더.
+        film = finished_item(code="FG-97", name="가상 광학필름", stock_uom="m2")
+        session.add(film)
+        session.flush()
+        film_order = Order(
+            order_number="MO-997",
+            item=film,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(film_order)
+        session.flush()
+        session.add(
+            DailyProduction(
+                order_id=film_order.id,
+                work_date=REFERENCE_DATE,
+                planned_quantity=30,
+                actual_quantity=0,
+            )
+        )
+        # 시드의 개수 오더들이 오늘 계획도 함께 세우고 있으면 계획 쪽이 실제로
+        # 갈리므로, 오늘 계획을 m² 하나만 남기고 비운다.
+        session.query(DailyProduction).filter(
+            DailyProduction.work_date == REFERENCE_DATE,
+            DailyProduction.order_id != film_order.id,
+        ).update({DailyProduction.planned_quantity: 0}, synchronize_session=False)
+        session.commit()
+
+    kpis = client.get("/api/dashboard").json()["data"]["kpis"]
+
+    assert kpis["today_plan_quantity_uom"] == "m2", (
+        "오늘 계획은 m² 하나뿐인데 실적 쪽 단위가 계획의 단위를 바꿨습니다."
+    )
+    assert kpis["today_actual_quantity_uom"] == "EA", (
+        "오늘 실적은 개수뿐인데 계획 쪽의 m² 가 실적의 단위를 바꿨습니다."
+    )
+    assert kpis["today_plan_quantity"] == 30
+    assert kpis["today_actual_quantity"] > 0
+
+    today = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == REFERENCE_DATE.isoformat()
+    )
+    assert today["planned_quantity_uom"] == "m2"
+    assert today["actual_quantity_uom"] == "EA"
 
 
 def test_an_unseeded_database_does_not_look_like_a_healthy_factory(
@@ -1046,13 +1106,15 @@ def test_an_empty_aggregate_is_not_reported_as_mixed_units(client: TestClient) -
     assert results, "일자별 실적은 실적이 없어도 날짜를 채워 보낸다."
 
     for row in results:
-        assert row["quantity_uom"] is None
+        assert row["planned_quantity_uom"] is None
+        assert row["actual_quantity_uom"] is None
         assert row["planned_quantity"] == 0
         assert row["actual_quantity"] == 0
 
     dashboard = client.get("/api/dashboard").json()["data"]
     assert dashboard["quantity_uom"] is None
-    assert dashboard["kpis"]["today_quantity_uom"] is None
+    assert dashboard["kpis"]["today_plan_quantity_uom"] is None
+    assert dashboard["kpis"]["today_actual_quantity_uom"] is None
     assert dashboard["kpis"]["today_plan_quantity"] == 0
     assert dashboard["kpis"]["today_actual_quantity"] == 0
     assert all(

@@ -173,8 +173,11 @@ def _single_uom(units: Iterable[str]) -> str | None:
     **더한 것이 하나도 없을 때도 None 이다.** 그 둘은 다른 상태이지만, 부르는
     쪽이 보태는 줄만 넘기므로 여기 빈 목록이 오면 합이 0 이라는 뜻이고 — 수량은
     음수가 될 수 없다 — 0 에는 붙일 단위도 잘못될 단위도 없다. 화면은 그래서
-    「0」을 그냥 적고 「혼재」라고 말하지 않는다. 이 불변식은 회귀 테스트가
-    고정한다.
+    「0」을 그냥 적고 「혼재」라고 말하지 않는다.
+
+    그 「음수가 될 수 없다」를 **데이터베이스가 강제한다**(수량을 가진 표 여섯의
+    `>= 0` CHECK). 강제하지 않으면 음수가 섞여 서로 다른 단위가 0 으로 상쇄되고,
+    화면은 섞인 것을 빈 것으로 읽는다.
     """
     distinct = set(units)
     return distinct.pop() if len(distinct) == 1 else None
@@ -201,15 +204,21 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
     actual_by_day: defaultdict[date, float] = defaultdict(float)
     orders_by_day: defaultdict[date, set[int]] = defaultdict(set)
     # 그날 더해진 제품들의 단위. 하나로 모이지 않으면 그 합에는 붙일 단위가 없다.
-    units_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    #
+    # **계획과 실적을 따로 모은다.** 둘은 서로 다른 제품 집합에서 나온다 —
+    # 계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면, 한
+    # 뭉치로 모을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    planned_units_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    actual_units_by_day: defaultdict[date, set[str]] = defaultdict(set)
     for work_date, planned, actual, order_id, stock_uom in rows:
         planned_by_day[work_date] += float(planned or 0)
         actual_by_day[work_date] += float(actual or 0)
-        # 계획도 실적도 0 이면 그 줄은 합에 아무것도 보태지 않으므로 단위도
-        # 정하지 않는다 — 보태지 않은 것이 합의 단위를 바꿔서는 안 된다.
-        if planned or actual:
-            units_by_day[work_date].add(stock_uom)
+        # 0 인 쪽은 그 합에 아무것도 보태지 않으므로 단위도 정하지 않는다 —
+        # 보태지 않은 것이 합의 단위를 바꿔서는 안 된다.
+        if planned:
+            planned_units_by_day[work_date].add(stock_uom)
         if actual:
+            actual_units_by_day[work_date].add(stock_uom)
             orders_by_day[work_date].add(order_id)
 
     results = []
@@ -224,7 +233,8 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
                 actual_quantity=round(actual, 2),
                 achievement_rate=round(actual / planned * 100, 1) if planned else 0.0,
                 active_order_count=len(orders_by_day.get(day, ())),
-                quantity_uom=_single_uom(units_by_day.get(day, ())),
+                planned_quantity_uom=_single_uom(planned_units_by_day.get(day, ())),
+                actual_quantity_uom=_single_uom(actual_units_by_day.get(day, ())),
             )
         )
     return results
@@ -749,7 +759,12 @@ def get_dashboard(session: Session) -> DashboardResponse:
     # 오늘의 개수 합계가 「단위 혼재」로 적힌다 — 오늘 더한 것은 전부 개인데도
     # 그렇다. 7일은 오늘을 품으므로 거짓은 늘 이 방향으로만 난다.
     contributing_rows = session.execute(
-        select(DailyProduction.work_date, Item.stock_uom)
+        select(
+            DailyProduction.work_date,
+            DailyProduction.planned_quantity,
+            DailyProduction.actual_quantity,
+            Item.stock_uom,
+        )
         .join(Order, Order.item_id == Item.id)
         .join(DailyProduction, DailyProduction.order_id == Order.id)
         .where(
@@ -764,13 +779,22 @@ def get_dashboard(session: Session) -> DashboardResponse:
                 DailyProduction.actual_quantity != 0,
             ),
         )
-        .distinct()
     ).all()
-    trend_units = {stock_uom for _work_date, stock_uom in contributing_rows}
-    today_units = {
+    # 추이 차트는 계획과 실적을 **한 축 위에** 겹쳐 그린다. 그래서 축의 단위는
+    # 둘을 합쳐 하나이며, 실제로 갈리면 그 축이 혼재인 것이 맞다.
+    trend_units = {stock_uom for _d, _p, _a, stock_uom in contributing_rows}
+    # KPI 카드는 둘이 **따로 선 숫자**다. 계획만 선 m² 오더와 실적만 오른 개수
+    # 오더가 오늘 함께 있으면, 한 뭉치로 모을 경우 각각은 단위가 분명한데도 둘
+    # 다 「혼재」가 된다.
+    today_plan_units = {
         stock_uom
-        for work_date, stock_uom in contributing_rows
-        if work_date == reference_date
+        for work_date, planned, _a, stock_uom in contributing_rows
+        if work_date == reference_date and planned
+    }
+    today_actual_units = {
+        stock_uom
+        for work_date, _p, actual, stock_uom in contributing_rows
+        if work_date == reference_date and actual
     }
 
     return DashboardResponse(
@@ -782,7 +806,8 @@ def get_dashboard(session: Session) -> DashboardResponse:
             material_shortage_count=len(material_risks),
             today_plan_quantity=round(today_plan, 2),
             today_actual_quantity=round(today_actual, 2),
-            today_quantity_uom=_single_uom(today_units),
+            today_plan_quantity_uom=_single_uom(today_plan_units),
+            today_actual_quantity_uom=_single_uom(today_actual_units),
         ),
         production_trend=production_trend,
         product_trends=product_trends,

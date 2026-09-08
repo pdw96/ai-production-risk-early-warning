@@ -240,6 +240,7 @@ def upgrade() -> None:
     sa.Column('unit_quantity', sa.Float(), nullable=False),
     sa.CheckConstraint('level IN (1, 2)', name='ck_bom_component_level'),
     sa.CheckConstraint('parent_item_id <> child_item_id', name='ck_bom_component_not_self_referencing'),
+    sa.CheckConstraint('unit_quantity >= 0', name='ck_bom_component_unit_quantity_not_negative'),
     sa.ForeignKeyConstraint(['child_item_id'], ['items.id'], ),
     sa.ForeignKeyConstraint(['parent_item_id'], ['items.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -266,6 +267,7 @@ def upgrade() -> None:
     sa.CheckConstraint("warehouse <> '제품창고' OR qc_status = '합격'", name='ck_finished_goods_lot_product_warehouse_holds_passed_only'),
     sa.CheckConstraint("warehouse IN ('생산창고', '제품창고')", name='ck_finished_goods_lot_warehouse'),
     sa.CheckConstraint('expiry_date IS NULL OR expiry_date >= passed_date', name='ck_finished_goods_lot_expiry_after_passed'),
+    sa.CheckConstraint('quantity >= 0', name='ck_finished_goods_lot_quantity_not_negative'),
     sa.CheckConstraint('expiry_date IS NULL OR passed_date IS NOT NULL', name='ck_finished_goods_lot_expiry_needs_passed_date'),
     sa.CheckConstraint('passed_date IS NULL OR passed_date >= produced_date', name='ck_finished_goods_lot_passed_after_produced'),
     sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
@@ -286,6 +288,7 @@ def upgrade() -> None:
     sa.Column('expiry_date', sa.Date(), nullable=True),
     sa.CheckConstraint("item_type = '원자재'", name='ck_material_lot_item_type'),
     sa.CheckConstraint("warehouse IN ('원재료창고', '생산창고')", name='ck_material_lot_warehouse'),
+    sa.CheckConstraint('quantity >= 0', name='ck_material_lot_quantity_not_negative'),
     sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('item_id', 'lot_number', 'warehouse', name='uq_material_lot_warehouse')
@@ -301,6 +304,7 @@ def upgrade() -> None:
     sa.Column('due_date', sa.Date(), nullable=False),
     sa.Column('planned_quantity', sa.Float(), nullable=False),
     sa.CheckConstraint("item_type = '완제품'", name='ck_order_item_type'),
+    sa.CheckConstraint('planned_quantity >= 0', name='ck_order_planned_quantity_not_negative'),
     sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -315,6 +319,7 @@ def upgrade() -> None:
     sa.Column('scheduled_quantity', sa.Float(), nullable=False),
     sa.Column('expiry_date', sa.Date(), nullable=True),
     sa.CheckConstraint("item_type = '원자재'", name='ck_purchase_receipt_item_type'),
+    sa.CheckConstraint('scheduled_quantity >= 0', name='ck_purchase_receipt_scheduled_quantity_not_negative'),
     sa.ForeignKeyConstraint(['item_id', 'item_type'], ['items.id', 'items.item_type'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -341,6 +346,8 @@ def upgrade() -> None:
     sa.Column('work_date', sa.Date(), nullable=False),
     sa.Column('planned_quantity', sa.Float(), nullable=False),
     sa.Column('actual_quantity', sa.Float(), nullable=False),
+    sa.CheckConstraint('planned_quantity >= 0', name='ck_daily_production_planned_quantity_not_negative'),
+    sa.CheckConstraint('actual_quantity >= 0', name='ck_daily_production_actual_quantity_not_negative'),
     sa.ForeignKeyConstraint(['order_id'], ['orders.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

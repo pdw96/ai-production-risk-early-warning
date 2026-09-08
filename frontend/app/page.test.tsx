@@ -19,7 +19,8 @@ function dashboard(overrides: Partial<api.Dashboard> = {}): api.Dashboard {
       material_shortage_count: 0,
       today_plan_quantity: 0,
       today_actual_quantity: 0,
-      today_quantity_uom: "EA",
+      today_plan_quantity_uom: "EA",
+      today_actual_quantity_uom: "EA",
     },
     quantity_uom: "EA",
     // 추이는 실적이 없어도 7일치 0을 채워 보낸다. 비어 있음의 표식이 될 수 없다.

@@ -84,8 +84,14 @@ export interface ProductionResult {
   actual_quantity: number;
   achievement_rate: number;
   active_order_count: number;
-  /** 위 두 수량이 쓰는 단위. 그날 제품들의 단위가 갈리면 null 이다. */
-  quantity_uom: string | null;
+  /**
+   * 위 두 수량이 **각각** 쓰는 단위. 그날 보탠 제품들의 단위가 갈리면 null 이다.
+   * 계획과 실적이 나뉘어 있는 것은 둘이 서로 다른 제품 집합에서 나오기
+   * 때문이다 — 계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면,
+   * 단위가 하나면 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+   */
+  planned_quantity_uom: string | null;
+  actual_quantity_uom: string | null;
 }
 
 export interface MasterItem {
@@ -231,10 +237,15 @@ export interface Dashboard {
     today_plan_quantity: number;
     today_actual_quantity: number;
     /**
-     * 위 두 수량이 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의 단위이며,
-     * 아래 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+     * 위 두 수량이 **각각** 쓰는 단위. 오늘 하루에 실제로 보탠 제품들의
+     * 단위이며, 아래 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+     *
+     * 계획과 실적이 나뉘어 있는 것은 둘이 **서로 다른 제품 집합에서 나오기**
+     * 때문이다. 계획만 선 m² 오더와 실적만 오른 개수 오더가 오늘 함께 있으면,
+     * 단위가 하나면 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
      */
-    today_quantity_uom: string | null;
+    today_plan_quantity_uom: string | null;
+    today_actual_quantity_uom: string | null;
   };
   /**
    * 아래 `production_trend` 의 7일 합계가 쓰는 단위. 완제품 단위가 갈리면

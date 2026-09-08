@@ -29,10 +29,14 @@ export function unit_label(unit: string | null = COUNTING_UNIT): string {
  * 제품을 넘어 더한 수량.
  *
  * `null` 은 **단위를 정할 수 없다**는 뜻이고, 그 이유는 둘이다 — 실제로 섞였거나,
- * 더한 것이 하나도 없거나. 뒤의 것은 합이 0 이다(수량은 음수가 될 수 없다).
- * 값으로 그 둘을 가른다: 0 이면 붙일 단위가 없을 뿐이니 「0」을 그냥 적고, 0 이
- * 아니면 실제로 섞인 것이다. 아무 일도 없었던 날에 「0 (단위 혼재)」라고 적으면
- * 그것 자체가 거짓말이다.
+ * 더한 것이 하나도 없거나. 뒤의 것은 합이 0 이다. 값으로 그 둘을 가른다: 0 이면
+ * 붙일 단위가 없을 뿐이니 「0」을 그냥 적고, 0 이 아니면 실제로 섞인 것이다.
+ * 아무 일도 없었던 날에 「0 (단위 혼재)」라고 적으면 그것 자체가 거짓말이다.
+ *
+ * 이 구별은 **수량이 음수가 될 수 없다**는 데 기댄다. 음수가 섞이면 서로 다른
+ * 단위가 0 으로 상쇄되어, 섞인 것을 빈 것으로 읽게 된다. 그래서 그 불변식을
+ * 화면의 가정으로 두지 않고 **데이터베이스가 강제한다** — 수량을 가진 표
+ * 여섯에 `>= 0` CHECK 가 걸려 있다.
  */
 export function format_mixed_quantity(value: number, unit: string | null): string {
   const formatted = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value);

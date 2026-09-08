@@ -285,6 +285,19 @@ class Item(Base):
     )
     # 재고 단위(지적 ㉛). 모든 수량이 이 단위로 저장된다 — 잔량을 수불의 합으로
     # 내린 이상 합할 수 있으려면 단위가 하나여야 하기 때문이다.
+    #
+    # **바꾸면 지나간 수량의 뜻이 바뀐다.** 로트·예정입고·오더·실적·BOM 어디에도
+    # 단위 사본이 없으므로, 이 칸을 `EA` 에서 `m2` 로 고치는 순간 이미 쌓인
+    # 500개가 조용히 「500 m2」가 된다. 스키마는 그것을 막지 않는다 — **막을
+    # 자리가 아직 없다.** 이 저장소에 품목을 고치는 경로가 없고(쓰기 엔드포인트는
+    # 위험 상태 하나뿐이다), 막는 두 방법은 지금 값이 더 나쁘다. 표 다섯에 단위
+    # 사본을 심으면 기준정보를 다섯 곳에 복제해 새 정합 문제를 만들고, 트리거로
+    # 불변을 강제하면 두 엔진에 방언이 다른 트리거가 하나씩 는다.
+    #
+    # 품목을 고치는 화면이 서는 단계에서 정할 일이며, 그때의 답은 아마
+    # **「단위 변경은 수정이 아니라 새 품목」** 이다 — 지나간 수량의 뜻을 지키는
+    # 유일한 방법이 그것이기 때문이다. 여기 적어 두는 것은 그 결정을 미룬다는
+    # 사실 자체를 코드가 알고 있게 하기 위해서다.
     stock_uom: Mapped[str] = mapped_column(String(30))
     stock_uom_group: Mapped[str] = mapped_column(
         String(20), default=codes.UOM, server_default=codes.UOM
@@ -343,6 +356,17 @@ class BomComponent(Base):
             f"level IN ({_ALLOWED_BOM_LEVELS_SQL})",
             name="ck_bom_component_level",
         ),
+        # 수량은 음수가 될 수 없다 — 수량을 가진 표 여섯이 같은 말을 한다.
+        #
+        # **화면이 이미 이 불변식에 기대고 있었다.** 제품을 넘어 더한 합에 단위를
+        # 붙일 수 있는지를 화면은 「합이 0 이면 더한 것이 없는 것」으로 가르는데,
+        # 그것이 성립하려면 수량이 음수가 될 수 없어야 한다. 음수가 섞이면 서로
+        # 다른 단위가 0 으로 상쇄되어 화면은 **혼재를 빈 것으로** 읽는다.
+        # 적어 두기만 하고 강제하지 않는 규칙은 규칙이 아니다.
+        CheckConstraint(
+            "unit_quantity >= 0",
+            name="ck_bom_component_unit_quantity_not_negative",
+        ),
         CheckConstraint(
             "parent_item_id <> child_item_id",
             name="ck_bom_component_not_self_referencing",
@@ -381,6 +405,10 @@ class Order(Base):
             ["items.id", "items.item_type"],
         ),
         CheckConstraint(f"item_type = '{FINISHED_ITEM}'", name="ck_order_item_type"),
+        CheckConstraint(
+            "planned_quantity >= 0",
+            name="ck_order_planned_quantity_not_negative",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -402,6 +430,16 @@ class Order(Base):
 
 class DailyProduction(Base):
     __tablename__ = "daily_productions"
+    __table_args__ = (
+        CheckConstraint(
+            "planned_quantity >= 0",
+            name="ck_daily_production_planned_quantity_not_negative",
+        ),
+        CheckConstraint(
+            "actual_quantity >= 0",
+            name="ck_daily_production_actual_quantity_not_negative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
@@ -430,6 +468,10 @@ class PurchaseReceipt(Base):
         ),
         CheckConstraint(
             f"item_type = '{RAW_ITEM}'", name="ck_purchase_receipt_item_type"
+        ),
+        CheckConstraint(
+            "scheduled_quantity >= 0",
+            name="ck_purchase_receipt_scheduled_quantity_not_negative",
         ),
     )
 
@@ -483,6 +525,10 @@ class MaterialLot(Base):
         CheckConstraint(
             f"warehouse IN ({_ALLOWED_MATERIAL_WAREHOUSES_SQL})",
             name="ck_material_lot_warehouse",
+        ),
+        CheckConstraint(
+            "quantity >= 0",
+            name="ck_material_lot_quantity_not_negative",
         ),
     )
 
@@ -603,6 +649,10 @@ class FinishedGoodsLot(Base):
         CheckConstraint(
             "expiry_date IS NULL OR expiry_date >= passed_date",
             name="ck_finished_goods_lot_expiry_after_passed",
+        ),
+        CheckConstraint(
+            "quantity >= 0",
+            name="ck_finished_goods_lot_quantity_not_negative",
         ),
     )
 

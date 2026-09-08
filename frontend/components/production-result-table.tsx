@@ -30,12 +30,13 @@ export function ProductionResultTable({
         </thead>
         <tbody>
           {/* 계획·실적은 그날 실적이 잡힌 여러 제품을 더한 값이다. 그 제품들의
-              단위가 갈리면 `quantity_uom` 이 null 이 되고 「단위 혼재」로 적힌다. */}
+              단위가 갈리면 null 이 되고 「단위 혼재」로 적힌다. 계획과 실적이
+              단위를 나눠 갖는 것은 둘이 서로 다른 제품 집합에서 나오기 때문이다. */}
           {results.map((result) => (
             <tr key={result.work_date}>
               <td>{format_date(result.work_date)}</td>
-              <td className="numeric-cell">{format_mixed_quantity(result.planned_quantity, result.quantity_uom)}</td>
-              <td className="numeric-cell">{format_mixed_quantity(result.actual_quantity, result.quantity_uom)}</td>
+              <td className="numeric-cell">{format_mixed_quantity(result.planned_quantity, result.planned_quantity_uom)}</td>
+              <td className="numeric-cell">{format_mixed_quantity(result.actual_quantity, result.actual_quantity_uom)}</td>
               <td className="numeric-cell">{format_percentage(result.achievement_rate)}</td>
               <td>{achievement_label(result)}</td>
               <td className="numeric-cell">{result.active_order_count}건</td>

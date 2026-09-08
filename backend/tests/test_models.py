@@ -201,6 +201,112 @@ def test_the_item_code_prefix_must_match_the_item_type(session: Session) -> None
         session.commit()
 
 
+def test_no_quantity_column_accepts_a_negative_number(session: Session) -> None:
+    """수량은 음수가 될 수 없다 — 표 여섯이 그것을 스스로 거부해야 한다.
+
+    **화면이 이 불변식에 기대고 있다.** 제품을 넘어 더한 합에 붙일 단위가
+    있는지를 화면은 「합이 0 이면 더한 것이 없는 것」으로 가르는데, 음수가
+    섞이면 서로 다른 단위가 0 으로 상쇄되어 **섞인 것을 빈 것으로** 읽는다.
+    적어 두기만 하고 강제하지 않으면 규칙이 아니므로 여기서 물게 한다.
+
+    거부되는 것만 보면 부족하다 — 앞줄이 무른 세션에서 뒤의 줄이 **엉뚱한
+    이유로** 거부되어도 통과하기 때문이다. 그래서 세이브포인트로 줄마다
+    상태를 되돌리고, 터진 제약의 **이름까지** 확인한다.
+    """
+    product = finished_item(code="FG-31", name="가상 제품 음수")
+    material = raw_item(code="RM-31", name="가상 원자재 음수", safety_stock=10)
+    session.add_all([product, material])
+    session.flush()
+    order = Order(
+        order_number="MO-931",
+        item=product,
+        due_date=date.today() + timedelta(days=7),
+        planned_quantity=100,
+    )
+    session.add(order)
+    session.commit()
+
+    def negative_rows() -> list[tuple[str, Any]]:
+        return [
+            (
+                "ck_bom_component_unit_quantity_not_negative",
+                BomComponent(
+                    parent_item_id=product.id,
+                    child_item_id=material.id,
+                    level=2,
+                    unit_quantity=-1,
+                ),
+            ),
+            (
+                "ck_order_planned_quantity_not_negative",
+                Order(
+                    order_number="MO-932",
+                    item_id=product.id,
+                    due_date=date.today() + timedelta(days=7),
+                    planned_quantity=-1,
+                ),
+            ),
+            (
+                "ck_daily_production_planned_quantity_not_negative",
+                DailyProduction(
+                    order_id=order.id,
+                    work_date=date.today(),
+                    planned_quantity=-1,
+                    actual_quantity=0,
+                ),
+            ),
+            (
+                "ck_daily_production_actual_quantity_not_negative",
+                DailyProduction(
+                    order_id=order.id,
+                    work_date=date.today(),
+                    planned_quantity=0,
+                    actual_quantity=-1,
+                ),
+            ),
+            (
+                "ck_purchase_receipt_scheduled_quantity_not_negative",
+                PurchaseReceipt(
+                    item_id=material.id,
+                    scheduled_date=date.today() + timedelta(days=3),
+                    scheduled_quantity=-1,
+                ),
+            ),
+            (
+                "ck_material_lot_quantity_not_negative",
+                MaterialLot(
+                    item_id=material.id,
+                    lot_number="LOT-RM-31-01",
+                    warehouse="원재료창고",
+                    quantity=-1,
+                    received_date=date.today(),
+                ),
+            ),
+            (
+                "ck_finished_goods_lot_quantity_not_negative",
+                FinishedGoodsLot(
+                    item_id=product.id,
+                    lot_number="LOT-FG-31-01",
+                    warehouse="생산창고",
+                    qc_status="검사 대기",
+                    stock_type="양품",
+                    quantity=-1,
+                    produced_date=date.today(),
+                ),
+            ),
+        ]
+
+    for constraint_name, row in negative_rows():
+        with pytest.raises(IntegrityError) as rejection:
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
+        assert constraint_name in str(rejection.value), (
+            f"{constraint_name} 이 아니라 다른 이유로 거부됐습니다 —"
+            " 이 줄은 음수를 막는 것을 확인하지 못합니다."
+        )
+
+
 def test_bom_levels_stop_at_two(session: Session) -> None:
     """「단계」 열 하나가 재귀를 막는다 — 전개가 두 번으로 고정된다."""
     product = finished_item(code="FG-21", name="가상 제품 U")

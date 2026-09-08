@@ -109,15 +109,18 @@ export default function HomePage() {
         <Link aria-label={`자재 부족 위험 ${dashboard.kpis.material_shortage_count}건 상세 보기`} href="/materials">
           <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={format_count(dashboard.kpis.material_shortage_count)} />
         </Link>
-        {/* 아래 둘은 제품을 넘어 더한 값이다. `kpis.today_quantity_uom` 이 그 합의
-            단위를 말하고, 완제품 단위가 갈리면 null 이 되어 「단위 혼재」로 적힌다.
-            추이의 `quantity_uom` 을 쓰지 않는 것은 기간이 다르기 때문이다 — 이번
-            주에 m² 를 한 번 만들었다는 이유로 오늘의 개수 합계가 혼재로 적힌다. */}
-        <Link aria-label={`오늘 생산 계획 ${format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_quantity_uom)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_quantity_uom)} />
+        {/* 아래 둘은 제품을 넘어 더한 값이고, **각각 자기 단위**를 쓴다. 완제품
+            단위가 갈리면 null 이 되어 「단위 혼재」로 적힌다.
+            추이의 `quantity_uom` 을 쓰지 않는 것은 기간이 다르기 때문이고(이번
+            주에 m² 를 한 번 만들었다는 이유로 오늘의 개수 합계가 혼재가 된다),
+            계획과 실적이 단위를 나눠 갖는 것은 둘이 서로 다른 제품 집합에서
+            나오기 때문이다 — 계획만 선 m² 오더와 실적만 오른 개수 오더가 오늘
+            함께 있으면, 하나로 묶을 때 각각은 분명한데도 둘 다 혼재가 된다. */}
+        <Link aria-label={`오늘 생산 계획 ${format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_plan_quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_plan_quantity_uom)} />
         </Link>
-        <Link aria-label={`오늘 생산 실적 ${format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_quantity_uom)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_quantity_uom)} />
+        <Link aria-label={`오늘 생산 실적 ${format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_actual_quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_actual_quantity_uom)} />
         </Link>
       </section>
 

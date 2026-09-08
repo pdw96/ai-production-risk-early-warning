@@ -54,7 +54,8 @@ describe("OrdersPage", () => {
       {
         achievement_rate: 94.3,
         active_order_count: 30,
-        quantity_uom: "EA",
+        planned_quantity_uom: "EA",
+    actual_quantity_uom: "EA",
         actual_quantity: 340,
         planned_quantity: 360.4,
         work_date: "2026-09-02",

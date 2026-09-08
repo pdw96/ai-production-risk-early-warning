@@ -137,9 +137,11 @@ class ProductionResultResponse(BaseModel):
     achievement_rate: float
     # 그날 실적이 잡힌 오더 수
     active_order_count: int
-    # 위 두 수량이 쓰는 단위. 그날 실적이 잡힌 제품들의 단위가 갈리면 `None` 이며,
-    # 그때 그 합은 더할 수 없는 것을 더한 숫자다.
-    quantity_uom: CrossProductUom = None
+    # 위 두 수량이 각각 쓰는 단위. **계획과 실적은 서로 다른 제품 집합에서
+    # 나온다** — 계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면,
+    # 단위를 하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    planned_quantity_uom: CrossProductUom = None
+    actual_quantity_uom: CrossProductUom = None
 
 
 class MasterItemResponse(BaseModel):
@@ -315,9 +317,14 @@ class DashboardKpis(BaseModel):
     material_shortage_count: int
     today_plan_quantity: float
     today_actual_quantity: float
-    # 위 두 수량이 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의 단위이며,
-    # 추이의 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
-    today_quantity_uom: CrossProductUom = None
+    # 위 두 수량이 각각 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의
+    # 단위이며, 추이의 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+    #
+    # 계획과 실적을 나누어 싣는 것은 **둘이 서로 다른 제품 집합에서 나오기**
+    # 때문이다. 계획만 선 m² 오더와 실적만 오른 개수 오더가 오늘 함께 있으면,
+    # 단위를 하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    today_plan_quantity_uom: CrossProductUom = None
+    today_actual_quantity_uom: CrossProductUom = None
 
 
 class DashboardResponse(BaseModel):
