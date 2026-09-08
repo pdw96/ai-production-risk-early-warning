@@ -43,8 +43,9 @@ wait_for_dockerd_exit() {
   # 새 데몬을 띄우면 기동에 실패하고, docker info 가 죽어가는 옛 데몬에 붙어
   # 거짓 성공을 보고할 수 있다. (kill -0 은 권한이 없으면 EPERM 이라 생사
   # 판정에 못 쓴다. dockerd 는 root 소유다.)
-  local i
-  for i in $(seq 30); do
+  # 반복 횟수만 세고 값은 쓰지 않으므로 `_` 다. 이름을 두면 「쓰지 않는 변수」가
+  # 되어, 정말로 빠뜨린 자리와 구분되지 않는다.
+  for _ in $(seq 30); do
     pgrep -x dockerd > /dev/null || return 0
     sleep 1
   done

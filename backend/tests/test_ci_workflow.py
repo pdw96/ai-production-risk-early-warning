@@ -129,6 +129,48 @@ def test_ci_walks_the_path_the_container_actually_takes(validate_job: dict) -> N
     assert _steps(validate_job).index(migration) < _steps(validate_job).index(seeding)
 
 
+def test_every_shell_script_in_the_repository_is_checked(validate_job: dict) -> None:
+    """셸 스크립트가 검사를 지나되, **하나도 빠지지 않아야** 한다.
+
+    검사를 붙이는 것과 검사가 그 파일을 보는 것은 다른 문제다. 목록을 손으로
+    적어 두면 다음에 스크립트가 하나 늘 때 **그 하나만 조용히 검사 밖에 남는다** —
+    이 저장소가 `test_sql_portability.py` 에서 이미 같은 이유로 목록을 손으로
+    적지 않기로 한 자리다.
+
+    그래서 저장소를 훑어 찾은 셸 파일이 워크플로의 글롭에 **모두 걸리는지**를 본다.
+    """
+    step = _step_named(validate_job, "셸 스크립트 검사")
+    assert "shellcheck" in step["run"]
+
+    patterns = [
+        argument
+        for line in step["run"].splitlines()
+        if line.strip().startswith("shellcheck ") and "--version" not in line
+        for argument in line.split()[1:]
+    ]
+    assert patterns, "shellcheck 에 넘기는 경로가 하나도 없다"
+
+    covered: set[Path] = set()
+    for pattern in patterns:
+        covered.update(
+            path.relative_to(REPOSITORY_ROOT)
+            for path in REPOSITORY_ROOT.glob(pattern)
+        )
+
+    present = {
+        path.relative_to(REPOSITORY_ROOT)
+        for path in REPOSITORY_ROOT.rglob("*.sh")
+        # 저장소가 만들지 않는 것은 우리 책임이 아니다.
+        if not any(
+            part in {".git", "node_modules", ".venv", ".worktrees", ".superpowers"}
+            for part in path.parts
+        )
+    }
+
+    missing = sorted(str(path) for path in present - covered)
+    assert not missing, f"검사를 지나지 않는 셸 스크립트가 있다: {missing}"
+
+
 def test_the_backend_suite_runs_on_both_engines(validate_job: dict) -> None:
     """두 엔진 모두에서 돈다.
 

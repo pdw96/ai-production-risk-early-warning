@@ -104,6 +104,10 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   grep -qF "$SHELL_HOOK_MARKER" "$profile" && continue
   {
     printf '\n%s\n' "$SHELL_HOOK_MARKER"
+    # `$PWD` 는 **여기서 펴지면 안 된다.** 프로파일에 적히는 줄이고, 그 줄이
+    # 읽히는 시점의 작업 디렉터리를 봐야 한다. 지금 값을 구워 넣으면 준비를
+    # 돌린 자리에서만 발동한다.
+    # shellcheck disable=SC2016
     printf 'case "$PWD/" in %q*) [ -f %q ] && . %q ;; esac\n' \
       "$REPOSITORY_ROOT/" "$DATABASE_ENVIRONMENT_FILE" "$DATABASE_ENVIRONMENT_FILE"
   } >> "$profile"

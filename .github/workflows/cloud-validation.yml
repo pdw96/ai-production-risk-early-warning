@@ -58,6 +58,22 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
 
+      # ── 셸 스크립트도 검사를 하나 지난다 ────────────────────────────
+      # 이 저장소의 셸 여섯은 지금까지 **아무 정적 검사도 지나지 않았다.**
+      # `app/`은 타입 검사와 테스트 271개가 보고 `frontend/`는 `tsc`가 보는데,
+      # 기동·준비·훅을 실제로 돌리는 자리에는 아무것도 없었다.
+      #
+      # 다만 기대를 정확히 적어 둔다 — **이것이 있었어도 PR #14의 리뷰 지적
+      # 17건은 하나도 안 잡혔다.** 그것들은 셸 문법이 아니라 권한·순서·전제의
+      # 문제였다. 이 문턱이 막는 것은 다른 종류(인용·미설정 변수·글로빙)이고,
+      # 그 종류를 지금 막는 것이 하나도 없어서 세운다.
+      #
+      # ubuntu-latest 러너에 shellcheck 가 미리 깔려 있다.
+      - name: 셸 스크립트 검사
+        run: |
+          shellcheck --version
+          shellcheck .claude/hooks/*.sh .devcontainer/*.sh backend/docker-entrypoint.sh
+
       # ── 운영이 실제로 타는 길 ──────────────────────────────────────────
       # `docker-entrypoint.sh` 와 같은 차례다: 옛 데이터베이스인지 보고,
       # 마이그레이션으로 표를 맞춘 뒤, 비어 있을 때만 채운다. 지금까지 CI 는
