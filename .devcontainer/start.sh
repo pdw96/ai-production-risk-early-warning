@@ -4,6 +4,13 @@ set -euo pipefail
 # 각 백그라운드 서버를 독립 프로세스 그룹으로 띄워야 자식 프로세스까지 한 번에 정리할 수 있다.
 set -m
 
+# 준비가 PostgreSQL 로 끝났는데 서버만 SQLite 로 뜨면 화면이 빈 데이터베이스를
+# 그린다. 준비와 같은 자리에 물어 같은 답을 받는다.
+if [ -z "${DATABASE_URL:-}" ]; then
+  DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
+  export DATABASE_URL
+fi
+
 server_pids=()
 
 cleanup() {

@@ -250,7 +250,7 @@ docker compose -f compose.codespaces.yaml down     # Codespaces
 
 합성 데이터를 처음부터 다시 만들려면 `docker compose down -v`로 볼륨을 지우고 다시 올립니다. **기록해 둔 리스크 상태는 사라집니다.**
 
-`DATABASE_URL`을 주지 않으면 SQLite 파일로 떨어지며 경로는 `DATABASE_PATH`로 바꿉니다. 테스트는 이 길로 돕니다 — 파일 하나가 빠르고, 제약은 두 엔진에서 같은 뜻을 갖도록 방언별로 컴파일되기 때문입니다.
+`DATABASE_URL`을 주지 않으면 SQLite 파일로 떨어지며 경로는 `DATABASE_PATH`로 바꿉니다. **두 엔진 모두 배포되므로 CI 는 둘 다 돌립니다** — 어느 한쪽만 돌리면 다른 쪽에서만 나는 결함이 그대로 나갑니다. 그 결함은 대칭이 아닙니다: 불리언 칸의 정수처럼 PostgreSQL 만 거부하는 것이 있고, `LIKE` 의 대소문자처럼 SQLite 만 통과시켜 **개발에서만 되는** 행을 만드는 것이 있습니다. 무엇을 어떻게 돌리는지는 산문이 아니라 `.github/workflows/cloud-validation.yml` 과 그것을 읽는 `backend/tests/test_ci_workflow.py` 에 있습니다.
 
 ### 기존 devcontainer 방식과의 차이 · 포트 충돌 주의
 
@@ -297,7 +297,7 @@ bash .devcontainer/start.sh
 
 포트 3000의 **AI 생산 리스크 대시보드**를 열면 브라우저에서 화면을 직접 검증할 수 있습니다. 프론트엔드는 같은 출처의 `/api` 요청을 Codespace 내부 FastAPI로 프록시하므로 별도의 공개 API URL이 필요하지 않습니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르고 Codespace를 중지하거나 삭제합니다. SQLite 파일은 Git에 포함되지 않으며 Codespace마다 합성 데이터로 다시 생성됩니다.
 
-GitHub Actions의 `Cloud validation` 워크플로는 테스트·타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 운영 현황(`dashboard.png`), 생산관리(`orders.png`), 재고현황(`materials.png`), 창고별 재고(`warehouse-raw.png`·`warehouse-production.png`·`warehouse-products.png`), 리스크 보드(`risks.png`), 기준정보관리(`master.png`), 구매관리(`purchases.png`), 품질관리(`quality.png`), 영업관리(`sales.png`) 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
+GitHub Actions의 `Cloud validation` 워크플로는 PostgreSQL 서비스 컨테이너를 띄워 운영과 같은 길(`preflight` → `alembic upgrade head` → `app.seed --if-empty`)을 밟은 뒤 백엔드 검사를 두 엔진에서 각각 돌리고, 타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 운영 현황(`dashboard.png`), 생산관리(`orders.png`), 재고현황(`materials.png`), 창고별 재고(`warehouse-raw.png`·`warehouse-production.png`·`warehouse-products.png`), 리스크 보드(`risks.png`), 기준정보관리(`master.png`), 구매관리(`purchases.png`), 품질관리(`quality.png`), 영업관리(`sales.png`) 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
 
 ## 화면 안내
 
