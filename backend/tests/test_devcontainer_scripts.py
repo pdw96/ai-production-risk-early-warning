@@ -384,6 +384,21 @@ def test_only_the_cluster_serving_the_configured_port_is_started(tmp_path: Path)
             "pg_ctlcluster": f'printf \'%s\\n\' "$*" >> {started}',
             "psql": HEALTHY_PSQL,
             "createdb": "exit 0",
+            # 기동은 권한을 올려서 한다. root 로 돌 때는 `sh -c` 라 이 자리가
+            # 필요 없지만, CI 러너처럼 **root 가 아닐 때**는 `sudo` 를 지난다 —
+            # 그러면 진짜 `sudo` 가 `secure_path` 로 `PATH` 를 갈아 끼워 위의
+            # 가짜 명령들이 보이지 않는다. 실측으로 CI 가 여기서 빨개졌다.
+            # 옵션만 걷어내고 그대로 실행하는 `sudo` 를 둔다.
+            "sudo": (
+                "while [ $# -gt 0 ]; do\n"
+                '  case "$1" in\n'
+                "    -n) shift;;\n"
+                "    -u) shift 2;;\n"
+                "    *) break;;\n"
+                "  esac\n"
+                "done\n"
+                'exec "$@"'
+            ),
         },
     )
 
