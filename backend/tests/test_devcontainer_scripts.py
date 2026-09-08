@@ -474,120 +474,276 @@ def test_the_shell_hook_does_not_export_an_unusable_url() -> None:
     assert "[ -f %q ] &&" not in code
 
 
+def _shell_region(script: Path, first: str, last: str) -> str:
+    """`setup.sh` 의 **실제 토막**을 꺼낸다.
+
+    모양을 검사에 손으로 베껴 두면 그것이 낡는다 — 그리고 낡은 줄은 조용히
+    통과한다. 9차에 걸린 결함이 정확히 그 자리에서 살았다: 프로파일에 적히는
+    몸통이 바뀌었는데 검사는 예전 모양을 돌려 보고 초록이었다.
+
+    그래서 베끼지 않고 **가져다 돌린다.** 앵커를 못 찾으면 그 자리에서 터진다 —
+    조용히 통과하는 것보다 낫다.
+    """
+    lines = script.read_text(encoding="utf-8").splitlines()
+    begin = next(i for i, line in enumerate(lines) if line.startswith(first))
+    end = next(i for i, line in enumerate(lines[begin:], begin) if line == last)
+    return "\n".join(lines[begin : end + 1])
+
+
+def _install_hook(tmp_path: Path, database_url: str) -> tuple[str, str]:
+    """준비가 프로파일과 훅 파일에 적는 것을 그대로 만들어 낸다."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    profile = home / ".bashrc"
+    if not profile.exists():
+        profile.write_text("export EDITOR=vim\n", encoding="utf-8")
+
+    repository = tmp_path / "repo"
+    (repository / ".devcontainer").mkdir(parents=True, exist_ok=True)
+
+    region = _shell_region(SETUP_SCRIPT, "database_host=", "done")
+    script = tmp_path / "install.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        f'REPOSITORY_ROOT={repository}\n'
+        f'DATABASE_ENVIRONMENT_FILE={repository}/.devcontainer/database.env\n'
+        f'DATABASE_URL={database_url!r}\n' + region + "\n",
+        encoding="utf-8",
+    )
+    environment = _environment_without_a_url({"HOME": str(home)})
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+    hook_file = repository / ".devcontainer" / "shell-hook.sh"
+    return (
+        profile.read_text(encoding="utf-8"),
+        hook_file.read_text(encoding="utf-8") if hook_file.exists() else "",
+    )
+
+
+def _source_the_profile(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    """그 프로파일을 읽은 셸이 무엇을 들고 있는지 본다."""
+    repository = tmp_path / "repo"
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        f". {tmp_path / 'home' / '.bashrc'}\n"
+        'printf \'%s\\n\' "${DATABASE_URL:-<none>}"\n',
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        ["bash", str(runner)],
+        capture_output=True,
+        text=True,
+        cwd=repository,
+        env=_environment_without_a_url({"HOME": str(tmp_path / "home")}),
+        timeout=60,
+    )
+
+
+POSTGRESQL_URL = "postgresql+psycopg:///production_risk?host=/socket&port=5432"
+
+
 @pytest.mark.parametrize("usable", [True, False])
 def test_the_generated_shell_hook_behaves(tmp_path: Path, usable: bool) -> None:
     """만들어지는 줄을 **실제로 실행해 본다.**
 
     글자만 보면 그 줄이 문법에 맞는지도, 조건이 거짓일 때 무엇을 남기는지도
-    모른다. 그래서 `setup.sh` 가 쓰는 것과 같은 모양을 만들어 돌려 본다.
+    모른다. 그래서 준비가 적는 것을 그대로 만들어 읽혀 본다.
     """
     repository = tmp_path / "repo"
-    repository.mkdir()
-    environment_file = repository / "database.env"
-    environment_file.write_text("export DATABASE_URL=chosen\n", encoding="utf-8")
-
-    usable_script = repository / "database-usable.sh"
+    (repository / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (repository / ".devcontainer" / "database.env").write_text(
+        "export DATABASE_URL=chosen\n", encoding="utf-8"
+    )
+    usable_script = repository / ".devcontainer" / "database-usable.sh"
     usable_script.write_text(
         "#!/usr/bin/env bash\nexit %d\n" % (0 if usable else 1), encoding="utf-8"
     )
 
-    hook = tmp_path / "hook.sh"
-    hook.write_text(
-        f'case "$PWD/" in {repository}/*)\n'
-        f"  if [ -f {environment_file} ] \\\n"
-        f"     && bash {usable_script} /var/run/postgresql 5432 production_risk"
-        " > /dev/null 2>&1\n"
-        "  then\n"
-        f"    . {environment_file}\n"
-        "  fi ;;\n"
-        "esac\n"
-        'printf \'%s\\n\' "${DATABASE_URL:-<none>}"\n',
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        ["bash", str(hook)],
-        capture_output=True,
-        text=True,
-        cwd=repository,
-        env=_environment_without_a_url({}),
-        timeout=60,
-    )
+    _install_hook(tmp_path, POSTGRESQL_URL)
+    result = _source_the_profile(tmp_path)
 
     # 조건이 거짓이어도 프로파일은 깨끗하게 끝나야 한다.
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ("chosen" if usable else "<none>")
 
 
-def test_one_place_answers_whether_the_database_is_usable() -> None:
-    """그 판정은 **한 곳**에만 있다.
+def test_the_hook_is_refreshed_when_the_engine_changes(tmp_path: Path) -> None:
+    """엔진이 바뀌면 프로파일이 읽는 것도 바뀐다.
 
-    엔진을 고르는 곳과 이미 고른 주소를 다시 내보낼지 정하는 곳이 같은 질문에
-    다르게 답하면, 준비는 PostgreSQL 을 고르고 셸은 SQLite 로 도는 일이 생긴다.
-    그리고 그때 갈라지는 것은 **데이터가 어디 쌓이는가**다.
+    처음 준비가 SQLite 로 물러나면 파싱할 값이 없어 **판정 없는** 몸통이 적힌다.
+    그 뒤 준비가 PostgreSQL 을 세웠는데 표식이 있다는 이유로 건너뛰면, 프로파일에는
+    끝까지 아무것도 확인하지 않고 `database.env` 를 읽는 줄이 남는다 — 그리고
+    그것이 하는 일은 **쓸 수 없는 주소를 사람의 셸에 내보내는 것**이다.
+
+    실측(2026-09-08): 그때의 코드로 SQLite → PostgreSQL 순서로 돌리니 프로파일에
+    남은 것은 `if [ -f .../database.env ]` 한 줄뿐이었다.
+
+    표식이 있다는 것은 **몸통이 최신이라는 뜻이 아니다.**
     """
-    usable = REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"
-    assert usable.exists()
-    assert "has_schema_privilege" in usable.read_text(encoding="utf-8")
+    _, sqlite_body = _install_hook(tmp_path, "")
+    assert "database-usable.sh" not in sqlite_body
 
-    for caller in (DATABASE_SCRIPT, SETUP_SCRIPT):
-        body = "\n".join(
-            line
-            for line in caller.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        assert "database-usable.sh" in body, f"{caller.name} 이 그 판정을 부르지 않는다"
-        assert "has_schema_privilege" not in body, (
-            f"{caller.name} 이 판정을 다시 적어 두었다"
-        )
+    profile, postgresql_body = _install_hook(tmp_path, POSTGRESQL_URL)
+
+    assert "database-usable.sh" in postgresql_body, "엔진이 바뀌었는데 몸통이 낡았다"
+    # 토막은 **하나**여야 한다 — 준비를 여러 번 돌려도 쌓이지 않는다.
+    assert profile.count("ai-production-risk(") == 1
+    assert profile.count("esac") == 1
+    # 그 집 사람의 다른 줄은 건드리지 않는다.
+    assert "export EDITOR=vim" in profile
 
 
-def test_the_privileged_role_command_names_a_database_it_can_reach(
-    tmp_path: Path,
-) -> None:
-    """권한을 올려 도는 `psql` 도 **붙을 곳을 명시한다.**
+def test_an_older_hook_block_is_replaced(tmp_path: Path) -> None:
+    """예전 형태로 적힌 토막도 갈아 끼운다.
 
-    `-d` 가 없으면 `psql` 은 접속 사용자와 같은 이름의 데이터베이스를 찾는다.
-    권한을 올린 명령은 `postgres` 역할로 도니 `postgres` 데이터베이스를 향하는데,
-    그것은 지울 수 있는 데이터베이스다. 지워져 있으면 이 명령 하나가 실패하고,
-    **쓸 수 있는 클러스터를 통째로 버린 채** SQLite 로 물러난다.
+    사람의 프로파일에는 이미 지난 판의 줄이 적혀 있다. 표식이 같다는 이유로
+    건너뛰면 그 줄은 **영영** 남는다.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    repository = tmp_path / "repo"
+    (home / ".bashrc").write_text(
+        "export EDITOR=vim\n"
+        "\n"
+        f"# ai-production-risk({repository}): 개발 세션의 데이터베이스 주소\n"
+        f'case "$PWD/" in {repository}/*)\n'
+        f"  if [ -f {repository}/.devcontainer/database.env ]\n"
+        "  then\n"
+        f"    . {repository}/.devcontainer/database.env\n"
+        "  fi ;;\n"
+        "esac\n"
+        "\n"
+        "alias ll='ls -l'\n",
+        encoding="utf-8",
+    )
 
-    실측(2026-09-08, PostgreSQL 16.13): 같은 이름의 데이터베이스가 없는 역할로
-    `psql -w -qc "SELECT 1"` 을 돌리니 `FATAL: database "pgadmin8" does not
-    exist`, `-d template1` 을 주니 `1` 이었다.
+    profile, _ = _install_hook(tmp_path, POSTGRESQL_URL)
+
+    assert "shell-hook.sh" in profile
+    assert profile.count("ai-production-risk(") == 1
+    assert "database.env" not in profile, "검사 없이 읽던 예전 줄이 남았다"
+    assert "alias ll='ls -l'" in profile
+
+
+def test_the_redaction_survives_an_encoded_credential_key(tmp_path: Path) -> None:
+    """비밀번호는 **한 가지 철자로만 오지 않는다.**
+
+    URI 는 퍼센트 인코딩을 허용하고 SQLAlchemy 는 그것을 풀어서 psycopg 에
+    넘기므로 `?pass%77ord=s3cr3t` 는 **동작하는 주소**다. 실측(2026-09-08,
+    SQLAlchemy 2.x): `create_connect_args` 가 `{'password': 's3cr3t'}` 를 냈다.
+    가릴 것을 나열하는 방식은 늘 한 철자 뒤에 있으므로, **보여도 되는 것만**
+    나열한다.
+    """
+    region = _shell_region(SETUP_SCRIPT, "SAFE_QUERY_KEYS=", "}")
+    script = tmp_path / "redact.sh"
+    script.write_text(
+        region + '\nfor url in "$@"; do redact_url "$url"; printf "\\n"; done\n',
+        encoding="utf-8",
+    )
+
+    urls = [
+        "postgresql+psycopg://u@h/db?pass%77ord=s3cr3t",
+        "postgresql+psycopg://u@h/db?sslpass%77ord=s3cr3t",
+        "postgresql+psycopg://u@h/db?password=s3cr3t",
+        "postgresql+psycopg://u:pw@h/db?sslmode=require&password=s3cr3t",
+    ]
+    result = subprocess.run(
+        ["bash", str(script), *urls], capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "s3cr3t" not in result.stdout, f"비밀번호가 로그로 샜다: {result.stdout}"
+    assert "pw@" not in result.stdout
+
+    # 그러면서도 사람이 알아야 하는 것은 남는다.
+    kept = subprocess.run(
+        ["bash", str(script), POSTGRESQL_URL], capture_output=True, text=True, timeout=60
+    )
+    assert kept.stdout.strip() == POSTGRESQL_URL
+
+
+def test_the_usability_check_asks_for_database_creation(tmp_path: Path) -> None:
+    """판정은 **이 저장소가 하려는 일을 다 할 수 있는지**를 묻는다.
+
+    사람이 셸에서 곧바로 치는 것은 `pytest` 이고, 그 안의 `test_live_engine.py` 는
+    일회용 데이터베이스를 만들어 쓴다 — `CREATE DATABASE` 다. 역할이 `public` 의
+    `CREATE` 는 지녔는데 `CREATEDB` 를 잃은 상태가 실제로 있고, 프로파일 훅은
+    `database.sh` 를 거치지 않으므로 **권한을 되돌려 줄 길도 지나친다.**
+
+    실측(2026-09-08, PostgreSQL 16.13): `NOCREATEDB` 역할이 자기 소유
+    데이터베이스에서 `has_schema_privilege(..., 'CREATE')` 는 `t` 였고 `createdb` 는
+    `permission denied to create database` 였다.
     """
     stub = _stub_directory(
         tmp_path,
         {
-            "pg_isready": "exit 0",
-            # `-d` 없이 부르면 붙을 곳이 없어 실패한다 — 지워진 `postgres` 흉내.
+            # 표는 만들 수 있고 데이터베이스는 못 만드는 역할 흉내.
             "psql": (
-                "database=''\nwant=0\n"
-                'for argument in "$@"; do\n'
-                '  if [ "$want" = 1 ]; then database="$argument"; want=0; fi\n'
-                '  [ "$argument" = "-d" ] && want=1\n'
-                "done\n"
-                'if [ -z "$database" ]; then\n'
-                '  echo "FATAL: database \\"postgres\\" does not exist" >&2\n'
-                "  exit 2\n"
-                "fi\n"
                 'case "$*" in\n'
                 "  *rolcreatedb*) echo f;;\n"
-                "  *ALTER\\ ROLE*) exit 0;;\n"
+                "  *) echo t;;\n"
+                "esac"
+            )
+        },
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"),
+            "/socket",
+            "5432",
+            "production_risk",
+        ],
+        capture_output=True,
+        text=True,
+        env=_environment_without_a_url(
+            {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}
+        ),
+        timeout=60,
+    )
+
+    assert result.returncode != 0, "데이터베이스를 만들 수 없는데 쓸 수 있다고 답했다"
+
+
+def test_losing_a_creation_race_does_not_discard_postgresql(tmp_path: Path) -> None:
+    """겹쳐 돈 준비 중 **진 쪽**이 멀쩡한 데이터베이스를 버리지 않는다.
+
+    이 파일은 준비와 세션 시작 훅 양쪽에서 불리고 둘이 겹칠 수 있다. 그러면 둘 다
+    「없다」를 보고, 한쪽이 만들고, 다른 쪽은 `CREATE DATABASE` 에 `IF NOT EXISTS`
+    가 없어 실패한다. 실측(2026-09-08, PostgreSQL 16.13): `createdb` 둘을 실제로
+    겹쳐 돌리니 진 쪽이 `duplicate key value violates unique constraint
+    "pg_database_datname_index"` 로 끝났고 데이터베이스는 멀쩡히 있었다.
+
+    진 쪽이 그것을 「못 만들었다」로 읽으면 SQLite 로 물러나고, 그러면 이긴 쪽이
+    적어 둔 `database.env` 를 **지운다**. 두 세션이 서로 다른 엔진을 드는 것보다
+    나쁜 결과다.
+    """
+    created = tmp_path / "created-by-the-winner"
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            # 존재 조회는 이긴 쪽이 만들었는지에 따라 답이 달라진다.
+            "psql": (
+                'case "$*" in\n'
+                "  *pg_database*)\n"
+                f'    [ -e {created} ] && echo 1\n'
+                "    exit 0;;\n"
                 "  *has_schema_privilege*) echo t;;\n"
                 "  *) echo 1;;\n"
                 "esac"
             ),
-            "createdb": "exit 0",
-            # 권한 상승은 열어 둔다 — 막으면 이 갈래에 닿지 못한다.
-            "su": 'shift\n[ "$1" = "-c" ] && shift\nexec sh -c "$*"',
-            "sudo": (
-                'while [ "$1" = "-n" ] || [ "$1" = "-u" ]; do\n'
-                '  [ "$1" = "-u" ] && shift\n'
-                "  shift\n"
-                "done\n"
-                'exec "$@"'
-            ),
+            # 우리가 만들려는 사이에 이긴 쪽이 이미 만들어 두었다.
+            "createdb": f"touch {created}\nexit 1",
+            "su": "exit 1",
+            "sudo": "exit 1",
         },
     )
 
@@ -595,5 +751,5 @@ def test_the_privileged_role_command_names_a_database_it_can_reach(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip(), (
-        f"붙을 곳을 적지 않아 쓸 수 있는 엔진을 버렸다: {result.stderr}"
+        f"경합에서 졌다고 쓸 수 있는 엔진을 버렸다: {result.stderr}"
     )

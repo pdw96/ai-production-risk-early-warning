@@ -17,12 +17,52 @@ DATABASE_ENVIRONMENT_FILE="$REPOSITORY_ROOT/.devcontainer/database.env"
 #
 # 자격증명이 들어오는 자리가 **둘**이다. `://사용자:비밀번호@` 만 가리면 부족한데,
 # SQLAlchemy 는 질의 문자열의 키를 psycopg 에 그대로 접속 인자로 넘기므로
-# `?password=...` · `?sslpassword=...` 도 **동작하는 주소**다. 잘못된 입력이
-# 아니라 다른 표기이며, 가리지 않으면 그대로 로그에 박힌다.
+# `?password=...` · `?sslpassword=...` 도 **동작하는 주소**다.
+#
+# 그리고 그 키는 **한 가지 철자로만 오지 않는다.** URI 는 퍼센트 인코딩을
+# 허용하고 SQLAlchemy 는 그것을 풀어서 넘기므로, `?pass%77ord=s3cr3t` 는
+# psycopg 에 `password=s3cr3t` 로 도착하는 **동작하는 주소**다.
+# 실측(2026-09-08, SQLAlchemy 2.x): `make_url("...?pass%77ord=s3cr3t")` 의
+# `create_connect_args` 가 `{'password': 's3cr3t'}` 를 냈고, 그때의 가림은
+# 글자가 다르다는 이유로 그 값을 그대로 통과시켰다.
+#
+# 그래서 **방향을 뒤집는다.** 가릴 것을 나열하지 않고, **보여도 되는 것만**
+# 나열한다. 나열은 늘 한 철자 뒤에 있지만 허용 목록은 그렇지 않다 — 모르는
+# 열쇠는 가려지고, 그 실패는 「로그가 덜 친절하다」이지 「비밀이 샌다」가 아니다.
+# 사람이 로그에서 알아야 하는 것은 어느 엔진의 어느 데이터베이스인가뿐이고,
+# 그것은 아래 목록으로 충분하다.
+#
+# 사용자 정보 쪽은 인코딩으로 숨을 수 없다. 실측: `://u%3Apw@` 는 비밀번호가
+# 아니라 `u:pw` 라는 **사용자 이름**으로 풀린다 — 구분자인 `:` 는 인코딩되면
+# 구분자이기를 그만둔다.
+SAFE_QUERY_KEYS="host port dbname sslmode application_name connect_timeout"
+
 redact_url() {
-  printf '%s' "$1" | sed -E \
-    -e 's#://([^:/@]+):[^@]*@#://\1:***@#' \
-    -e 's#([?&](password|sslpassword)=)[^&]*#\1***#g'
+  local url="$1" base query pair key redacted=""
+  case "$url" in
+    *\?*)
+      base="${url%%\?*}"
+      query="${url#*\?}"
+      ;;
+    *)
+      base="$url"
+      query=""
+      ;;
+  esac
+  base="$(printf '%s' "$base" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#')"
+  if [ -z "$query" ]; then
+    printf '%s' "$base"
+    return
+  fi
+  while IFS= read -r pair; do
+    key="${pair%%=*}"
+    case " $SAFE_QUERY_KEYS " in
+      *" $key "*) : ;;
+      *) pair="${key}=***" ;;
+    esac
+    redacted="${redacted:+${redacted}&}${pair}"
+  done <<< "${query//&/$'\n'}"
+  printf '%s?%s' "$base" "$redacted"
 }
 
 python -m venv backend/.venv
@@ -137,10 +177,48 @@ if [ -z "$database_name" ]; then
     sed -n 's|^[^:]*://[^/]*/\([^?]*\).*|\1|p')"
 fi
 
+# **몸통은 프로파일이 아니라 파일에 적는다.** 예전에는 조건까지 프로파일에
+# 구워 넣고 「표식이 있으면 건너뛴다」로 두 번 적히는 것을 막았는데, 표식이
+# 있다는 것은 **몸통이 최신이라는 뜻이 아니다.** 실측(2026-09-08): 처음 준비가
+# SQLite 로 물러나면 파싱할 값이 없어 판정 없는 줄이 적히고, 나중 준비가
+# PostgreSQL 을 세워도 표식이 이미 있어 건너뛰어, 프로파일에는 끝까지
+# **아무것도 확인하지 않고 `database.env` 를 읽는 줄**이 남았다.
+#
+# 그래서 프로파일에 적히는 줄은 **영영 바뀌지 않는 한 줄**로 두고, 엔진에 따라
+# 달라지는 것은 이 파일에 적어 매번 다시 쓴다. 낡을 수 있는 자리를 없앤다.
+SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
+{
+  printf '# %s 가 준비할 때마다 다시 씁니다. 손으로 고치지 마세요.\n' \
+    ".devcontainer/setup.sh"
+  printf 'if [ -f %q ]' "$DATABASE_ENVIRONMENT_FILE"
+  if [ -n "$database_host" ] && [ -n "$database_port" ] &&
+    [ -n "$database_name" ]; then
+    printf ' \\\n   && bash %q %q %q %q > /dev/null 2>&1' \
+      "$REPOSITORY_ROOT/.devcontainer/database-usable.sh" \
+      "$database_host" "$database_port" "$database_name"
+  fi
+  printf '\nthen\n  . %q\nfi\n' "$DATABASE_ENVIRONMENT_FILE"
+} > "$SHELL_HOOK_FILE"
+
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue
-  grep -qF "$SHELL_HOOK_MARKER" "$profile" && continue
+  # 예전 형태로 적힌 것이 남아 있을 수 있다. 표식부터 그 토막의 `esac` 까지를
+  # 걷어내고 새로 적는다 — 이 줄은 이제 늘 같으므로 결과는 안정된다.
+  if grep -qF "$SHELL_HOOK_MARKER" "$profile"; then
+    awk -v marker="$SHELL_HOOK_MARKER" '
+      $0 == "" && !dropping { blanks++; next }
+      $0 == marker { dropping = 1; blanks = 0; next }
+      dropping && $0 == "esac" { dropping = 0; next }
+      dropping { next }
+      { for (; blanks > 0; blanks--) print ""; print }
+      END { for (; blanks > 0; blanks--) print "" }
+    ' "$profile" > "${profile}.production-risk"
+    # 새 파일로 갈아 끼우지 않고 **내용만** 옮긴다. 프로파일의 권한과 소유는
+    # 그 집 사람의 것이고, 준비 스크립트가 정할 것이 아니다.
+    cat "${profile}.production-risk" > "$profile"
+    rm -f "${profile}.production-risk"
+  fi
   {
     printf '\n%s\n' "$SHELL_HOOK_MARKER"
     # `$PWD` 는 **여기서 펴지면 안 된다.** 프로파일에 적히는 줄이고, 그 줄이
@@ -152,14 +230,8 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     # 거짓이어도 0 이다.
     # shellcheck disable=SC2016
     printf 'case "$PWD/" in %q*)\n' "$REPOSITORY_ROOT/"
-    printf '  if [ -f %q ]' "$DATABASE_ENVIRONMENT_FILE"
-    if [ -n "$database_host" ] && [ -n "$database_port" ] &&
-      [ -n "$database_name" ]; then
-      printf ' \\\n     && bash %q %q %q %q > /dev/null 2>&1' \
-        "$REPOSITORY_ROOT/.devcontainer/database-usable.sh" \
-        "$database_host" "$database_port" "$database_name"
-    fi
-    printf '\n  then\n    . %q\n  fi ;;\nesac\n' "$DATABASE_ENVIRONMENT_FILE"
+    printf '  if [ -f %q ]; then\n    . %q\n  fi ;;\nesac\n' \
+      "$SHELL_HOOK_FILE" "$SHELL_HOOK_FILE"
   } >> "$profile"
 done
 

@@ -238,11 +238,30 @@ fi
 
 # 유지보수용 데이터베이스를 **명시한다.** 생략하면 psql 이 사용자 이름과 같은
 # 데이터베이스에 붙으려 하고, 그런 것은 없으므로 검사가 늘 「없음」으로 답한다.
-if ! $PSQL -d "$maintenance_database" -qtAc \
-  "SELECT 1 FROM pg_database WHERE datname = '${DATABASE_NAME}'" \
-  2>/dev/null | grep -q 1; then
+database_exists() {
+  $PSQL -d "$maintenance_database" -qtAc \
+    "SELECT 1 FROM pg_database WHERE datname = '${DATABASE_NAME}'" \
+    2>/dev/null | grep -q 1
+}
+
+if ! database_exists; then
   log "데이터베이스 ${DATABASE_NAME} 을 만듭니다."
-  if ! $CREATEDB "$DATABASE_NAME" 2>/dev/null; then
+  # **만들기는 실패해도 「없다」는 뜻이 아니다.** 이 파일은 준비와 세션 시작 훅
+  # 양쪽에서 불리고 둘이 겹쳐 돌 수 있다. 그러면 둘 다 위의 검사에서 「없다」를
+  # 보고, 한쪽이 만들고, **다른 쪽은 여기서 실패한다** — `CREATE DATABASE` 에는
+  # `IF NOT EXISTS` 가 없어서 그렇다(실측: `syntax error at or near "NOT"`).
+  #
+  # 실측(2026-09-08, PostgreSQL 16.13): `createdb` 둘을 실제로 겹쳐 돌리니 진
+  # 쪽이 `duplicate key value violates unique constraint
+  # "pg_database_datname_index"` 로 끝났고, 데이터베이스는 멀쩡히 있었다.
+  #
+  # 진 쪽이 그것을 「못 만들었다」로 읽으면 SQLite 로 물러나고, 그러면 이긴 쪽이
+  # 적어 둔 `database.env` 를 **지운다**(`setup.sh` 의 else 갈래). 두 세션이 서로
+  # 다른 엔진을 들고 도는 것보다 나쁜 결과다.
+  #
+  # 그래서 실패했을 때 한 번 더 **있는지 묻는다.** 있으면 이긴 쪽이 만든 것이니
+  # 그대로 간다 — 쓸 수 있는지는 어차피 아래 판정이 마지막에 묻는다.
+  if ! $CREATEDB "$DATABASE_NAME" 2>/dev/null && ! database_exists; then
     fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 을 만들지 못했습니다."
   fi
 fi
