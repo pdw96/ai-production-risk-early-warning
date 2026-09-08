@@ -753,3 +753,145 @@ def test_losing_a_creation_race_does_not_discard_postgresql(tmp_path: Path) -> N
     assert result.stdout.strip(), (
         f"경합에서 졌다고 쓸 수 있는 엔진을 버렸다: {result.stderr}"
     )
+
+
+def test_the_redaction_survives_an_empty_username(tmp_path: Path) -> None:
+    """사용자 이름은 **없을 수도 있다.**
+
+    `postgresql+psycopg://:s3cr3t@localhost/db` 는 동작하는 주소다.
+    실측(2026-09-08, SQLAlchemy 2.0.52): 사용자 이름 `''` · 비밀번호 `s3cr3t` 로
+    읽혀 psycopg 에 `password='s3cr3t'` 로 넘어갔고, 한 글자 이상을 요구하던 가림은
+    그 값을 그대로 로그에 냈다.
+    """
+    region = _shell_region(SETUP_SCRIPT, "SAFE_QUERY_KEYS=", "}")
+    script = tmp_path / "redact.sh"
+    script.write_text(
+        region + '\nfor url in "$@"; do redact_url "$url"; printf "\\n"; done\n',
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "postgresql+psycopg://:s3cr3t@localhost/db",
+            "postgresql+psycopg://:s3cr3t@h/db?pass%77ord=t0p",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "s3cr3t" not in result.stdout, f"비밀번호가 로그로 샜다: {result.stdout}"
+    assert "t0p" not in result.stdout
+
+    # 그러면서도 **포트를 비밀번호로 잘못 읽지 않는다.** 사용자 정보는 `/` 앞에서
+    # 끝나므로 비밀번호에 날 `/` 가 올 수 없고, 허용해 두면 아래가 가려진다.
+    kept = subprocess.run(
+        ["bash", str(script), "postgresql+psycopg://h:5432/db?host=x"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert kept.stdout.strip() == "postgresql+psycopg://h:5432/db?host=x"
+
+
+def test_the_selected_url_is_published_only_after_preparation() -> None:
+    """준비가 끝나기 전에는 **아무에게도 알리지 않는다.**
+
+    기동 전 검사·마이그레이션·시드 중 하나가 실패하면 `set -e` 가 준비를 그
+    자리에서 끊는다. 그때 `database.env` 가 이미 적혀 있으면 다음 셸이 그 주소를
+    내보내고, 훅이 묻는 것은 접속과 권한뿐이라 **표가 없거나 반쯤 올라간**
+    데이터베이스도 통과한다 — 사람은 준비가 실패한 줄 모른 채 `no such table` 을
+    본다.
+
+    없는 파일은 SQLite 로 도는 것이고, 그것이 이 저장소가 실패에 대해 약속한
+    자리다.
+    """
+    # **주석을 걷고 본다.** 왜 그 차례인지를 적은 글에도 `prepare-database.sh` 가
+    # 나오고, 글자만 세면 그 글의 위치를 호출의 위치로 착각한다 — 그러면 이 검사는
+    # 순서가 뒤집혀도 초록이다(실측: 실제로 그랬다).
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    prepares = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith("bash ") and "prepare-database.sh" in line
+    )
+    publishes = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == '} > "$DATABASE_ENVIRONMENT_FILE"'
+    )
+
+    assert publishes > prepares, "준비보다 먼저 주소를 알린다"
+
+
+def test_the_preparation_sequence_is_serialized(tmp_path: Path) -> None:
+    """겹쳐 도는 준비는 **하나씩 지나간다.**
+
+    「이미 맞는가」와 「비어 있는가」는 둘 다 보고 나서 고치는 일이고, 두 프로세스가
+    사이에 끼어들면 둘 다 「아직 아니다」를 본다. 실측(2026-09-08): PostgreSQL 에서
+    `alembic upgrade head` 둘을 겹치니 진 쪽이 `duplicate key value violates unique
+    constraint "pg_type_typname_nsp_index"` 로 1, SQLite 에서 `app.seed --if-empty`
+    둘을 겹치니 `UNIQUE constraint failed: code_groups.group_code` 로 1이었다.
+
+    잠금을 **실제로 겹쳐 걸어** 본다 — 글자만 보면 그것이 서는지 알 수 없다.
+
+    겹쳤는지는 「그 순간에 남이 있는가」로 묻지 않는다. 그 물음 자체가 경합이라,
+    둘이 나란히 들어오면 둘 다 「아무도 없다」를 본다 — 검사가 검사하려던 그 결함을
+    그대로 갖게 된다. 그래서 **드나든 자취를 남기고 나중에 읽는다.** 줄을 섰다면
+    한쪽이 다 지나간 뒤 다른 쪽이 지나가므로, 자취에서 주인이 바뀌는 지점은
+    한 번뿐이다.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    trace = tmp_path / "trace"
+    stub = _stub_directory(
+        tmp_path,
+        {
+            # 준비 세 줄 대신, 드나든 자취를 남기는 것으로 바꾼다.
+            "python": (
+                f'printf "%s\\n" "$PPID" >> {trace}\n'
+                "sleep 0.3\n"
+                f'printf "%s\\n" "$PPID" >> {trace}\n'
+            )
+        },
+    )
+    backend = tmp_path / "repo" / "backend"
+    (backend / ".venv" / "bin").mkdir(parents=True)
+    (backend / ".venv" / "bin" / "python").write_text(
+        f'#!/bin/sh\nexec {stub}/python "$@"\n', encoding="utf-8"
+    )
+    (backend / ".venv" / "bin" / "python").chmod(0o755)
+    devcontainer = tmp_path / "repo" / ".devcontainer"
+    devcontainer.mkdir(parents=True)
+    (devcontainer / "prepare-database.sh").write_text(
+        PREPARE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    environment = _environment_without_a_url(
+        {"HOME": str(home), "DATABASE_URL": "postgresql+psycopg:///overlap"}
+    )
+    environment.pop("XDG_CACHE_HOME", None)
+    runs = [
+        subprocess.Popen(
+            ["bash", str(devcontainer / "prepare-database.sh")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        for _ in range(2)
+    ]
+    for run in runs:
+        assert run.wait(timeout=180) == 0, run.stderr.read()
+
+    owners = trace.read_text(encoding="utf-8").split()
+    assert len(set(owners)) == 2, f"두 쪽이 다 돌지 않았다: {owners}"
+    changes = sum(1 for before, after in zip(owners, owners[1:]) if before != after)
+    assert changes == 1, f"준비가 서로 끼어들었다: {owners}"

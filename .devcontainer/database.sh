@@ -184,13 +184,22 @@ select_maintenance_database() {
 }
 
 role="$(id -un)"
-maintenance_database="$(select_maintenance_database)"
-role_can_create=""
-if [ -n "$maintenance_database" ]; then
-  role_can_create="$($PSQL -d "$maintenance_database" -qtAc \
+
+# 「이 역할이 데이터베이스를 만들 수 있는가」를 묻는 한 곳. `t` · `f` · 빈 값
+# (역할이 없거나 물어볼 데가 없다)을 그대로 돌려준다.
+probe_role_privilege() {
+  local database
+  database="$(select_maintenance_database)"
+  if [ -z "$database" ]; then
+    return 0
+  fi
+  $PSQL -d "$database" -qtAc \
     "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
-    2>/dev/null | tr -d '[:space:]' || true)"
-fi
+    2>/dev/null | tr -d '[:space:]' || true
+}
+
+maintenance_database="$(select_maintenance_database)"
+role_can_create="$(probe_role_privilege)"
 
 # 권한을 올려 도는 명령이 붙을 곳. 위의 것과 후보는 같고 **붙어 보는 역할이**
 # 다르다 — 지금 역할이 못 붙는 데이터베이스에 `postgres` 는 붙을 수 있고, 그
@@ -207,7 +216,7 @@ if [ "$role_can_create" = "f" ]; then
   log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
   if ! run_as postgres \
     "$PSQL -d $(printf '%q' "$administrative_database") -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
-    > /dev/null 2>&1; then
+    > /dev/null 2>&1 && [ "$(probe_role_privilege)" != "t" ]; then
     fall_back_to_sqlite "역할 ${role} 에 CREATEDB 를 줄 권한을 얻지 못했습니다."
   fi
 elif [ -z "$role_can_create" ]; then
@@ -220,9 +229,18 @@ elif [ -z "$role_can_create" ]; then
   # `SUPERUSER` 를 주면 **클러스터의 모든 데이터베이스**에 대한 권한이 이
   # 개발 계정으로 도는 모든 프로세스에 영구히 붙는다 — 이 저장소와 무관한
   # 데이터베이스까지. 준비 스크립트가 조용히 할 일이 아니다.
+  #
+  # **만들기가 실패해도 「없다」는 뜻이 아니다.** 데이터베이스 생성과 똑같이,
+  # 준비와 세션 시작 훅이 겹쳐 돌면 둘 다 「역할이 없다」를 보고 한쪽만 만든다.
+  # 실측(2026-09-08, PostgreSQL 16.13): `CREATE ROLE` 둘을 겹쳐 돌리니 진 쪽이
+  # `duplicate key value violates unique constraint "pg_authid_rolname_index"`
+  # 로 끝났고, 역할은 `rolcreatedb = t` 로 멀쩡히 있었다.
+  #
+  # 진 쪽이 그것을 「권한을 얻지 못했다」로 읽으면 SQLite 로 물러나고, 그러면
+  # 이긴 쪽이 고른 PostgreSQL 을 **지운다.** 그래서 한 번 더 묻는다.
   if ! run_as postgres \
     "$PSQL -d $(printf '%q' "$administrative_database") -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
-    > /dev/null 2>&1; then
+    > /dev/null 2>&1 && [ "$(probe_role_privilege)" != "t" ]; then
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
 fi

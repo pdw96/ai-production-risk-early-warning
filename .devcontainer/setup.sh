@@ -49,7 +49,15 @@ redact_url() {
       query=""
       ;;
   esac
-  base="$(printf '%s' "$base" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#')"
+  # 사용자 이름은 **없을 수도 있다.** `postgresql+psycopg://:s3cr3t@h/db` 는
+  # 동작하는 주소이고, SQLAlchemy 는 그것을 사용자 이름 `''` · 비밀번호
+  # `s3cr3t` 로 읽어 psycopg 에 넘긴다(실측 2026-09-08, SQLAlchemy 2.0.52).
+  # 한 글자 이상을 요구하면 바로 그 형태만 가려지지 않는다.
+  #
+  # 비밀번호 쪽에서 `/` 를 뺀 이유는 따로 있다. URI 에서 사용자 정보는 `/` 앞에서
+  # 끝나므로 비밀번호에 날 `/` 가 올 수 없고(온다면 `%2F` 로 온다), 허용해 두면
+  # `://h:5432/db?options=@x` 같은 주소에서 **포트를 비밀번호로 잘못 읽는다.**
+  base="$(printf '%s' "$base" | sed -E 's#://([^:/@]*):[^@/]*@#://\1:***@#')"
   if [ -z "$query" ]; then
     printf '%s' "$base"
     return
@@ -117,20 +125,17 @@ fi
 #
 # 그럼에도 파일 권한을 좁힌다. 여러 사람이 쓰는 개발 호스트에서 기본 umask 는
 # 흔히 022 라 남이 읽을 수 있다.
-if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
-  (
-    umask 077
-    {
-      printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
-      # 표식은 `1` 이 아니라 **자기가 표시하는 그 값**을 들고 다닌다.
-      printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=%q\n' "$DATABASE_URL"
-    } > "$DATABASE_ENVIRONMENT_FILE"
-  )
-else
-  # 빈 파일이 아니라 **없는 파일**이어야 한다. 남아 있으면 지난 세션의 주소가
-  # 이번 세션의 엔진 판단을 이긴다.
-  rm -f "$DATABASE_ENVIRONMENT_FILE"
-fi
+#
+# **적는 것은 준비가 끝난 뒤다.** 이 줄이 준비보다 앞에 있으면, 기동 전 검사나
+# 마이그레이션이나 시드가 실패했을 때 `set -e` 가 여기서 스크립트를 끊는데
+# **파일은 이미 적혀 있다.** 그러면 다음 셸이 그 주소를 내보내고, 훅이 묻는
+# 것은 접속과 권한뿐이라 「표가 없거나 반쯤 올라간 데이터베이스」는 통과한다 —
+# 사람은 준비가 실패한 줄 모른 채 `no such table` 을 본다.
+#
+# 그래서 여기서는 **지우기만** 한다. 없는 파일은 SQLite 로 도는 것이고, 그것이
+# 이 저장소가 실패에 대해 약속한 자리다. 적는 것은 파일 맨 아래, 준비가 성공한
+# 뒤에 한다.
+rm -f "$DATABASE_ENVIRONMENT_FILE"
 
 # 대화형 셸이 그 파일을 읽게 한다. **이 저장소 안에서 연 셸만** 읽는다.
 #
@@ -238,6 +243,30 @@ done
 # 고른 엔진을 쓸 수 있는 상태로 만든다. 차례는 `prepare-database.sh` 한 곳에만
 # 적혀 있고, 엔진을 고르는 곳(`setup.sh` · `start.sh`)이 둘 다 그것을 부른다.
 bash "$REPOSITORY_ROOT/.devcontainer/prepare-database.sh"
+
+# **이제 알린다.** 여기까지 왔다는 것은 표가 서 있고 기준정보가 들어 있다는 뜻이다.
+#
+# 값은 `printf %q` 로 적는다 — 주소에 작은따옴표가 들어갈 수 있고(URI 사용자
+# 정보에 허용된다), 따옴표 사이에 그대로 끼워 넣으면 그 줄이 다른 뜻이 되거나
+# 아예 읽히지 않는다.
+#
+# **우리가 고른 주소만 적는다.** 사람이 준 주소에는 비밀번호가 들어 있을 수 있고,
+# 그것을 파일로 옮기면 저장소 곁에 평문 자격증명이 하나 생긴다 — 그 사람의 셸에는
+# 이미 그 값이 있으므로 옮겨 적을 이유도 없다. 우리가 고르는 주소는 유닉스 소켓
+# + peer 인증이라 비밀번호가 아예 없다.
+#
+# 그럼에도 파일 권한을 좁힌다. 여러 사람이 쓰는 개발 호스트에서 기본 umask 는
+# 흔히 022 라 남이 읽을 수 있다.
+if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
+  (
+    umask 077
+    {
+      printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
+      # 표식은 `1` 이 아니라 **자기가 표시하는 그 값**을 들고 다닌다.
+      printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=%q\n' "$DATABASE_URL"
+    } > "$DATABASE_ENVIRONMENT_FILE"
+  )
+fi
 
 if [ -n "${DATABASE_URL:-}" ]; then
   # 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은
