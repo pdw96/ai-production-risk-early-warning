@@ -19,7 +19,7 @@ PostgreSQL 을 물려 한 번, 아무것도 물리지 않아 SQLite 로 한 번 
 
 from __future__ import annotations
 
-from datetime import date
+import uuid
 
 import pytest
 import sqlalchemy as sa
@@ -43,36 +43,54 @@ from app.db.master_data_loader import load_master_data
 from app.db.models import failure_reason_is_present
 
 
-# 일회용 데이터베이스의 이름. 설정이 가리키는 것과 **다른 이름**이어야 한다.
-THROWAWAY_SUFFIX = "_live_engine_check"
+# 일회용 데이터베이스 이름의 앞부분. 뒤에는 **이번 실행에만 있는 값**이 붙는다.
+THROWAWAY_PREFIX = "live_engine_"
 
 
-def _throwaway_url(tmp_path_factory: pytest.TempPathFactory) -> sa.engine.URL:
-    """설정 주소에서 일회용 데이터베이스 주소를 만든다.
+def _admin_engine(url: sa.engine.URL) -> sa.Engine:
+    """지우려는 데이터베이스가 **아닌 곳**에 붙는 관리용 접속."""
+    return sa.create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
 
-    SQLite 는 임시 파일 하나면 되고, PostgreSQL 은 서버가 하나라 **데이터베이스를
-    새로 만들어야** 격리된다. 같은 데이터베이스에 표만 다시 만들면 옆에서 돌던
-    시드와 부딪힌다.
+
+def _make_throwaway_database(url: sa.engine.URL) -> sa.engine.URL:
+    """이번 실행만의 데이터베이스를 새로 만든다.
+
+    이름을 **고정하지 않는다.** 고정하면 그 이름은 설정 주소에서 기계적으로
+    나오므로 미리 알 수 있고, 그러면 이 검사가 남의 것을 지울 수 있다 —
+    같은 이름의 데이터베이스가 이미 있었다면 그것을, 옆에서 돌던 또 다른 실행이
+    쓰고 있었다면 그 접속까지 끊어서. 로컬 준비가 역할에 `SUPERUSER` 를 주므로
+    막아 줄 권한 경계도 없다.
+
+    그래서 이름에 이번 실행에만 있는 값을 붙이고, **만들기만 한다** —
+    `DROP ... IF EXISTS` 로 앞길을 치우지 않는다. 부딪히면 지우는 것이 아니라
+    거기서 터지는 것이 맞다.
     """
-    if is_sqlite(DATABASE_URL):
-        path = tmp_path_factory.mktemp("live-engine") / "throwaway.db"
-        return make_url(f"sqlite:///{path.as_posix()}")
-
-    url = make_url(DATABASE_URL)
-    throwaway = f"{url.database}{THROWAWAY_SUFFIX}"
-    # 관리용 접속은 지우려는 데이터베이스가 아닌 곳에 붙어야 한다.
-    admin = sa.create_engine(
-        url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
-    with admin.connect() as connection:
-        # 앞선 실행이 남긴 것이 있으면 접속이 남아 있어도 밀어낸다. 남겨 두면
-        # 그 안의 옛 표가 이번 검사의 전제가 된다.
-        connection.execute(sa.text(f'DROP DATABASE IF EXISTS "{throwaway}" WITH (FORCE)'))
-        connection.execute(sa.text(f'CREATE DATABASE "{throwaway}"'))
-    admin.dispose()
+    throwaway = f"{url.database}_{THROWAWAY_PREFIX}{uuid.uuid4().hex[:12]}"
+    admin = _admin_engine(url)
+    try:
+        with admin.connect() as connection:
+            connection.execute(sa.text(f'CREATE DATABASE "{throwaway}"'))
+    finally:
+        admin.dispose()
     # 주소를 **객체로** 돌려준다. `str(URL)` 은 비밀번호를 `***` 로 가리므로,
     # 문자열로 만들어 넘기면 그 별표가 그대로 비밀번호가 되어 접속이 거부된다.
     return url.set(database=throwaway)
+
+
+def _drop_throwaway_database(url: sa.engine.URL) -> None:
+    """이번 실행이 만든 것만 지운다.
+
+    `WITH (FORCE)` 를 쓰는 것은 여기서는 안전하다 — 지우는 대상이 방금 이
+    실행이 만든 이름이라 남의 접속이 붙어 있을 수 없다.
+    """
+    admin = _admin_engine(url)
+    try:
+        with admin.connect() as connection:
+            connection.execute(
+                sa.text(f'DROP DATABASE IF EXISTS "{url.database}" WITH (FORCE)')
+            )
+    finally:
+        admin.dispose()
 
 
 @pytest.fixture(scope="module")
@@ -86,7 +104,12 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
     터진다.
     """
     register_models()
-    url = _throwaway_url(tmp_path_factory)
+    sqlite = is_sqlite(DATABASE_URL)
+    if sqlite:
+        path = tmp_path_factory.mktemp("live-engine") / "throwaway.db"
+        url = make_url(f"sqlite:///{path.as_posix()}")
+    else:
+        url = _make_throwaway_database(make_url(DATABASE_URL))
     engine = sa.create_engine(url)
 
     config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
@@ -97,8 +120,14 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
         config.attributes["connection"] = connection
         command.upgrade(config, "head")
 
-    yield engine
-    engine.dispose()
+    try:
+        yield engine
+    finally:
+        # 만든 것을 **여기서** 치운다. 다음 실행의 앞머리에서 치우면 그 사이에
+        # 남아 있고, 이름이 고정되어야만 찾을 수 있어서 위의 위험이 되돌아온다.
+        engine.dispose()
+        if not sqlite:
+            _drop_throwaway_database(url)
 
 
 @pytest.fixture(scope="module")

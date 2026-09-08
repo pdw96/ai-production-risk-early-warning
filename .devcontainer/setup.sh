@@ -7,6 +7,12 @@ cd "$REPOSITORY_ROOT"
 # 정해진 엔진을 이후 명령들이 이어받는 자리. 이 파일 하나가 유일한 대응표다.
 DATABASE_ENVIRONMENT_FILE="$REPOSITORY_ROOT/.devcontainer/database.env"
 
+# 주소에서 비밀번호만 가린다. 어느 엔진·어느 데이터베이스인지는 사람이 봐야
+# 하므로 통째로 숨기지 않는다.
+redact_url() {
+  printf '%s' "$1" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#'
+}
+
 python -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip
 backend/.venv/bin/python -m pip install -r backend/requirements.txt
@@ -25,11 +31,22 @@ if [ "$(cat "$FRONTEND_LOCK_HASH_FILE" 2>/dev/null || true)" != "$frontend_lock_
   printf '%s' "$frontend_lock_hash" > "$FRONTEND_LOCK_HASH_FILE"
 fi
 
+# 지난 세션이 **우리가 고른** 주소를 물려줬다면 그것을 믿지 않는다. 호스트나
+# 컨테이너가 다시 뜨면 그 소켓 뒤의 서버는 내려가 있고, 주소만 물려받으면
+# 준비가 죽은 서버를 향해 돈다. 서버를 세우는 것은 `database.sh` 뿐이므로
+# 그 자리를 지나가야 한다. 사람이 직접 준 주소는 표식이 없으므로 그대로 둔다 —
+# 남의 서버를 우리가 기동할 일이 아니다.
+if [ "${PRODUCTION_RISK_DATABASE_AUTOSELECTED:-}" = "1" ]; then
+  unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED
+fi
+
 # 개발 세션도 운영과 같은 엔진을 본다. 세우지 못하는 환경이면 빈 값이 오고,
 # 그때는 예전처럼 SQLite 파일 하나로 돈다.
+database_url_is_ours=0
 if [ -z "${DATABASE_URL:-}" ]; then
   DATABASE_URL="$(bash .devcontainer/database.sh)"
   export DATABASE_URL
+  database_url_is_ours=1
 fi
 
 # 여기서 export 한 값은 **이 프로세스와 함께 사라진다.** 이 스크립트는
@@ -41,8 +58,22 @@ fi
 # 그래서 파일로 남긴다. 값은 `printf %q` 로 적는다 — 주소에 작은따옴표가 들어갈
 # 수 있고(URI 사용자 정보에 허용된다), 따옴표 사이에 그대로 끼워 넣으면 그 줄이
 # 다른 뜻이 되거나 아예 읽히지 않는다.
-if [ -n "${DATABASE_URL:-}" ]; then
-  printf 'export DATABASE_URL=%q\n' "$DATABASE_URL" > "$DATABASE_ENVIRONMENT_FILE"
+#
+# **우리가 고른 주소만 적는다.** 사람이 준 주소에는 비밀번호가 들어 있을 수 있고,
+# 그것을 파일로 옮기면 저장소 곁에 평문 자격증명이 하나 생긴다 — 그 사람의 셸에는
+# 이미 그 값이 있으므로 옮겨 적을 이유도 없다. 우리가 고르는 주소는 유닉스 소켓
+# + peer 인증이라 비밀번호가 아예 없다.
+#
+# 그럼에도 파일 권한을 좁힌다. 여러 사람이 쓰는 개발 호스트에서 기본 umask 는
+# 흔히 022 라 남이 읽을 수 있다.
+if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
+  (
+    umask 077
+    {
+      printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
+      printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=1\n'
+    } > "$DATABASE_ENVIRONMENT_FILE"
+  )
 else
   # 빈 파일이 아니라 **없는 파일**이어야 한다. 남아 있으면 지난 세션의 주소가
   # 이번 세션의 엔진 판단을 이긴다.
@@ -68,7 +99,9 @@ if [ -n "${DATABASE_URL:-}" ]; then
   .venv/bin/python -m app.db.preflight
   .venv/bin/python -m alembic upgrade head
   .venv/bin/python -m app.seed --if-empty
-  echo "PostgreSQL 을 씁니다: ${DATABASE_URL}"
+  # 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은
+  # 로그로 남으므로, 사람이 준 주소에 비밀번호가 있으면 그것이 로그에 박힌다.
+  echo "PostgreSQL 을 씁니다: $(redact_url "$DATABASE_URL")"
 else
   # SQLite 파일은 세션마다 새로 만드는 것이 안전하다 — 남아 있던 파일이 옛
   # 스키마일 수 있고, 그 파일에는 지울 수 없는 데이터가 없다.

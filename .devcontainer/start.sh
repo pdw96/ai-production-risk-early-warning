@@ -5,15 +5,18 @@ set -euo pipefail
 set -m
 
 # 준비가 PostgreSQL 로 끝났는데 서버만 SQLite 로 뜨면 화면이 빈 데이터베이스를
-# 그린다. 준비가 남긴 주소를 먼저 읽고, 없을 때만 직접 세운다.
+# 그린다. 그렇다고 **지난번에 고른 주소를 그대로 믿어서도 안 된다** — 호스트가
+# 다시 뜨면 그 소켓 뒤의 서버는 내려가 있고, 서버를 세우는 것은 `database.sh`
+# 하나뿐이라 그 자리를 건너뛰면 백엔드가 죽은 서버를 향해 뜬다.
+#
+# 그래서 **우리가 고른 주소면 다시 고른다.** 표식이 그 둘을 가른다. 사람이 준
+# 주소에는 표식이 없고, 그대로 쓴다.
+if [ "${PRODUCTION_RISK_DATABASE_AUTOSELECTED:-}" = "1" ]; then
+  unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED
+fi
 if [ -z "${DATABASE_URL:-}" ]; then
-  __database_environment_file="$(dirname "${BASH_SOURCE[0]}")/database.env"
-  if [ -f "$__database_environment_file" ]; then
-    . "$__database_environment_file"
-  else
-    DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
-    export DATABASE_URL
-  fi
+  DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
+  export DATABASE_URL
 fi
 
 server_pids=()
