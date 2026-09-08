@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -820,12 +821,12 @@ def test_the_selected_url_is_published_only_after_preparation() -> None:
     prepares = next(
         index
         for index, line in enumerate(lines)
-        if line.strip().startswith("bash ") and "prepare-database.sh" in line
+        if "prepare-database.sh" in line and "bash " in line
     )
     publishes = next(
         index
         for index, line in enumerate(lines)
-        if line.strip() == '} > "$DATABASE_ENVIRONMENT_FILE"'
+        if line.strip() == '} > "${DATABASE_ENVIRONMENT_FILE}.new"'
     )
 
     assert publishes > prepares, "준비보다 먼저 주소를 알린다"
@@ -870,9 +871,11 @@ def test_the_preparation_sequence_is_serialized(tmp_path: Path) -> None:
     (backend / ".venv" / "bin" / "python").chmod(0o755)
     devcontainer = tmp_path / "repo" / ".devcontainer"
     devcontainer.mkdir(parents=True)
-    (devcontainer / "prepare-database.sh").write_text(
-        PREPARE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    for name in ("prepare-database.sh", "lock.sh"):
+        (devcontainer / name).write_text(
+            (REPOSITORY_ROOT / ".devcontainer" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
     environment = _environment_without_a_url(
         {"HOME": str(home), "DATABASE_URL": "postgresql+psycopg:///overlap"}
@@ -951,3 +954,165 @@ def test_losing_a_role_creation_race_does_not_discard_postgresql(
     assert result.stdout.strip(), (
         f"역할 경합에서 졌다고 쓸 수 있는 엔진을 버렸다: {result.stderr}"
     )
+
+
+def test_the_hook_clears_an_inherited_dead_url(tmp_path: Path) -> None:
+    """읽지 않는 것으로는 **모자란다.**
+
+    이미 주소를 읽은 셸에서 새 셸을 열면 그 값이 `export` 로 물려받아진다. 그
+    사이에 서버가 내려갔으면 판정은 실패하는데, 훅이 「읽지 않는다」로 끝나면
+    **물려받은 죽은 주소가 그대로 남는다** — 사람은 약속된 SQLite 가 아니라 붙지
+    않는 PostgreSQL 을 향해 명령을 친다.
+
+    실측(2026-09-08): 부모가 읽은 뒤 판정이 실패하는 상황을 만드니 자식 셸의
+    `DATABASE_URL` 이 그대로였다.
+
+    **그러면서 사람이 직접 고른 주소는 남겨야 한다.** 지울지 말지의 정의는
+    `autoselected.sh` 한 곳에 있고, 훅은 그것을 그대로 쓴다.
+    """
+    repository = tmp_path / "repo"
+    devcontainer = repository / ".devcontainer"
+    devcontainer.mkdir(parents=True)
+    (devcontainer / "autoselected.sh").write_text(
+        (REPOSITORY_ROOT / ".devcontainer" / "autoselected.sh").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    chosen = "postgresql+psycopg:///production_risk?host=/socket&port=5432"
+    (devcontainer / "database.env").write_text(
+        f"export DATABASE_URL={shlex.quote(chosen)}\n"
+        f"export PRODUCTION_RISK_DATABASE_AUTOSELECTED={shlex.quote(chosen)}\n",
+        encoding="utf-8",
+    )
+
+    def _read(usable: bool, environment: dict[str, str]) -> str:
+        (devcontainer / "database-usable.sh").write_text(
+            "#!/usr/bin/env bash\nexit %d\n" % (0 if usable else 1), encoding="utf-8"
+        )
+        _install_hook(tmp_path, POSTGRESQL_URL)
+        runner = tmp_path / "child.sh"
+        runner.write_text(
+            f". {devcontainer / 'shell-hook.sh'}\n"
+            'printf \'%s\\n\' "${DATABASE_URL:-<none>}"\n',
+            encoding="utf-8",
+        )
+        done = subprocess.run(
+            ["bash", str(runner)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    inherited = _environment_without_a_url(
+        {
+            "HOME": str(tmp_path / "home"),
+            "DATABASE_URL": chosen,
+            "PRODUCTION_RISK_DATABASE_AUTOSELECTED": chosen,
+        }
+    )
+    assert _read(usable=False, environment=inherited) == "<none>", (
+        "판정이 실패했는데 물려받은 죽은 주소가 남았다"
+    )
+
+    # 사람이 직접 고른 주소는 표식이 붙지 않으므로 건드리지 않는다.
+    theirs = _environment_without_a_url(
+        {"HOME": str(tmp_path / "home"), "DATABASE_URL": "postgresql+psycopg://me@h/db"}
+    )
+    assert _read(usable=False, environment=theirs) == "postgresql+psycopg://me@h/db"
+
+    # 그리고 쓸 수 있으면 여전히 읽는다.
+    assert _read(usable=True, environment=inherited) == chosen
+
+
+def test_the_last_usable_url_survives_preparation() -> None:
+    """준비가 도는 동안 **주소가 사라지는 구간**을 만들지 않는다.
+
+    준비 차례만으로 실측 **3.4~5.3초**다. 그 사이에 열린 셸은 훅이 읽을 파일을 못
+    보고 SQLite 로 시작하며, 훅은 셸이 뜰 때 한 번만 도므로 **그 셸은 수명 내내
+    SQLite** 다 — 같은 시각에 한 사람의 두 창이 서로 다른 엔진으로 돈다.
+
+    그래서 지우는 것은 **SQLite 로 물러날 때뿐**이고, PostgreSQL 을 고른 경우에는
+    마지막으로 쓸 수 있던 파일을 준비가 끝날 때까지 그대로 둔 뒤 **한 순간에**
+    갈아 끼운다.
+    """
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    body = "\n".join(lines)
+
+    # 조건 없는 삭제가 남아 있으면 그 구간이 다시 생긴다.
+    assert '\nrm -f "$DATABASE_ENVIRONMENT_FILE"\n' not in body, (
+        "준비 앞에서 조건 없이 지운다"
+    )
+    assert 'if [ "$database_url_is_ours" != "1" ] || [ -z "${DATABASE_URL:-}" ]' in body
+
+    # 갈아 끼우는 것은 한 순간이어야 한다 — 옆에 쓰고 이름을 바꾼다.
+    assert '} > "${DATABASE_ENVIRONMENT_FILE}.new"' in body
+    assert 'mv "${DATABASE_ENVIRONMENT_FILE}.new" "$DATABASE_ENVIRONMENT_FILE"' in body
+
+    # 준비가 실패하면 그때는 지운다 — 반쯤 올라간 주소를 남기지 않는다.
+    prepares = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith("if ! bash ") and "prepare-database.sh" in line
+    )
+    assert 'rm -f "$DATABASE_ENVIRONMENT_FILE"' in lines[prepares + 1]
+
+
+def test_dependency_installation_is_serialized(tmp_path: Path) -> None:
+    """의존성 설치도 **하나씩 지나간다.**
+
+    「해시가 다른가」를 보고 나서 고치는 구간이라, 준비와 세션 시작 훅이 겹치면
+    둘 다 「다르다」를 보고 둘 다 `npm ci` 로 들어간다. 그것은 이름대로
+    node_modules 를 지우고 다시 만드는 명령이라 한쪽이 지우는 동안 다른 쪽이 쓴다.
+
+    실측(2026-09-08): 1.5초 차이로 겹쳐 돌리니 세 번 중 **두 번** 양쪽이 다
+    실패했고 `node_modules` 가 **0개**로 남았다 —
+    `npm error code ENOTEMPTY / syscall rmdir / path .../node_modules/ws/lib`.
+
+    잠금은 준비 차례와 **같은 것**을 쓴다. 여기서는 그 잠금이 실제로 서는지를
+    `lock.sh` 를 직접 겹쳐 걸어 본다 — 글자만 보면 서는지 알 수 없다.
+    """
+    assert "open_production_risk_lock" in SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    trace = tmp_path / "trace"
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        "set -uo pipefail\n"
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n"
+        'status=0\n'
+        'open_production_risk_lock "install-test-$KEY" 8 || status=$?\n'
+        '[ "$status" = 0 ] || { echo "잠금 실패 $status" >&2; exit 1; }\n'
+        f'printf "%s\\n" "$$" >> {trace}\n'
+        "sleep 0.3\n"
+        f'printf "%s\\n" "$$" >> {trace}\n',
+        encoding="utf-8",
+    )
+
+    environment = _environment_without_a_url(
+        {"HOME": str(tmp_path), "KEY": tmp_path.name}
+    )
+    environment.pop("XDG_CACHE_HOME", None)
+    runs = [
+        subprocess.Popen(
+            ["bash", str(runner)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        for _ in range(2)
+    ]
+    for run in runs:
+        assert run.wait(timeout=120) == 0, run.stderr.read()
+
+    owners = trace.read_text(encoding="utf-8").split()
+    assert len(set(owners)) == 2, f"두 쪽이 다 돌지 않았다: {owners}"
+    changes = sum(1 for before, after in zip(owners, owners[1:]) if before != after)
+    assert changes == 1, f"설치 구간이 서로 끼어들었다: {owners}"

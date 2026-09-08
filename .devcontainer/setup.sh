@@ -83,13 +83,42 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 # 잠금 파일이 바뀐 리비전을 받아 와도 그 조건은 「있다」이므로 설치를 건너뛰고,
 # 프론트 검사가 옛 의존성 위에서 돈다. 물어야 할 것은 **지금 깔린 것이 지금
 # 잠금 파일에서 나왔는가**이므로, 잠금 파일의 해시를 남겨 두고 그것을 견준다.
+#
+# **이 구간도 겹쳐 돌면 서로를 밟는다.** 「해시가 다른가」를 보고 나서 고치는
+# 구간이고, 준비와 세션 시작 훅이 겹치면 둘 다 「다르다」를 보고 둘 다 `npm ci`
+# 로 들어간다. `npm ci` 는 그 이름대로 **node_modules 를 지우고 다시 만드는**
+# 명령이라(`npm ci --help`: "Clean install a project"), 한쪽이 지우는 동안
+# 다른 쪽이 쓴다.
+#
+# 실측(2026-09-08): 사본에서 1.5초 차이로 겹쳐 돌리니 세 번 중 **두 번** 양쪽이
+# 다 실패했고 `node_modules` 가 **0개**로 남았다 —
+# `npm error code ENOTEMPTY / syscall rmdir / path .../node_modules/ws/lib` 와
+# `.../node_modules/esbuild` 의 설치 실패. 한쪽만 실패하는 것이 아니라 **둘 다**다.
+#
+# 잠금은 `prepare-database.sh` 와 같은 것을 쓴다 — 규칙이 두 곳에 적히지 않는다.
+# 저장소마다 따로 잠근다: 다른 체크아웃의 설치를 기다릴 이유가 없다.
+# shellcheck source=.devcontainer/lock.sh
+. "$REPOSITORY_ROOT/.devcontainer/lock.sh"
+
 FRONTEND_LOCK_HASH_FILE="frontend/node_modules/.package-lock-sha256"
 frontend_lock_hash="$(sha256sum frontend/package-lock.json | cut -d' ' -f1)"
+repository_key="$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
+
+# 실패를 **값으로 받는다.** `set -e` 아래에서 0 아닌 값이 그대로 나가면 잠글 자리가
+# 없는 것만으로 준비 전체가 죽는다.
+install_lock_status=0
+open_production_risk_lock "install-${repository_key}" 8 || install_lock_status=$?
+production_risk_lock_note "$install_lock_status"
+
+# **잠근 뒤에 다시 본다.** 앞 사람이 방금 설치를 끝냈다면 해시가 이미 맞다.
 if [ "$(cat "$FRONTEND_LOCK_HASH_FILE" 2>/dev/null || true)" != "$frontend_lock_hash" ]; then
   npm --prefix frontend ci
   # `npm ci` 가 node_modules 를 지우고 다시 만드므로 **끝난 뒤에** 적는다.
   printf '%s' "$frontend_lock_hash" > "$FRONTEND_LOCK_HASH_FILE"
 fi
+
+# 여기까지가 잠글 구간이다. 준비 차례는 자기 잠금을 따로 든다.
+close_production_risk_lock 8
 
 # 지난 세션이 **우리가 고른** 주소를 물려줬다면 그것을 믿지 않는다. 왜 그런지와
 # 왜 값까지 견주는지는 `autoselected.sh` 에 적혀 있다.
@@ -132,10 +161,24 @@ fi
 # 것은 접속과 권한뿐이라 「표가 없거나 반쯤 올라간 데이터베이스」는 통과한다 —
 # 사람은 준비가 실패한 줄 모른 채 `no such table` 을 본다.
 #
-# 그래서 여기서는 **지우기만** 한다. 없는 파일은 SQLite 로 도는 것이고, 그것이
-# 이 저장소가 실패에 대해 약속한 자리다. 적는 것은 파일 맨 아래, 준비가 성공한
-# 뒤에 한다.
-rm -f "$DATABASE_ENVIRONMENT_FILE"
+# 그래서 적는 것은 파일 맨 아래, 준비가 성공한 뒤다.
+#
+# **그렇다고 여기서 지우면 안 된다.** 10차에서 이 자리에 `rm -f` 를 두었는데,
+# 그러면 준비가 도는 동안 파일이 **없는 구간**이 생긴다. 실측(2026-09-08):
+# 준비 차례만으로 **3.4~5.3초**다. 그 사이에 열린 셸은 훅이 읽을 파일을 못 보고
+# SQLite 로 시작하며, 훅은 셸이 뜰 때 한 번만 도므로 **그 셸은 수명 내내 SQLite**다.
+# 짧은 구간이지만 결과가 오래간다 — 같은 시각에 한 사람의 두 창이 서로 다른
+# 엔진으로 돈다.
+#
+# 그래서 **마지막으로 쓸 수 있던 파일을 준비가 끝날 때까지 그대로 둔다.** 그것이
+# 가리키는 데이터베이스가 이미 사라졌다면 훅의 판정이 실패해 어차피 안 읽힌다 —
+# 스스로 고쳐지는 쪽이다.
+#
+# 지우는 것은 **SQLite 로 물러날 때뿐**이다. 그때는 옛 파일이 곧 틀린 값이고,
+# 지운 뒤에 열린 셸은 우리가 가려는 자리(SQLite)로 간다.
+if [ "$database_url_is_ours" != "1" ] || [ -z "${DATABASE_URL:-}" ]; then
+  rm -f "$DATABASE_ENVIRONMENT_FILE"
+fi
 
 # 대화형 셸이 그 파일을 읽게 한다. **이 저장소 안에서 연 셸만** 읽는다.
 #
@@ -192,6 +235,17 @@ fi
 # 그래서 프로파일에 적히는 줄은 **영영 바뀌지 않는 한 줄**로 두고, 엔진에 따라
 # 달라지는 것은 이 파일에 적어 매번 다시 쓴다. 낡을 수 있는 자리를 없앤다.
 SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
+#
+# **읽지 않는 것으로는 모자란다.** 이미 주소를 읽은 셸에서 새 셸을 열면 그 값이
+# `export` 로 **물려받아진다.** 그 사이에 서버가 내려갔으면 판정은 실패하는데,
+# 훅이 「읽지 않는다」로 끝나면 물려받은 죽은 주소가 그대로 남는다 — 사람은
+# 약속된 SQLite 가 아니라 붙지 않는 PostgreSQL 을 향해 명령을 친다.
+# 실측(2026-09-08): 부모가 읽은 뒤 판정이 실패하는 상황을 만드니 자식 셸의
+# `DATABASE_URL` 이 그대로였다.
+#
+# 그래서 실패했을 때 **지운다.** 다만 아무것이나 지우지 않는다 — 사람이 직접
+# `export DATABASE_URL` 로 고른 주소는 남겨야 한다. 「우리가 고른 것인가」의
+# 정의는 `autoselected.sh` 한 곳에 있으므로 그것을 그대로 쓴다.
 {
   printf '# %s 가 준비할 때마다 다시 씁니다. 손으로 고치지 마세요.\n' \
     ".devcontainer/setup.sh"
@@ -202,7 +256,15 @@ SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
       "$REPOSITORY_ROOT/.devcontainer/database-usable.sh" \
       "$database_host" "$database_port" "$database_name"
   fi
-  printf '\nthen\n  . %q\nfi\n' "$DATABASE_ENVIRONMENT_FILE"
+  printf '\nthen\n  . %q\n' "$DATABASE_ENVIRONMENT_FILE"
+  printf 'else\n'
+  printf '  . %q\n' "$REPOSITORY_ROOT/.devcontainer/autoselected.sh"
+  printf '  if production_risk_url_is_inherited_ours; then\n'
+  printf '    unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED\n'
+  printf '  fi\n'
+  # 남의 셸에 우리 함수를 두고 나오지 않는다.
+  printf '  unset -f production_risk_url_is_inherited_ours\n'
+  printf 'fi\n'
 } > "$SHELL_HOOK_FILE"
 
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
@@ -242,7 +304,13 @@ done
 
 # 고른 엔진을 쓸 수 있는 상태로 만든다. 차례는 `prepare-database.sh` 한 곳에만
 # 적혀 있고, 엔진을 고르는 곳(`setup.sh` · `start.sh`)이 둘 다 그것을 부른다.
-bash "$REPOSITORY_ROOT/.devcontainer/prepare-database.sh"
+# 실패하면 **여기서 지운다.** 준비가 끝나지 않은 주소를 들고 있는 것보다 SQLite 가
+# 낫고, 그것이 이 저장소가 실패에 대해 약속한 자리다. `set -e` 에 맡기면 옛 파일이
+# 남으므로 갈래를 직접 적는다 — 그리고 종료 코드는 그대로 내보낸다.
+if ! bash "$REPOSITORY_ROOT/.devcontainer/prepare-database.sh"; then
+  rm -f "$DATABASE_ENVIRONMENT_FILE"
+  exit 1
+fi
 
 # **이제 알린다.** 여기까지 왔다는 것은 표가 서 있고 기준정보가 들어 있다는 뜻이다.
 #
@@ -257,6 +325,10 @@ bash "$REPOSITORY_ROOT/.devcontainer/prepare-database.sh"
 #
 # 그럼에도 파일 권한을 좁힌다. 여러 사람이 쓰는 개발 호스트에서 기본 umask 는
 # 흔히 022 라 남이 읽을 수 있다.
+#
+# **갈아 끼우는 것은 한 순간이어야 한다.** 곧바로 `>` 로 쓰면 그 파일이 비어 있는
+# 찰나가 있고, 하필 그때 셸이 읽으면 주소 없이 시작한다. 옆에 다 쓴 뒤 `mv` 로
+# 옮긴다 — 같은 디렉터리라 이름 바꾸기 하나로 끝난다.
 if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
   (
     umask 077
@@ -264,8 +336,9 @@ if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
       printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
       # 표식은 `1` 이 아니라 **자기가 표시하는 그 값**을 들고 다닌다.
       printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=%q\n' "$DATABASE_URL"
-    } > "$DATABASE_ENVIRONMENT_FILE"
+    } > "${DATABASE_ENVIRONMENT_FILE}.new"
   )
+  mv "${DATABASE_ENVIRONMENT_FILE}.new" "$DATABASE_ENVIRONMENT_FILE"
 fi
 
 if [ -n "${DATABASE_URL:-}" ]; then

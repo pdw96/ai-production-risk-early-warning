@@ -45,9 +45,11 @@
 # 따로 둔다 — 서로 다른 데이터베이스를 준비하는 둘은 기다릴 이유가 없다.
 set -euo pipefail
 
-log() { echo "$@" >&2; }
+# **경로는 `cd` 하기 전에 잡는다.** 아래에서 `backend` 로 옮겨 가므로, 그 뒤에
+# `${BASH_SOURCE[0]}` 의 상대 경로를 다시 풀면 엉뚱한 곳을 가리킨다.
+DEVCONTAINER_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backend"
+cd "$DEVCONTAINER_DIRECTORY/../backend"
 
 prepare() {
   .venv/bin/python -m app.db.preflight
@@ -55,28 +57,18 @@ prepare() {
   .venv/bin/python -m app.seed --if-empty
 }
 
-# 잠금 파일은 **그 사람의 자리**에 둔다. 여럿이 쓰는 호스트에서 공용 자리에
-# 두면 남이 만든 파일에 막혀 열지 못하고, 그 실패가 준비를 끊는다.
-lock_file=""
-lock_directory="${XDG_CACHE_HOME:-$HOME/.cache}/production-risk"
-if command -v flock > /dev/null 2>&1 && mkdir -p "$lock_directory" 2> /dev/null; then
-  key="$(printf '%s' "${DATABASE_URL:-sqlite}" | sha256sum | cut -c1-16)"
-  candidate="$lock_directory/prepare-${key}.lock"
-  if : > "$candidate" 2> /dev/null; then
-    lock_file="$candidate"
-  fi
-fi
+# 잠금은 `lock.sh` 한 곳에 있다 — 준비 차례와 의존성 설치가 같은 규칙을 쓴다.
+# 데이터베이스마다 따로 잠근다: 서로 다른 것을 준비하는 둘은 기다릴 이유가 없다.
+# shellcheck source=.devcontainer/lock.sh
+. "$DEVCONTAINER_DIRECTORY/lock.sh"
 
-if [ -z "$lock_file" ]; then
-  # 잠금을 걸 자리가 없으면 그냥 간다. 겹쳐 도는 것은 드물고, **매달리는 것보다
-  # 낫다** — 이 저장소는 답할 사람이 없는 자리에서 기다리지 않기로 했다.
-  prepare
-else
-  exec 9> "$lock_file"
-  # 무한정 기다리지 않는다. 앞 사람이 멈춰 있으면 세션이 영영 뜨지 않는다.
-  # 차례 전체가 몇 초짜리이므로 5분은 넉넉하고, 넘겼다면 기다려서 될 일이 아니다.
-  if ! flock -w 300 9; then
-    log "다른 준비가 5분 넘게 끝나지 않아 기다리지 않고 진행합니다."
-  fi
-  prepare
-fi
+key="$(printf '%s' "${DATABASE_URL:-sqlite}" | sha256sum | cut -c1-16)"
+
+# **실패를 값으로 받는다.** `set -e` 아래에서 이 호출이 0 아닌 값으로 끝나면
+# 스크립트가 그 자리에서 죽는데, 잠글 자리가 없는 것은 「고장」이 아니라
+# 「잠금 없이 진행」이다. 같은 형태를 5차 리뷰에서 한 번 맞았다.
+lock_status=0
+open_production_risk_lock "prepare-${key}" 9 || lock_status=$?
+production_risk_lock_note "$lock_status"
+
+prepare

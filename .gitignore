@@ -14,3 +14,4 @@ frontend/tsconfig.tsbuildinfo
 # compose 가 읽는 데이터베이스 비밀번호. 저장소에 들어가면 안 된다.
 .env
 .devcontainer/shell-hook.sh
+.devcontainer/database.env.new
