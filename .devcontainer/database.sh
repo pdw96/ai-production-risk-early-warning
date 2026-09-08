@@ -23,22 +23,15 @@ DATABASE_NAME="production_risk"
 SOCKET_DIRECTORY="/var/run/postgresql"
 DATABASE_PORT="5432"
 
-# 목적지를 **못 박는다.** `pg_isready` · `psql` · `createdb` 는 모두 환경의
-# `PGHOST` · `PGPORT` · `PGUSER` 같은 libpq 변수를 읽는다. 개발자의 셸에 그런
-# 것이 하나라도 내보내져 있으면 조사와 생성은 그쪽 클러스터로 가는데, 이 파일이
-# 마지막에 내미는 주소는 아래의 소켓과 포트로 **고정**되어 있다. 그러면 만든
-# 곳과 알려 준 곳이 갈린다.
-#
-# 실측(2026-09-08): 같은 호스트에 16/alt(5433)를 띄우고 `PGPORT=5433` 을 내보낸
-# 채 이 스크립트를 돌리면 `production_risk` 는 5433 에 생기는데 돌려주는 주소는
-# 포트가 없어 5432 를 가리켰다.
-#
-# 그래서 우리가 약속하는 그 자리만 남기고 나머지는 전부 지운다. 여기 없는
+DEVCONTAINER_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 목적지를 **못 박는다.** 환경에 내보내져 있던 libpq 변수를 지우고(목록은
+# `libpq.sh` 한 곳에 있다) 우리가 약속하는 자리만 다시 세운다. 여기 없는
 # 클러스터라면 아래 검사가 실패하고 SQLite 로 물러난다 — 그것이 맞다. 엉뚱한
 # 곳에 데이터베이스를 만들어 놓고 성공했다고 말하는 것보다 낫다.
-unset PGHOSTADDR PGUSER PGDATABASE PGSERVICE PGSERVICEFILE PGPASSFILE \
-  PGPASSWORD PGOPTIONS PGSSLMODE PGREQUIRESSL PGCHANNELBINDING \
-  PGTARGETSESSIONATTRS PGCLIENTENCODING PGCONNECT_TIMEOUT
+# shellcheck source=.devcontainer/libpq.sh
+. "$DEVCONTAINER_DIRECTORY/libpq.sh"
+clear_ambient_libpq_environment
 export PGHOST="$SOCKET_DIRECTORY"
 export PGPORT="$DATABASE_PORT"
 
@@ -157,13 +150,37 @@ fi
 # 있고, 그러면 아래 조회가 빈 답을 내 「역할이 없다」로 읽힌다. 이어지는 생성은
 # 이미 있는 역할을 만들려다 실패하고, **쓸 수 있는 PostgreSQL 이 통째로 버려진다.**
 # 실측(2026-09-08): `postgres` 만 거부하는 클러스터를 흉내 내니 정확히 그렇게 됐다.
-select_maintenance_database() {
+#
+# **역할을 고치는 명령에도 같은 것이 필요하다.** `psql` 에 `-d` 를 주지 않으면
+# 접속 사용자와 같은 이름의 데이터베이스를 찾는다. 권한을 올려 `postgres` 역할로
+# 도는 명령은 그래서 `postgres` 데이터베이스를 향하는데, 그것은 지울 수 있는
+# 데이터베이스다. 지워져 있으면 이 명령만 실패하고, 쓸 수 있는 클러스터를 통째로
+# 버린 채 SQLite 로 물러난다. 실측(2026-09-08, PostgreSQL 16.13): 같은 이름의
+# 데이터베이스가 없는 역할로 `psql -w -qc "SELECT 1"` 을 돌리니
+# `FATAL: database "pgadmin8" does not exist`, `-d template1` 을 주니 `1`.
+#
+# 그래서 고르는 규칙은 하나로 두고 **누구로 붙어 보는지만** 바꾼다.
+probe_as_current_role() {
+  $PSQL -d "$1" -qtAc "SELECT 1" > /dev/null 2>&1
+}
+
+probe_as_postgres() {
+  run_as postgres "$PSQL -d $(printf '%q' "$1") -qtAc 'SELECT 1'" > /dev/null 2>&1
+}
+
+select_database_with() {
+  local probe="$1"
+  local candidate
   for candidate in "$DATABASE_NAME" postgres template1; do
-    if $PSQL -d "$candidate" -qtAc "SELECT 1" > /dev/null 2>&1; then
+    if "$probe" "$candidate"; then
       echo "$candidate"
       return 0
     fi
   done
+}
+
+select_maintenance_database() {
+  select_database_with probe_as_current_role
 }
 
 role="$(id -un)"
@@ -175,9 +192,21 @@ if [ -n "$maintenance_database" ]; then
     2>/dev/null | tr -d '[:space:]' || true)"
 fi
 
+# 권한을 올려 도는 명령이 붙을 곳. 위의 것과 후보는 같고 **붙어 보는 역할이**
+# 다르다 — 지금 역할이 못 붙는 데이터베이스에 `postgres` 는 붙을 수 있고, 그
+# 반대도 있다.
+administrative_database=""
+if [ "$role_can_create" = "f" ] || [ -z "$role_can_create" ]; then
+  administrative_database="$(select_database_with probe_as_postgres)"
+  if [ -z "$administrative_database" ]; then
+    fall_back_to_sqlite "권한을 올려 붙을 수 있는 데이터베이스가 없습니다."
+  fi
+fi
+
 if [ "$role_can_create" = "f" ]; then
   log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
-  if ! run_as postgres "$PSQL -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
+  if ! run_as postgres \
+    "$PSQL -d $(printf '%q' "$administrative_database") -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
     > /dev/null 2>&1; then
     fall_back_to_sqlite "역할 ${role} 에 CREATEDB 를 줄 권한을 얻지 못했습니다."
   fi
@@ -191,7 +220,8 @@ elif [ -z "$role_can_create" ]; then
   # `SUPERUSER` 를 주면 **클러스터의 모든 데이터베이스**에 대한 권한이 이
   # 개발 계정으로 도는 모든 프로세스에 영구히 붙는다 — 이 저장소와 무관한
   # 데이터베이스까지. 준비 스크립트가 조용히 할 일이 아니다.
-  if ! run_as postgres "$PSQL -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
+  if ! run_as postgres \
+    "$PSQL -d $(printf '%q' "$administrative_database") -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
     > /dev/null 2>&1; then
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
@@ -217,30 +247,17 @@ if ! $PSQL -d "$maintenance_database" -qtAc \
   fi
 fi
 
-# **붙을 수 있다는 것과 쓸 수 있다는 것도 다르다.** 위의 카탈로그 조회는 남이 만들어 둔
-# `production_risk` 도 「있다」로 답한다. 그 데이터베이스에 이 역할의 `CONNECT`
-# 이 없으면 생성을 건너뛴 채 멀쩡한 주소를 내밀게 되고, 그러면 `setup.sh` 가
-# 약속된 SQLite 로 물러나는 대신 `set -e` 아래 기동 전 검사나 Alembic 에서
-# 죽는다. 실측(2026-09-08): `REVOKE CONNECT ON DATABASE ... FROM PUBLIC` 한
-# 데이터베이스에 대해 카탈로그 조회는 `1` 을 돌려주고 접속은
-# `permission denied for database` 로 거부됐다.
+# **붙을 수 있다는 것과 쓸 수 있다는 것도 다르다.** 위의 카탈로그 조회는 남이
+# 만들어 둔 `production_risk` 도 「있다」로 답한다. 그 데이터베이스에 이 역할이
+# 표를 만들지 못하면 생성을 건너뛴 채 멀쩡한 주소를 내밀게 되고, 그러면
+# `setup.sh` 가 약속된 SQLite 로 물러나는 대신 `set -e` 아래 기동 전 검사나
+# Alembic 에서 죽는다.
 #
-# 그래서 내밀기 전에 **그 자리에서 할 일을 할 수 있는지** 묻는다. 바로 다음에
-# 오는 것이 `alembic upgrade head` 이고 그것이 하는 일은 `public` 스키마에 표를
-# 만드는 것이므로, 물어야 하는 것은 접속이 아니라 **그 스키마의 `CREATE`** 다.
-#
-# PostgreSQL 15 부터 `public` 스키마의 `CREATE` 가 `PUBLIC` 에서 회수됐다. 그래서
-# 남이 만들어 둔 데이터베이스에는 붙기는 되는데 표는 못 만드는 상태가 흔하다.
-# 실측(2026-09-08, PostgreSQL 16.13): `postgres` 가 소유한 데이터베이스에 다른
-# 역할로 붙으니 `SELECT 1` 은 `1` 을 돌려주고 `CREATE TABLE` 은
-# `permission denied for schema public` 로 거부됐다 — 지금까지의 검사는 그 사이를
-# 보지 못해 주소를 내밀었고, 죽는 것은 준비의 마이그레이션이었다.
-#
-# 이 질의는 접속도 함께 본다 — 못 붙으면 여기서 실패한다.
-if ! $PSQL -d "$DATABASE_NAME" -qtAc \
-  "SELECT has_schema_privilege(current_user, 'public', 'USAGE')
-      AND has_schema_privilege(current_user, 'public', 'CREATE')" \
-  2>/dev/null | grep -qx t; then
+# 그 판정은 **`database-usable.sh` 한 곳**에 있다. 여기와 프로파일 훅이 같은
+# 질문에 다르게 답하면, 준비는 PostgreSQL 을 고르고 셸은 SQLite 로 도는 일이
+# 생긴다. 근거와 실측은 그 파일에 적혀 있다.
+if ! bash "$DEVCONTAINER_DIRECTORY/database-usable.sh" \
+  "$SOCKET_DIRECTORY" "$DATABASE_PORT" "$DATABASE_NAME"; then
   fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 에 표를 만들 수 없습니다."
 fi
 

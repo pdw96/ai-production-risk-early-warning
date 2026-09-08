@@ -81,6 +81,39 @@ def _throwaway_name(source: str | None) -> str:
     return f"{stem}{suffix}"
 
 
+def _with_the_database_in_one_place(url: sa.engine.URL) -> sa.engine.URL:
+    """이름이 적힐 수 있는 두 자리를 **하나로 모은다.**
+
+    psycopg 는 데이터베이스를 경로로도 받고 질의의 `dbname` 으로도 받는데,
+    **질의 쪽이 이긴다.** 그래서 `url.set(database=...)` 로 갈아 끼운 이름은
+    질의에 `dbname` 이 남아 있으면 아무 일도 하지 않는다 — 일회용 데이터베이스는
+    만들어지되 엔진은 설정이 가리키는 **진짜 데이터베이스**에 붙고, 이 파일이
+    표를 지우고 다시 만드는 동안 개발자의 데이터가 사라진다. 뒷정리는 쓰이지도
+    않은 일회용 쪽을 지우므로 흔적조차 남지 않는다.
+
+    실측(2026-09-08, SQLAlchemy 2.x · psycopg 3.3.5):
+    `postgresql+psycopg:///?dbname=repro_real&host=...` 에 `set(database=...)` 를
+    걸어도 `create_connect_args` 가 내는 `dbname` 은 `repro_real` 이었고, 그
+    엔진으로 붙어 `current_database()` 를 물으니 `repro_real` 이었다. 그 자리에서
+    남의 표가 보였고, 지워졌다.
+
+    앞선 「경로가 빈 주소」 고침은 이 경우를 덮지 못한다. 그쪽은 이름이 **없는**
+    주소였고, 이쪽은 이름이 **다른 자리에 있는** 주소다.
+
+    그래서 붙기 전에 질의의 `dbname` 을 경로로 옮긴다. 이 뒤로는 이름이 한
+    자리에만 있으므로, 갈아 끼우는 것도 읽는 것도 그 한 자리를 보면 된다.
+    """
+    dbname = url.query.get("dbname")
+    if dbname is None:
+        return url
+    # 같은 열쇠가 여러 번 오면 SQLAlchemy 는 튜플로 준다. libpq 는 마지막 것을
+    # 쓰므로 여기서도 마지막 것을 택한다.
+    if isinstance(dbname, tuple):
+        dbname = dbname[-1]
+    query = {key: value for key, value in url.query.items() if key != "dbname"}
+    return url.set(query=query, database=dbname)
+
+
 def _admin_engine(url: sa.engine.URL) -> sa.Engine:
     """일회용 데이터베이스를 만들고 지울 때 붙는 관리용 접속.
 
@@ -164,7 +197,7 @@ def live_engine(tmp_path_factory: pytest.TempPathFactory) -> sa.Engine:
         path = tmp_path_factory.mktemp("live-engine") / "throwaway.db"
         url = make_url(f"sqlite:///{path.as_posix()}")
     else:
-        source = make_url(DATABASE_URL)
+        source = _with_the_database_in_one_place(make_url(DATABASE_URL))
         url = _make_throwaway_database(source)
     engine = sa.create_engine(url)
 
@@ -412,3 +445,45 @@ def test_the_throwaway_name_survives_a_url_without_a_database() -> None:
         assert THROWAWAY_PREFIX in name
         assert len(name.encode("utf-8")) <= MAXIMUM_IDENTIFIER_BYTES
         assert _throwaway_name(source) != name
+
+
+def test_the_throwaway_engine_never_reaches_the_configured_database() -> None:
+    """일회용으로 갈아 끼운 이름이 **실제 접속에도 닿는지** 본다.
+
+    psycopg 는 데이터베이스를 경로로도 질의의 `dbname` 으로도 받고, **질의 쪽이
+    이긴다.** 그래서 `dbname` 이 남아 있으면 `set(database=...)` 는 아무 일도 하지
+    않는다 — 일회용 데이터베이스는 만들어지되 엔진은 설정이 가리키는 진짜
+    데이터베이스에 붙고, 이 파일이 표를 지우고 다시 만드는 동안 개발자의 데이터가
+    사라진다. 뒷정리는 쓰이지도 않은 쪽을 지우므로 흔적조차 남지 않는다.
+
+    그래서 이름을 보는 것으로는 모자란다. **드라이버에 실제로 넘어가는 값**을
+    본다 — 위험이 사는 자리가 거기다.
+    """
+    for source in (
+        "postgresql+psycopg:///?dbname=production_risk&host=/tmp&port=5432",
+        "postgresql+psycopg://user@localhost/production_risk?dbname=elsewhere",
+        "postgresql+psycopg:///production_risk?host=/tmp&port=5432",
+    ):
+        url = _with_the_database_in_one_place(make_url(source))
+        throwaway = url.set(database=_throwaway_name(url.database))
+        _, arguments = throwaway.get_dialect()().create_connect_args(throwaway)
+
+        assert arguments["dbname"] == throwaway.database
+        assert THROWAWAY_PREFIX in arguments["dbname"]
+        assert "production_risk" != arguments["dbname"]
+
+
+def test_the_readable_stem_survives_a_database_named_in_the_query() -> None:
+    """이름을 모으고 나면 읽는 사람을 위한 앞부분도 되돌아온다.
+
+    질의에만 이름이 있는 주소에서 `url.database` 는 `None` 이라, 모으지 않으면
+    일회용 이름은 꼬리만 남는다. 안전에는 문제가 없지만 `\\dl` 로 들여다본 사람이
+    그것이 무엇인지 알 수 없다.
+    """
+    url = _with_the_database_in_one_place(
+        make_url("postgresql+psycopg:///?dbname=production_risk&host=/tmp")
+    )
+
+    assert url.database == "production_risk"
+    assert "dbname" not in url.query
+    assert _throwaway_name(url.database).startswith("production_risk_")

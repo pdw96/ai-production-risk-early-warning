@@ -445,25 +445,37 @@ def test_a_database_we_cannot_create_tables_in_is_not_advertised(tmp_path: Path)
     assert "표를 만들 수 없습니다" in result.stderr
 
 
-def test_the_shell_hook_does_not_export_a_dead_url() -> None:
-    """프로파일 줄은 **살아 있는지 보고 나서** 주소를 내보낸다.
+def test_the_shell_hook_does_not_export_an_unusable_url() -> None:
+    """프로파일 줄은 **쓸 수 있는지 보고 나서** 주소를 내보낸다.
 
     devcontainer 가 다시 뜰 때 도는 것은 `postStartCommand` 하나뿐이라
     `setup.sh` 도 `start.sh` 도 돌지 않는다. 그 상태에서 이 줄이 지난 세션의 주소를
-    그대로 내보내면 사람이 곧바로 치는 `pytest` 가 내려가 있는 서버를 향해 돈다.
+    그대로 내보내면 사람이 곧바로 치는 `pytest` 가 쓸 수 없는 자리를 향해 돈다.
+
+    묻는 것은 **서버가 사는지가 아니다.** `pg_isready` 는 그 문서가 못 박듯 올바른
+    사용자·데이터베이스 값을 요구하지 않으므로, `production_risk` 가 지워졌거나
+    이 역할이 권한을 잃어도 초록으로 답한다. 그래서 `database.sh` 가 엔진을 고를
+    때 쓰는 **그 판정**을 그대로 부른다 — 둘이 다르게 답하면 준비는 PostgreSQL 을
+    고르고 셸은 SQLite 로 돈다.
 
     그리고 조건이 거짓일 때 **0 으로 끝나야 한다** — `&&` 사슬은 0 아닌 값을
     남기고 그것이 새 셸의 `$?` 가 된다(실측: 파일 없음 1, 서버 죽음 2).
     """
     setup = SETUP_SCRIPT.read_text(encoding="utf-8")
-    assert "pg_isready" in setup, "프로파일 줄이 살아 있는지 보지 않는다"
+    # **주석을 걷고 본다.** 왜 그렇게 했는지를 적은 글에는 `pg_isready` 가 나오고,
+    # 글자만 세면 그 글 때문에 이 검사가 늘 통과한다 — 무는 검사가 아니게 된다.
+    code = "\n".join(
+        line for line in setup.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "database-usable.sh" in code, "프로파일 줄이 쓸 수 있는지 보지 않는다"
+    assert "pg_isready" not in code, "살아 있는지만 보는 판정이 남아 있다"
     # 사슬이 아니라 `if` 여야 조건이 거짓일 때 0 으로 끝난다.
-    assert "if [ -f %q ]" in setup
-    assert "[ -f %q ] &&" not in setup
+    assert "if [ -f %q ]" in code
+    assert "[ -f %q ] &&" not in code
 
 
-@pytest.mark.parametrize("alive", [True, False])
-def test_the_generated_shell_hook_behaves(tmp_path: Path, alive: bool) -> None:
+@pytest.mark.parametrize("usable", [True, False])
+def test_the_generated_shell_hook_behaves(tmp_path: Path, usable: bool) -> None:
     """만들어지는 줄을 **실제로 실행해 본다.**
 
     글자만 보면 그 줄이 문법에 맞는지도, 조건이 거짓일 때 무엇을 남기는지도
@@ -474,15 +486,17 @@ def test_the_generated_shell_hook_behaves(tmp_path: Path, alive: bool) -> None:
     environment_file = repository / "database.env"
     environment_file.write_text("export DATABASE_URL=chosen\n", encoding="utf-8")
 
-    probe = tmp_path / "stub-bin" / "pg_isready"
-    _stub_directory(tmp_path, {"pg_isready": "exit 0" if alive else "exit 2"})
+    usable_script = repository / "database-usable.sh"
+    usable_script.write_text(
+        "#!/usr/bin/env bash\nexit %d\n" % (0 if usable else 1), encoding="utf-8"
+    )
 
     hook = tmp_path / "hook.sh"
     hook.write_text(
         f'case "$PWD/" in {repository}/*)\n'
         f"  if [ -f {environment_file} ] \\\n"
-        "     && command -v pg_isready > /dev/null 2>&1 \\\n"
-        "     && pg_isready -q -h /var/run/postgresql -p 5432 > /dev/null 2>&1\n"
+        f"     && bash {usable_script} /var/run/postgresql 5432 production_risk"
+        " > /dev/null 2>&1\n"
         "  then\n"
         f"    . {environment_file}\n"
         "  fi ;;\n"
@@ -496,12 +510,90 @@ def test_the_generated_shell_hook_behaves(tmp_path: Path, alive: bool) -> None:
         capture_output=True,
         text=True,
         cwd=repository,
-        env=_environment_without_a_url(
-            {"PATH": f"{probe.parent}{os.pathsep}{os.environ['PATH']}"}
-        ),
+        env=_environment_without_a_url({}),
         timeout=60,
     )
 
     # 조건이 거짓이어도 프로파일은 깨끗하게 끝나야 한다.
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == ("chosen" if alive else "<none>")
+    assert result.stdout.strip() == ("chosen" if usable else "<none>")
+
+
+def test_one_place_answers_whether_the_database_is_usable() -> None:
+    """그 판정은 **한 곳**에만 있다.
+
+    엔진을 고르는 곳과 이미 고른 주소를 다시 내보낼지 정하는 곳이 같은 질문에
+    다르게 답하면, 준비는 PostgreSQL 을 고르고 셸은 SQLite 로 도는 일이 생긴다.
+    그리고 그때 갈라지는 것은 **데이터가 어디 쌓이는가**다.
+    """
+    usable = REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"
+    assert usable.exists()
+    assert "has_schema_privilege" in usable.read_text(encoding="utf-8")
+
+    for caller in (DATABASE_SCRIPT, SETUP_SCRIPT):
+        body = "\n".join(
+            line
+            for line in caller.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "database-usable.sh" in body, f"{caller.name} 이 그 판정을 부르지 않는다"
+        assert "has_schema_privilege" not in body, (
+            f"{caller.name} 이 판정을 다시 적어 두었다"
+        )
+
+
+def test_the_privileged_role_command_names_a_database_it_can_reach(
+    tmp_path: Path,
+) -> None:
+    """권한을 올려 도는 `psql` 도 **붙을 곳을 명시한다.**
+
+    `-d` 가 없으면 `psql` 은 접속 사용자와 같은 이름의 데이터베이스를 찾는다.
+    권한을 올린 명령은 `postgres` 역할로 도니 `postgres` 데이터베이스를 향하는데,
+    그것은 지울 수 있는 데이터베이스다. 지워져 있으면 이 명령 하나가 실패하고,
+    **쓸 수 있는 클러스터를 통째로 버린 채** SQLite 로 물러난다.
+
+    실측(2026-09-08, PostgreSQL 16.13): 같은 이름의 데이터베이스가 없는 역할로
+    `psql -w -qc "SELECT 1"` 을 돌리니 `FATAL: database "pgadmin8" does not
+    exist`, `-d template1` 을 주니 `1` 이었다.
+    """
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            # `-d` 없이 부르면 붙을 곳이 없어 실패한다 — 지워진 `postgres` 흉내.
+            "psql": (
+                "database=''\nwant=0\n"
+                'for argument in "$@"; do\n'
+                '  if [ "$want" = 1 ]; then database="$argument"; want=0; fi\n'
+                '  [ "$argument" = "-d" ] && want=1\n'
+                "done\n"
+                'if [ -z "$database" ]; then\n'
+                '  echo "FATAL: database \\"postgres\\" does not exist" >&2\n'
+                "  exit 2\n"
+                "fi\n"
+                'case "$*" in\n'
+                "  *rolcreatedb*) echo f;;\n"
+                "  *ALTER\\ ROLE*) exit 0;;\n"
+                "  *has_schema_privilege*) echo t;;\n"
+                "  *) echo 1;;\n"
+                "esac"
+            ),
+            "createdb": "exit 0",
+            # 권한 상승은 열어 둔다 — 막으면 이 갈래에 닿지 못한다.
+            "su": 'shift\n[ "$1" = "-c" ] && shift\nexec sh -c "$*"',
+            "sudo": (
+                'while [ "$1" = "-n" ] || [ "$1" = "-u" ]; do\n'
+                '  [ "$1" = "-u" ] && shift\n'
+                "  shift\n"
+                "done\n"
+                'exec "$@"'
+            ),
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip(), (
+        f"붙을 곳을 적지 않아 쓸 수 있는 엔진을 버렸다: {result.stderr}"
+    )

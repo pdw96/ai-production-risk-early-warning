@@ -111,12 +111,31 @@ fi
 # 향해** 돈다. 실측(2026-09-08): 클러스터를 내린 뒤 그 파일을 읽은 셸에서
 # `connection to server on socket ... failed`.
 #
-# `pg_isready` 는 접속 한 번이라 셸이 뜨는 데 얹히지 않는다. 죽어 있으면 아무것도
-# 내보내지 않고, 그러면 예전처럼 SQLite 파일로 돈다 — 죽은 주소를 들고 있는 것보다
-# 낫다. 서버를 세우는 것은 여전히 `database.sh` 하나뿐이고, 그것을 부르는 것은
-# `setup.sh` 와 `start.sh` 다.
+# 묻는 것은 **서버가 사는지가 아니라 쓸 수 있는지**다. 셋은 다른 질문이고,
+# `pg_isready` 는 앞의 것에만 답한다 — 그 문서가 「올바른 사용자·비밀번호·
+# 데이터베이스 값은 필요하지 않다」고 못 박는다. 실측(2026-09-08): 없는
+# 데이터베이스를 향해 `pg_isready` 는 종료코드 0, 같은 자리로 붙인 `psql` 은
+# `FATAL: database "..." does not exist` 로 2. 그러면 `production_risk` 가
+# 지워졌거나 이 역할이 권한을 잃은 뒤에도 이 줄은 그 주소를 내보내고, 사람이
+# 곧바로 치는 명령이 약속된 SQLite 대신 그 자리에서 죽는다.
+#
+# 그래서 `database.sh` 가 엔진을 고를 때 쓰는 **그 판정**을 그대로 부른다
+# (`database-usable.sh`). 둘이 같은 질문에 다르게 답하면, 준비는 PostgreSQL 을
+# 고르고 셸은 SQLite 로 도는 일이 생긴다. 실측(2026-09-08): 접속 한 번이라
+# 35밀리초 — 셸이 뜨는 데 얹히지 않는다.
+#
+# 쓸 수 없으면 아무것도 내보내지 않고, 그러면 예전처럼 SQLite 파일로 돈다 —
+# 죽은 주소를 들고 있는 것보다 낫다. 서버를 세우는 것은 여전히 `database.sh`
+# 하나뿐이고, 그것을 부르는 것은 `setup.sh` 와 `start.sh` 다.
 database_host="$(printf '%s' "${DATABASE_URL:-}" | sed -n 's/.*[?&]host=\([^&]*\).*/\1/p')"
 database_port="$(printf '%s' "${DATABASE_URL:-}" | sed -n 's/.*[?&]port=\([^&]*\).*/\1/p')"
+# 이름은 **두 자리**에 있을 수 있다. `database.sh` 는 경로에 적어 내주지만,
+# psycopg 는 질의의 `dbname` 도 받고 그쪽이 경로를 이긴다.
+database_name="$(printf '%s' "${DATABASE_URL:-}" | sed -n 's/.*[?&]dbname=\([^&]*\).*/\1/p')"
+if [ -z "$database_name" ]; then
+  database_name="$(printf '%s' "${DATABASE_URL:-}" |
+    sed -n 's|^[^:]*://[^/]*/\([^?]*\).*|\1|p')"
+fi
 
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -134,10 +153,11 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     # shellcheck disable=SC2016
     printf 'case "$PWD/" in %q*)\n' "$REPOSITORY_ROOT/"
     printf '  if [ -f %q ]' "$DATABASE_ENVIRONMENT_FILE"
-    if [ -n "$database_host" ] && [ -n "$database_port" ]; then
-      printf ' \\\n     && command -v pg_isready > /dev/null 2>&1'
-      printf ' \\\n     && pg_isready -q -h %q -p %q > /dev/null 2>&1' \
-        "$database_host" "$database_port"
+    if [ -n "$database_host" ] && [ -n "$database_port" ] &&
+      [ -n "$database_name" ]; then
+      printf ' \\\n     && bash %q %q %q %q > /dev/null 2>&1' \
+        "$REPOSITORY_ROOT/.devcontainer/database-usable.sh" \
+        "$database_host" "$database_port" "$database_name"
     fi
     printf '\n  then\n    . %q\n  fi ;;\nesac\n' "$DATABASE_ENVIRONMENT_FILE"
   } >> "$profile"
