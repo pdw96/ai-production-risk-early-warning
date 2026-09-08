@@ -26,6 +26,7 @@ export function FinishedGoodsTable({
             <th scope="col">출하 가능</th>
             <th scope="col">검사 대기</th>
             <th scope="col">불합격</th>
+            <th scope="col">입고 대기</th>
             <th scope="col">만료</th>
             <th scope="col">보유 합계</th>
           </tr>
@@ -40,13 +41,16 @@ export function FinishedGoodsTable({
                 </span>
               </td>
               <td className="numeric-cell">{format_shelf_life(product.shelf_life_days)}</td>
-              <td className="numeric-cell">{format_quantity(product.releasable_stock)}</td>
+              <td className="numeric-cell">{format_quantity(product.releasable_stock, product.stock_uom)}</td>
               <td className="numeric-cell">
-                {format_quantity(product.inspection_pending_stock)}
+                {format_quantity(product.inspection_pending_stock, product.stock_uom)}
               </td>
-              <td className="numeric-cell">{format_quantity(product.rejected_stock)}</td>
-              <td className="numeric-cell">{format_quantity(product.expired_stock)}</td>
-              <td className="numeric-cell">{format_quantity(product.total_lot_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(product.rejected_stock, product.stock_uom)}</td>
+              <td className="numeric-cell">
+                {format_quantity(product.intake_pending_stock, product.stock_uom)}
+              </td>
+              <td className="numeric-cell">{format_quantity(product.expired_stock, product.stock_uom)}</td>
+              <td className="numeric-cell">{format_quantity(product.total_lot_quantity, product.stock_uom)}</td>
             </tr>
           ))}
         </tbody>

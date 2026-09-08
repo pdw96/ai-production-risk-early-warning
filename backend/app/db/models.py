@@ -3,28 +3,46 @@ from __future__ import annotations
 from datetime import date
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     UniqueConstraint,
 )
+from sqlalchemy import and_, literal_column, or_
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql.expression import ColumnElement
+from sqlalchemy.types import String as StringType
 
 from app.core.config import (
+    BOM_LEVELS,
+    DEFECTIVE_STOCK,
     FINISHED_GOODS_WAREHOUSES,
+    FINISHED_ITEM,
+    GOOD_STOCK,
     INCOMING_INSPECTION,
     INSPECTION_RESULTS,
     INSPECTION_TYPES,
+    ITEM_CODE_PREFIXES,
+    ITEM_PHASES,
+    ITEM_TYPES,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
     PRODUCT_WAREHOUSE,
     PROCESS_INSPECTION,
+    QC_FAILED,
     QC_PASSED,
     QC_STATUSES,
+    RAW_ITEM,
+    SEMI_FINISHED_ITEM,
+    STOCK_TYPES,
 )
+from app.core import codes
 from app.db.base import Base
 
 
@@ -41,10 +59,109 @@ _ALLOWED_FINISHED_GOODS_WAREHOUSES_SQL = _sql_value_list(FINISHED_GOODS_WAREHOUS
 _ALLOWED_QC_STATUSES_SQL = _sql_value_list(QC_STATUSES)
 _ALLOWED_INSPECTION_TYPES_SQL = _sql_value_list(INSPECTION_TYPES)
 _ALLOWED_INSPECTION_RESULTS_SQL = _sql_value_list(INSPECTION_RESULTS)
+_ALLOWED_ITEM_TYPES_SQL = _sql_value_list(ITEM_TYPES)
+_ALLOWED_STOCK_TYPES_SQL = _sql_value_list(STOCK_TYPES)
+_ALLOWED_ITEM_PHASES_SQL = _sql_value_list(ITEM_PHASES)
+_ALLOWED_BOM_LEVELS_SQL = ", ".join(str(level) for level in BOM_LEVELS)
 
-# SQLite 의 1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 통과해
-# 화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 2인자 형태를 쓴다.
-_BLANK_CHARACTERS_SQL = "' ' || char(9) || char(10) || char(13)"
+def _reject_overlapping_prefixes(prefixes: dict[str, str]) -> None:
+    """어느 접두도 다른 접두의 앞부분이어서는 안 된다.
+
+    아래 제약은 접두마다 `(유형 = X) = (코드 LIKE 'P%')` 를 **모두** 요구한다.
+    한 접두가 다른 접두의 앞부분이면 긴 쪽에 맞는 코드가 두 LIKE 를 동시에
+    만족하고, 그러면 서로 다른 유형에 대한 등식이 함께 참일 수 없어 **그 코드는
+    어떤 유형으로도 넣을 수 없다.** 지금 값(FG-·SF-·RM-)에는 중첩이 없으므로
+    이것은 다음에 접두를 더하는 사람을 위한 방어다 — 조용히 거부당하는 것보다
+    여기서 터지는 편이 낫다.
+    """
+    for item_type, prefix in prefixes.items():
+        for other_type, other_prefix in prefixes.items():
+            if item_type == other_type:
+                continue
+            if prefix.startswith(other_prefix):
+                raise ValueError(
+                    f"품목 접두가 겹칩니다: {item_type}='{prefix}' 가"
+                    f" {other_type}='{other_prefix}' 로 시작합니다."
+                )
+
+
+_reject_overlapping_prefixes(ITEM_CODE_PREFIXES)
+
+# 접두는 유형과 유일성만 맡는다(지적 ⑯). 유형과 접두는 정의상 서로를 결정하므로
+# 양방향으로 건다 — 창고와 검사 결과처럼 나중에 갈라질 수 있는 두 사실이 아니라,
+# 접두가 곧 유형의 표기이기 때문이다.
+# `LIKE` 를 쓰지 않는다. SQLite 의 `LIKE` 는 ASCII 에 대해 **대소문자를 가리지
+# 않고** PostgreSQL 의 `LIKE` 는 가린다 — `code = 'fg-01'` 인 완제품이 개발과
+# 테스트(SQLite)는 통과하고 운영(PostgreSQL)에서 거부된다. 두 엔진에서 제약이
+# 같은 뜻이어야 한다는 것이 이 저장소가 엔진을 옮긴 이유 중 하나이므로,
+# 대소문자를 가리는 `substr` 비교로 적는다.
+_ITEM_CODE_PREFIX_SQL = " AND ".join(
+    f"((item_type = '{item_type}')"
+    f" = (substr(code, 1, {len(prefix)}) = '{prefix}'))"
+    for item_type, prefix in ITEM_CODE_PREFIXES.items()
+)
+
+class BlankTrimmed(ColumnElement):
+    """양끝의 공백·탭·개행을 걷어낸 값.
+
+    1인자 `trim()` 은 공백(0x20)만 지운다. 탭·개행만 담긴 사유가 그대로 통과해
+    화면에는 빈 칸으로 그려지므로, 지울 문자를 명시한 형태가 필요하다.
+
+    그런데 그 형태의 이름이 엔진마다 다르다 — SQLite 는 `trim(x, y)` 이고
+    PostgreSQL 은 `btrim(x, y)` 이며, 문자 코드를 만드는 함수도 `char` 과 `chr`
+    로 갈린다. 그래서 SQL 을 문자열로 박지 않고 **방언이 정하게** 한다. 문자열로
+    박으면 엔진을 옮길 때 CHECK 제약이 조용히 만들어지지 않거나 터진다.
+    """
+
+    type = StringType()
+    inherit_cache = True
+
+    def __init__(self, column_name: str) -> None:
+        self.column_name = column_name
+
+
+@compiles(BlankTrimmed, "sqlite")
+def _compile_trim_blank_sqlite(element: BlankTrimmed, compiler, **_kw: object) -> str:
+    return (
+        f"trim({element.column_name},"
+        " ' ' || char(9) || char(10) || char(13))"
+    )
+
+
+@compiles(BlankTrimmed, "postgresql")
+def _compile_trim_blank_postgresql(
+    element: BlankTrimmed, compiler, **_kw: object
+) -> str:
+    return (
+        f"btrim({element.column_name},"
+        " ' ' || chr(9) || chr(10) || chr(13))"
+    )
+
+
+@compiles(BlankTrimmed)
+def _compile_trim_blank_default(
+    element: BlankTrimmed, compiler, **_kw: object
+) -> str:
+    """표준 SQL 형태. 문자 집합을 리터럴로 적어 함수 이름 차이를 피한다."""
+    return f"trim(both ' \t\n\r' from {element.column_name})"
+
+
+def failure_reason_is_present() -> ColumnElement:
+    """「불합격이면 사유가 비어 있지 않다」를 나타내는 식.
+
+    마이그레이션도 이 함수를 부른다. 자동 생성이 구워 낸 SQL 문자열을 그대로
+    두면 SQLite 문법이 마이그레이션에 박혀, PostgreSQL 에서는 표가 만들어지지
+    않거나 뜻이 다른 제약이 선다 — 제약으로 규칙을 지키는 구조에서 그것은
+    규칙이 조용히 사라지는 일이다.
+    """
+    return or_(
+        literal_column("result") == QC_PASSED,
+        and_(
+            literal_column("reason").is_not(None),
+            BlankTrimmed("reason") != "",
+        ),
+    )
+
 
 # 검사 유형마다 대상 테이블이 다르므로 nullable FK 를 셋 두고, "유형에 맞는
 # 대상 하나만 채워져 있음" 을 DB 가 강제하게 한다. 범용 (target_type,
@@ -68,34 +185,243 @@ _INSPECTION_TARGET_SQL = " OR ".join(
 )
 
 
-class Product(Base):
-    __tablename__ = "products"
+class Item(Base):
+    """전사 기준정보의 품목 한 표(지적 ⑧).
+
+    `products` 와 `materials` 를 하나로 모은 표다. 두 표가 `shelf_life_days`
+    라는 같은 이름의 칸을 각자 들고 있었다는 것 자체가 표가 하나여야 한다는
+    신호였고, 반제품은 **만들어지면서 쓰이므로** 두 표 어느 쪽에도 온전히
+    속하지 못해 앉을 자리가 아예 없었다.
+
+    한 표가 되면서 안전재고 · 유효기간 · 리드타임 계수가 한 곳에 모인다.
+    유형에 따라 비는 칸이 생기는 것은 통합의 부작용이 아니라 **정상**이다 —
+    한 표라야 「이 유형에는 해당 없음」이라고 말할 수 있다.
+    """
+
+    __tablename__ = "items"
+    __table_args__ = (
+        CheckConstraint(
+            f"item_type IN ({_ALLOWED_ITEM_TYPES_SQL})",
+            name="ck_item_type",
+        ),
+        CheckConstraint(_ITEM_CODE_PREFIX_SQL, name="ck_item_code_prefix"),
+        # `id` 는 이미 기본키라 이 유일키가 행을 더 좁히지 않는다. 두는 이유는
+        # **복합 외래키의 상대가 되기 위해서**다 — 「이 로트의 품목은 원자재여야
+        # 한다」를 참조하는 쪽에서 걸려면 `(id, 유형)` 쌍을 가리킬 수 있어야 한다.
+        UniqueConstraint("id", "item_type", name="uq_item_id_type"),
+        # 공정과 재고 단위는 **공통코드를 가리킨다.** 허용값을 파이썬 상수에서
+        # 구워 CHECK 로 박으면, 늘 수 있다고 선언한 그룹(`value_fixed=False`)이
+        # 실제로는 얼지 않는다 — 운영자가 공통코드에 단위 하나를 더해도 그
+        # 단위를 쓰는 품목은 거부되고, 값을 늘리는 데 파이썬 수정과 마이그레이션이
+        # 함께 필요해진다. 그러면 드롭다운에는 뜨는데 저장은 거부되는 값이 생긴다.
+        #
+        # 그룹 열은 상수다. 복합 외래키가 `(그룹, 코드)` 쌍을 요구하므로 열이
+        # 있어야 하고, 그 값이 다른 그룹으로 새지 않도록 CHECK 로 못박는다.
+        # 확장 표들이 이미 쓰는 방식이다(`_group_reference`).
+        ForeignKeyConstraint(
+            ["process_group", "process"],
+            ["common_codes.group_code", "common_codes.code"],
+        ),
+        CheckConstraint(
+            f"process_group = '{codes.PROCESS}'",
+            name="ck_item_process_group",
+        ),
+        ForeignKeyConstraint(
+            ["stock_uom_group", "stock_uom"],
+            ["common_codes.group_code", "common_codes.code"],
+        ),
+        CheckConstraint(
+            f"stock_uom_group = '{codes.UOM}'",
+            name="ck_item_stock_uom_group",
+        ),
+        CheckConstraint(
+            f"phase IN ({_ALLOWED_ITEM_PHASES_SQL})",
+            name="ck_item_phase",
+        ),
+        # 「반제품은 유효기간을 두지 않고 제품만 유효기간을 정한다」(발화). 표가
+        # 하나여서 이 규칙을 제약으로 적을 수 있게 됐다.
+        CheckConstraint(
+            f"item_type <> '{SEMI_FINISHED_ITEM}' OR shelf_life_days IS NULL",
+            name="ck_item_semi_finished_has_no_shelf_life",
+        ),
+        # 통합 전 `materials.safety_stock` 은 NOT NULL 이었다. 칸이 완제품과
+        # 겸용이 되면서 nullable 로 넓어졌는데, **원자재만은 그 불변식을
+        # 유지해야** 한다 — 자재 리스크가 이 값을 재고와 곧바로 견주므로
+        # (`material_risk.calculate_material_risk`) 비어 있으면 비교에서 터진다.
+        # 완제품은 아직 정한 사람이 없어 비어 있는 것이 맞다.
+        CheckConstraint(
+            f"item_type <> '{RAW_ITEM}' OR safety_stock IS NOT NULL",
+            name="ck_item_raw_has_safety_stock",
+        ),
+        # 리드타임 계수는 시간이다. 음수를 넣으면 소요 시간이 음수가 되고
+        # `start_at` 이 착수를 **완료보다 뒤에** 잡는다 — 계획이 시간을 거꾸로
+        # 흐르게 한다. 손으로 고치는 품목 마스터에서 부호 하나가 그 일을 한다.
+        CheckConstraint(
+            "setup_hours IS NULL OR setup_hours >= 0",
+            name="ck_item_setup_hours_not_negative",
+        ),
+        CheckConstraint(
+            "hours_per_unit IS NULL OR hours_per_unit >= 0",
+            name="ck_item_hours_per_unit_not_negative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
+    item_type: Mapped[str] = mapped_column(String(20), index=True)
+    # 검사 기준을 끌어오는 라벨(지적 ⑯). 접두가 아니라 명시적인 열이어야
+    # 공정이 바뀔 때 품목 코드를 바꾸지 않는다.
+    # 길이는 **참조되는 칸(`common_codes.code`, 30)에 맞춘다.** 좁게 두면
+    # 운영자가 더한 긴 코드를 PostgreSQL 만 거부하고 SQLite 는 통과시켜, 늘 수
+    # 있다고 선언한 그룹이 엔진에 따라 다르게 얼어붙는다.
+    process: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # 위 복합 외래키의 왼쪽 절반이다. 데이터가 아니라 **구조**이므로 값은 언제나
+    # `PROCESS` 이고 CHECK 가 그것을 못박는다. 공정이 비어 있는 품목은 짝의 한쪽이
+    # NULL 이라 복합 외래키가 아예 검사하지 않으므로, 이 열이 상수여도 무해하다.
+    # 서버 기본값을 함께 두어 SQL 로 넣는 시드가 이 열을 몰라도 된다.
+    process_group: Mapped[str] = mapped_column(
+        String(20), default=codes.PROCESS, server_default=codes.PROCESS
+    )
+    # 재고 단위(지적 ㉛). 모든 수량이 이 단위로 저장된다 — 잔량을 수불의 합으로
+    # 내린 이상 합할 수 있으려면 단위가 하나여야 하기 때문이다.
+    #
+    # **바꾸면 지나간 수량의 뜻이 바뀐다.** 로트·예정입고·오더·실적·BOM 어디에도
+    # 단위 사본이 없으므로, 이 칸을 `EA` 에서 `m2` 로 고치는 순간 이미 쌓인
+    # 500개가 조용히 「500 m2」가 된다. 스키마는 그것을 막지 않는다 — **막을
+    # 자리가 아직 없다.** 이 저장소에 품목을 고치는 경로가 없고(쓰기 엔드포인트는
+    # 위험 상태 하나뿐이다), 막는 두 방법은 지금 값이 더 나쁘다. 표 다섯에 단위
+    # 사본을 심으면 기준정보를 다섯 곳에 복제해 새 정합 문제를 만들고, 트리거로
+    # 불변을 강제하면 두 엔진에 방언이 다른 트리거가 하나씩 는다.
+    #
+    # 품목을 고치는 화면이 서는 단계에서 정할 일이며, 그때의 답은 아마
+    # **「단위 변경은 수정이 아니라 새 품목」** 이다 — 지나간 수량의 뜻을 지키는
+    # 유일한 방법이 그것이기 때문이다. 여기 적어 두는 것은 그 결정을 미룬다는
+    # 사실 자체를 코드가 알고 있게 하기 위해서다.
+    stock_uom: Mapped[str] = mapped_column(String(30))
+    stock_uom_group: Mapped[str] = mapped_column(
+        String(20), default=codes.UOM, server_default=codes.UOM
+    )
+    # 초기 · 양산. 게이트와 지표가 다르다(Ppk 1.67 / Cpk 1.33).
+    phase: Mapped[str] = mapped_column(String(10))
     # 사내 프로세스가 정한 유효기간 설정기간(일). 로트의 유효기간은 이 값에서
     # 파생된다. None 이면 무기한 품목이다.
     shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 통합의 이득이 그대로 드러나는 칸이다 — 자재에만 있던 것이 완제품에도
+    # 생겼다. 아직 값을 정한 사람이 없는 품목은 None 이다.
+    safety_stock: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 리드타임은 품목의 값이 아니라 오더마다 다른 **계산 결과**다. 품목이 갖는
+    # 것은 계수 둘이고, 소요 시간 = 준비시간 + 개당 시간 × 수량이다.
+    # 상수로 두면 100개와 1000개가 같은 시각에 착수한다.
+    setup_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hours_per_unit: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    orders: Mapped[list[Order]] = relationship(back_populates="product")
-    bom_requirements: Mapped[list[BomRequirement]] = relationship(back_populates="product")
-    finished_goods_lots: Mapped[list[FinishedGoodsLot]] = relationship(
-        back_populates="product",
+    orders: Mapped[list[Order]] = relationship(back_populates="item")
+    # BOM 이 상위·하위로 넓어지면서 한 품목이 두 방향의 관계를 갖는다.
+    components: Mapped[list[BomComponent]] = relationship(
+        back_populates="parent_item",
+        foreign_keys="BomComponent.parent_item_id",
+    )
+    used_in: Mapped[list[BomComponent]] = relationship(
+        back_populates="child_item",
+        foreign_keys="BomComponent.child_item_id",
+    )
+    purchase_receipts: Mapped[list[PurchaseReceipt]] = relationship(back_populates="item")
+    material_lots: Mapped[list[MaterialLot]] = relationship(
+        back_populates="item",
         cascade="all, delete-orphan",
+    )
+    finished_goods_lots: Mapped[list[FinishedGoodsLot]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+    )
+
+
+class BomComponent(Base):
+    """2단 고정 BOM 한 줄 — 상위품목이 하위품목을 얼마나 쓰는가.
+
+    제품 ↔ 자재 직결이던 것을 상위 ↔ 하위로 넓힌다. 「단계」 열 하나가 재귀를
+    막아 전개가 두 번으로 고정되므로, 계산이 단순하고 테스트할 경우의 수가
+    유한하다.
+    """
+
+    __tablename__ = "bom_components"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_item_id",
+            "child_item_id",
+            name="uq_bom_component_parent_child",
+        ),
+        CheckConstraint(
+            f"level IN ({_ALLOWED_BOM_LEVELS_SQL})",
+            name="ck_bom_component_level",
+        ),
+        # 수량은 음수가 될 수 없다 — 수량을 가진 표 여섯이 같은 말을 한다.
+        #
+        # **화면이 이미 이 불변식에 기대고 있었다.** 제품을 넘어 더한 합에 단위를
+        # 붙일 수 있는지를 화면은 「합이 0 이면 더한 것이 없는 것」으로 가르는데,
+        # 그것이 성립하려면 수량이 음수가 될 수 없어야 한다. 음수가 섞이면 서로
+        # 다른 단위가 0 으로 상쇄되어 화면은 **혼재를 빈 것으로** 읽는다.
+        # 적어 두기만 하고 강제하지 않는 규칙은 규칙이 아니다.
+        CheckConstraint(
+            "unit_quantity >= 0",
+            name="ck_bom_component_unit_quantity_not_negative",
+        ),
+        CheckConstraint(
+            "parent_item_id <> child_item_id",
+            name="ck_bom_component_not_self_referencing",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    child_item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    # 1단 — 완제품 ← 반제품 · 2단 — 반제품 ← 원자재
+    level: Mapped[int] = mapped_column(Integer)
+    unit_quantity: Mapped[float] = mapped_column(Float)
+
+    parent_item: Mapped[Item] = relationship(
+        back_populates="components",
+        foreign_keys=[parent_item_id],
+    )
+    child_item: Mapped[Item] = relationship(
+        back_populates="used_in",
+        foreign_keys=[child_item_id],
     )
 
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        # 생산오더의 품목은 **완제품이어야 한다.** 표가 둘이던 때는
+        # `orders.product_id → products.id` 가 그것을 지켰다. 원자재가 오더에
+        # 들어가면 그 실적이 전 제품 합계 추이에는 들어가는데 제품별 계열은
+        # 완제품만 세우므로, **고를 수 없는 계열의 실적**이 합계에만 남는다.
+        # 오더 API 도 그 원자재를 「제품」으로 적는다.
+        #
+        # 반제품오더는 아직 없다 — 생기는 단계에서 이 CHECK 가 함께 넓어진다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(f"item_type = '{FINISHED_ITEM}'", name="ck_order_item_type"),
+        CheckConstraint(
+            "planned_quantity >= 0",
+            name="ck_order_planned_quantity_not_negative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=FINISHED_ITEM, server_default=FINISHED_ITEM
+    )
     due_date: Mapped[date] = mapped_column(Date)
     planned_quantity: Mapped[float] = mapped_column(Float)
 
-    product: Mapped[Product] = relationship(back_populates="orders")
+    item: Mapped[Item] = relationship(back_populates="orders")
     daily_productions: Mapped[list[DailyProduction]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",
@@ -104,6 +430,16 @@ class Order(Base):
 
 class DailyProduction(Base):
     __tablename__ = "daily_productions"
+    __table_args__ = (
+        CheckConstraint(
+            "planned_quantity >= 0",
+            name="ck_daily_production_planned_quantity_not_negative",
+        ),
+        CheckConstraint(
+            "actual_quantity >= 0",
+            name="ck_daily_production_actual_quantity_not_negative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
@@ -118,47 +454,39 @@ class DailyProduction(Base):
     )
 
 
-class Material(Base):
-    __tablename__ = "materials"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(200))
-    safety_stock: Mapped[float] = mapped_column(Float)
-    # 제품과 같은 의미의 설정기간(일). None 이면 무기한 품목이다.
-    shelf_life_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    bom_requirements: Mapped[list[BomRequirement]] = relationship(back_populates="material")
-    purchase_receipts: Mapped[list[PurchaseReceipt]] = relationship(back_populates="material")
-    lots: Mapped[list[MaterialLot]] = relationship(
-        back_populates="material",
-        cascade="all, delete-orphan",
-    )
-
-
-class BomRequirement(Base):
-    __tablename__ = "bom_requirements"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
-    unit_quantity: Mapped[float] = mapped_column(Float)
-
-    product: Mapped[Product] = relationship(back_populates="bom_requirements")
-    material: Mapped[Material] = relationship(back_populates="bom_requirements")
-
-
 class PurchaseReceipt(Base):
     __tablename__ = "purchase_receipts"
+    __table_args__ = (
+        # 예정 입고의 품목은 **원자재여야 한다.** 표가 둘이던 때는
+        # `material_id → materials.id` 가 지켰다. 완제품이 들어가면 구매관리
+        # 화면은 그것을 `material_code`/`material_name` 으로 내보내는데
+        # 자재관리는 원자재만 거르므로, **자재 입고로 보이면서 어느 자재의 14일
+        # 수급 전망에도 잡히지 않는** 줄이 된다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{RAW_ITEM}'", name="ck_purchase_receipt_item_type"
+        ),
+        CheckConstraint(
+            "scheduled_quantity >= 0",
+            name="ck_purchase_receipt_scheduled_quantity_not_negative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=RAW_ITEM, server_default=RAW_ITEM
+    )
     scheduled_date: Mapped[date] = mapped_column(Date)
     scheduled_quantity: Mapped[float] = mapped_column(Float)
     # 도착하면 로트가 되므로 예정 입고도 유효기간을 가진다. 도착지는 원재료창고다.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    material: Mapped[Material] = relationship(back_populates="purchase_receipts")
+    item: Mapped[Item] = relationship(back_populates="purchase_receipts")
 
 
 class MaterialLot(Base):
@@ -177,26 +505,46 @@ class MaterialLot(Base):
     __tablename__ = "material_lots"
     __table_args__ = (
         UniqueConstraint(
-            "material_id",
+            "item_id",
             "lot_number",
             "warehouse",
             name="uq_material_lot_warehouse",
+        ),
+        # 품목은 **원자재여야 한다.** `item_id` 만 참조하면 존재 여부만 보므로
+        # 완제품이 자재 로트에 들어가고, 그러면 창고 화면은 그 줄을 「자재」로
+        # 세는데(`get_warehouse_stock` 이 그렇게 못박는다) 자재관리 화면은
+        # 원자재만 거르므로 보이지 않는다 — 같은 물건이 한 화면에는 있고 다른
+        # 화면에는 없다. 표가 둘이던 때는 외래키가 이것을 지켰다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{RAW_ITEM}'", name="ck_material_lot_item_type"
         ),
         CheckConstraint(
             f"warehouse IN ({_ALLOWED_MATERIAL_WAREHOUSES_SQL})",
             name="ck_material_lot_warehouse",
         ),
+        CheckConstraint(
+            "quantity >= 0",
+            name="ck_material_lot_quantity_not_negative",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조라 값이 언제나 같다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=RAW_ITEM, server_default=RAW_ITEM
+    )
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     quantity: Mapped[float] = mapped_column(Float)
     received_date: Mapped[date] = mapped_column(Date)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    material: Mapped[Material] = relationship(back_populates="lots")
+    item: Mapped[Item] = relationship(back_populates="material_lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="material_lot",
         passive_deletes=True,
@@ -212,15 +560,35 @@ class FinishedGoodsLot(Base):
 
     로트 행은 삭제하지 않는다. 유효기간이 지나도 `만료` 로 표시할 뿐 남긴다.
 
-    창고는 `생산창고`/`제품창고` 둘이고, **어디에 있는지가 곧 검사 결과다.**
-    생산창고에는 검사 대기와 불합격만 있고, 합격하면 제품창고로 옮겨진다.
-    출하는 제품창고 재고에 한해 일어난다(후속: 출하 리스크).
+    창고는 `생산창고`/`제품창고` 둘이다. 제품창고에 들어오는 조건은 검사 합격이지만
+    **그 역은 성립하지 않는다**(지적 ①) — 들어오는 조건이 「합격 + 입고 처리」라
+    합격이면서 아직 옮겨지지 않은 로트가 있다. 그래서 두 사실을 양방향 하나가
+    아니라 **단방향 둘**로 건다.
+
+    반대로 **제품창고에 불량품은 설 수 없다.** 단방향 둘(`제품창고 ⟹ 합격` ·
+    `불량품 ⟹ 불합격`)이 겹쳐 그 조합을 막기 때문이다. 양불이동으로 불량이
+    가려지면 그 로트는 제품창고를 **떠난다** — 제품창고는 출하할 수 있는 것만
+    담는다는 규칙이 그렇게 유지된다.
+
+    날짜가 둘인 것은 유효기간의 기산점이 생산일이 아니라 합격일이기 때문이다
+    (지적 ⑰). 둘의 차이가 「검사에 며칠 걸렸나」가 되어, 생산창고에 완제품이
+    쌓이는 이유를 그 값이 설명한다.
     """
 
     __tablename__ = "finished_goods_lots"
     __table_args__ = (
+        # 품목은 **완제품이어야 한다.** 자재 로트와 같은 이유이며, 여기서는
+        # 출하검사와 유효기간이 완제품의 것이라 더 분명하다.
+        ForeignKeyConstraint(
+            ["item_id", "item_type"],
+            ["items.id", "items.item_type"],
+        ),
+        CheckConstraint(
+            f"item_type = '{FINISHED_ITEM}'",
+            name="ck_finished_goods_lot_item_type",
+        ),
         UniqueConstraint(
-            "product_id",
+            "item_id",
             "lot_number",
             "warehouse",
             name="uq_finished_goods_lot_warehouse",
@@ -233,29 +601,92 @@ class FinishedGoodsLot(Base):
             f"qc_status IN ({_ALLOWED_QC_STATUSES_SQL})",
             name="ck_finished_goods_lot_qc_status",
         ),
-        # 창고와 검사 결과는 서로를 결정한다 — 제품창고에는 합격만 있고, 합격은
-        # 제품창고에만 있다. 한쪽 방향만 막으면 "합격인데 아직 생산창고" 라는
-        # 상태가 생겨, 생산창고가 검사 대기·불합격만 담는다는 규칙이 깨진다.
         CheckConstraint(
-            f"(warehouse = '{PRODUCT_WAREHOUSE}') = (qc_status = '{QC_PASSED}')",
-            name="ck_finished_goods_lot_warehouse_matches_qc",
+            f"stock_type IN ({_ALLOWED_STOCK_TYPES_SQL})",
+            name="ck_finished_goods_lot_stock_type",
+        ),
+        # 지적 ① — 양방향 하나를 단방향 둘로 가른다.
+        #
+        # ① 제품창고에 있으면 합격이다. 검사 대기·불합격이 섞이면 출하 가능
+        #    수량이 실제보다 많아 보인다.
+        # ② 불량품이면 불합격이다. 재고구분은 판정에서 나오는 것이지 사람이
+        #    임의로 붙이는 딱지가 아니다.
+        #
+        # 역방향은 걸지 않는다. 「합격이면 반드시 제품창고」로 못박으면 합격했으나
+        # 아직 입고 처리 전인 로트가 표현되지 않고, 관문 6(재고이동 요청·처리)이
+        # 들어오는 자리가 제약에 막힌다.
+        CheckConstraint(
+            f"warehouse <> '{PRODUCT_WAREHOUSE}' OR qc_status = '{QC_PASSED}'",
+            name="ck_finished_goods_lot_product_warehouse_holds_passed_only",
+        ),
+        CheckConstraint(
+            f"stock_type <> '{DEFECTIVE_STOCK}' OR qc_status = '{QC_FAILED}'",
+            name="ck_finished_goods_lot_defective_is_rejected",
+        ),
+        # 합격일은 합격에만 붙는다(지적 ⑰). 시계가 합격에서 시작한다고 정한
+        # 이상, 검사 대기·불합격 로트에 합격일이 있으면 유효기간이 없는 판정에서
+        # 파생되고, 합격인데 합격일이 없으면 시계가 시작되지 않는다.
+        CheckConstraint(
+            f"(passed_date IS NOT NULL) = (qc_status = '{QC_PASSED}')",
+            name="ck_finished_goods_lot_passed_date_matches_status",
+        ),
+        # 합격일이 생산일보다 앞설 수 없다. 뒤집히면 「검사에 며칠 걸렸나」가
+        # 음수가 된다 — 지적 ⑰ 이 공짜로 얻는다고 한 그 지표다.
+        CheckConstraint(
+            "passed_date IS NULL OR passed_date >= produced_date",
+            name="ck_finished_goods_lot_passed_after_produced",
+        ),
+        # 유효기간은 합격일에서 파생된다. 합격일 없이 유효기간만 있는 줄은
+        # 근거 없는 만료일을 들고 다니며, 화면에서는 「만료」로 그려져 실제로
+        # 검사조차 받지 않은 로트가 만료 재고에 잡힌다.
+        CheckConstraint(
+            "expiry_date IS NULL OR passed_date IS NOT NULL",
+            name="ck_finished_goods_lot_expiry_needs_passed_date",
+        ),
+        # 시계가 합격일에서 시작하므로 유효기간이 그보다 앞설 수 없다. 뒤집힌
+        # 줄은 위 셋을 모두 만족하면서 화면에서는 곧바로 「만료」로 그려진다 —
+        # 합격하자마자 만료된 로트다.
+        CheckConstraint(
+            "expiry_date IS NULL OR expiry_date >= passed_date",
+            name="ck_finished_goods_lot_expiry_after_passed",
+        ),
+        CheckConstraint(
+            "quantity >= 0",
+            name="ck_finished_goods_lot_quantity_not_negative",
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    item_id: Mapped[int] = mapped_column()
+    # 위 복합 외래키의 오른쪽 절반. 데이터가 아니라 구조다.
+    item_type: Mapped[str] = mapped_column(
+        String(20), default=FINISHED_ITEM, server_default=FINISHED_ITEM
+    )
     lot_number: Mapped[str] = mapped_column(String(50), index=True)
     warehouse: Mapped[str] = mapped_column(String(20))
     # OQC 판정의 캐시다. 진실은 `QualityInspection` 의 OQC 기록이며, 기록이
     # 없으면 `검사 대기`다. 캐시를 두는 이유는 위 창고 불변식을 CHECK 제약으로
     # 걸기 위해서다(테이블 간 참조는 SQLite CHECK 로 표현할 수 없다).
     qc_status: Mapped[str] = mapped_column(String(20))
+    # 양품 · 불량품. 지금은 판정에서 그대로 나오지만, 관문 8(양불이동)이 들어오면
+    # 총량을 바꾸지 않는 수불 줄이 생긴다. 다만 **이 칸만 바꾸는 것으로는 끝나지
+    # 않는다** — 제품창고에 있는 로트를 불량품으로 돌리려면 창고도 함께 옮겨야
+    # 한다. 위의 단방향 둘이 `제품창고 + 불량품` 을 막기 때문이다.
+    stock_type: Mapped[str] = mapped_column(String(10), default=GOOD_STOCK)
     quantity: Mapped[float] = mapped_column(Float)
     produced_date: Mapped[date] = mapped_column(Date)
-    # 제품의 설정기간에서 파생해 저장한다. 무기한 품목이면 None 이다.
+    # 합격일 — 유효기간의 기산점이다(지적 ⑰). 아직 판정을 받지 않았거나
+    # 불합격한 로트는 값이 없다. 생산일과의 차이가 곧 검사 대기 일수다.
+    passed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 재작업분인가(30판). 로트번호에 `+R` 을 붙이는 관행은 라벨과 맞추기 위해
+    # 그대로 두되, 판정은 번호가 아니라 이 칸에서 읽는다 — 번호는 사람이 보는
+    # 라벨이고 분기는 프로그램이 하는 일이다.
+    reworked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 제품의 설정기간을 합격일에 더해 파생한다. 합격일이 없으면 유효기간도
+    # 아직 없다 — 시계는 합격에서 시작한다. 무기한 품목도 None 이다.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    product: Mapped[Product] = relationship(back_populates="finished_goods_lots")
+    item: Mapped[Item] = relationship(back_populates="finished_goods_lots")
     inspections: Mapped[list[QualityInspection]] = relationship(
         back_populates="finished_goods_lot",
         passive_deletes=True,
@@ -291,8 +722,7 @@ class QualityInspection(Base):
         # 빈 문자열과 공백뿐인 문자열도 사유가 없는 것이므로 NULL 검사만으로는
         # 부족하다 — 화면은 그 빈 칸을 그대로 그려 사유 없는 불합격 행을 만든다.
         CheckConstraint(
-            f"result = '{QC_PASSED}' OR"
-            f" (reason IS NOT NULL AND trim(reason, {_BLANK_CHARACTERS_SQL}) <> '')",
+            failure_reason_is_present(),
             name="ck_quality_inspection_failure_reason",
         ),
     )

@@ -23,6 +23,7 @@ const order: api.Order = {
   planned_quantity: 538,
   product_code: "FG-01",
   product_name: "아크솔 시트",
+  stock_uom: "EA",
   reason: "완료예정일이 납기일보다 늦습니다.",
   remaining_quantity: 72,
   severity: "위험",
@@ -53,6 +54,8 @@ describe("OrdersPage", () => {
       {
         achievement_rate: 94.3,
         active_order_count: 30,
+        planned_quantity_uom: "EA",
+    actual_quantity_uom: "EA",
         actual_quantity: 340,
         planned_quantity: 360.4,
         work_date: "2026-09-02",

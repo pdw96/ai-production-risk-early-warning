@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Generator
-from datetime import date
+from datetime import date, timedelta
 
 warnings.filterwarnings(
     "ignore",
@@ -11,14 +11,20 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import base as db_base
 from app.main import app
 from app.seed import reset_database
+from app.db.models import DailyProduction, Order
+from tests.factories import finished_item
 from app.services.briefing import RECENT_INSPECTIONS_PER_TYPE
+
+
+# 시드가 쓰는 기준일. 테스트가 그날에 실적을 얹으려면 같은 값을 알아야 한다.
+REFERENCE_DATE = date(2026, 8, 31)
 
 
 @pytest.fixture
@@ -33,7 +39,7 @@ def client(
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     monkeypatch.setattr(db_base, "engine", engine)
     monkeypatch.setattr(db_base, "SessionLocal", session_factory)
-    reset_database(date(2026, 8, 31))
+    reset_database(REFERENCE_DATE)
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()
@@ -56,18 +62,27 @@ def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) 
     data = response.json()["data"]
     assert set(data) == {
         "kpis",
+        # 7일 합계 추이가 쓰는 단위. 완제품 단위가 갈리면 None 이 되고, 그때
+        # 화면은 「개」 대신 혼재를 말한다. 오늘 하루치 KPI 는 기간이 달라
+        # 단위도, 계획·실적을 나누어 따로 싣는다(`kpis.today_*_quantity_uom`).
+        "quantity_uom",
         "production_trend",
         "product_trends",
         "top_order_risks",
         "top_material_risks",
         "recommended_actions",
     }
+    assert data["quantity_uom"] == "EA"
     assert set(data["kpis"]) == {
         "due_risk_order_count",
         "material_shortage_count",
         "today_plan_quantity",
         "today_actual_quantity",
+        "today_plan_quantity_uom",
+        "today_actual_quantity_uom",
     }
+    assert data["kpis"]["today_plan_quantity_uom"] == "EA"
+    assert data["kpis"]["today_actual_quantity_uom"] == "EA"
     assert len(data["production_trend"]) == 7
     assert len(data["top_order_risks"]) <= 5
     assert len(data["top_material_risks"]) <= 5
@@ -141,6 +156,7 @@ def test_local_frontend_origin_is_allowed_by_cors(client: TestClient) -> None:
                 "material_id",
                 "material_code",
                 "material_name",
+                "stock_uom",
                 "current_stock",
                 "raw_warehouse_stock",
                 "production_warehouse_stock",
@@ -346,9 +362,14 @@ def test_master_data_bom_links_every_product_to_its_materials(client: TestClient
 
     bom = data["bom_requirements"]
     assert len(bom) == 15
-    assert {"product_code", "product_name", "material_code", "material_name", "unit_quantity"} <= set(
-        bom[0]
-    )
+    assert {
+        "product_code",
+        "product_name",
+        "material_code",
+        "material_name",
+        "unit_quantity",
+        "unit_quantity_uom",
+    } <= set(bom[0])
     # 목록은 제품 코드 → 자재 코드 순으로 안정 정렬된다.
     assert bom == sorted(bom, key=lambda row: (row["product_code"], row["material_code"]))
     linked_counts = {
@@ -370,6 +391,7 @@ def test_purchases_expose_the_inbound_schedule_with_horizon_flag(
         "receipt_id",
         "material_code",
         "material_name",
+        "stock_uom",
         "scheduled_date",
         "scheduled_quantity",
         "expiry_date",
@@ -546,6 +568,7 @@ def test_finished_goods_expose_stock_by_state_for_every_product(
         "releasable_stock",
         "inspection_pending_stock",
         "rejected_stock",
+        "intake_pending_stock",
         "expired_stock",
         "total_lot_quantity",
     } <= set(products[0])
@@ -559,9 +582,10 @@ def test_finished_goods_expose_stock_by_state_for_every_product(
 def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
     client: TestClient,
 ) -> None:
-    """네 수량은 서로 겹치지 않고 합이 로트 합계와 같아야 한다.
+    """다섯 수량은 서로 겹치지 않고 합이 로트 합계와 같아야 한다.
 
-    겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보인다.
+    겹치면 같은 재고가 두 칸에 잡혀 출하 가능 수량이 실제보다 많아 보이고,
+    빠지면 재고 일부가 화면에서 조용히 사라진다.
     """
     products = client.get("/api/finished-goods").json()["data"]
 
@@ -570,6 +594,7 @@ def test_finished_goods_states_do_not_overlap_and_cover_every_lot(
             product["releasable_stock"]
             + product["inspection_pending_stock"]
             + product["rejected_stock"]
+            + product["intake_pending_stock"]
             + product["expired_stock"]
         )
         assert round(buckets, 2) == product["total_lot_quantity"]
@@ -767,3 +792,360 @@ def test_quality_summary_counts_records_the_list_left_out(client: TestClient) ->
             if inspection["inspection_type"] == summary["inspection_type"]
         ]
         assert summary["total_count"] >= len(listed)
+
+
+def test_material_quantities_carry_the_unit_they_are_counted_in(client: TestClient) -> None:
+    """수량 옆에 단위가 없으면 화면은 전부 「개」로 적는다.
+
+    자재는 kg · L · m2 로 갈린다. 저장은 품목의 재고 단위를 지키는데(지적 ㉛)
+    표시가 지키지 않으면 320kg 이 「320개」로 나가고, 단위를 못박은 뜻이
+    없어진다.
+    """
+    materials = client.get("/api/materials").json()["data"]
+    units = {row["material_code"]: row["stock_uom"] for row in materials}
+
+    # 시드가 실제로 여러 단위를 쓴다 — 하나뿐이면 이 검사가 아무것도 지키지 않는다.
+    assert len(set(units.values())) > 1
+
+    # 창고 줄도 자기 단위를 들고 나간다. 창고에는 kg 와 L 이 나란히 쌓인다.
+    for slug in ("raw", "production", "products"):
+        warehouse = client.get(f"/api/warehouses/{slug}").json()["data"]
+        for lot in warehouse["lots"]:
+            assert lot["stock_uom"]
+            if lot["item_type"] == "자재":
+                assert lot["stock_uom"] == units[lot["item_code"]]
+
+
+def test_the_warehouse_material_total_is_only_meaningful_within_one_unit(
+    client: TestClient,
+) -> None:
+    """단위를 넘어 더한 합은 뜻이 없다 — 화면이 쓰지 않는 이유를 고정한다.
+
+    칸을 지우면 응답 모양이 깨지므로 남겨 두지만, 원재료창고처럼 kg 와 L 이
+    함께 있는 창고에서는 이 숫자가 무엇도 세지 않는다. 화면은 `lots` 에서
+    단위별 합을 직접 낸다.
+    """
+    raw = client.get("/api/warehouses/raw").json()["data"]
+    material_units = {
+        lot["stock_uom"] for lot in raw["lots"] if lot["item_type"] == "자재"
+    }
+
+    assert len(material_units) > 1
+    assert raw["material_quantity"] == pytest.approx(
+        sum(lot["quantity"] for lot in raw["lots"] if lot["item_type"] == "자재"),
+        abs=0.05,
+    )
+
+
+def test_every_quantity_screen_knows_the_unit_it_counts_in(client: TestClient) -> None:
+    """단위를 두 화면에만 실으면 같은 자재가 화면마다 다른 말을 한다.
+
+    RM-02 가 자재관리에서는 `240 kg` 인데 구매관리에서는 `240개` 로 나오면,
+    단위를 실어 준 것이 오히려 화면 사이를 어긋나게 한다. 그래서 수량을 보여
+    주는 응답은 전부 자기 단위를 든다.
+    """
+    units = {
+        row["material_code"]: row["stock_uom"]
+        for row in client.get("/api/materials").json()["data"]
+    }
+
+    for receipt in client.get("/api/purchases").json()["data"]:
+        assert receipt["stock_uom"] == units[receipt["material_code"]]
+
+    master = client.get("/api/master-data").json()["data"]
+    for item in master["items"]:
+        assert item["stock_uom"]
+        if item["item_type"] == "자재":
+            assert item["stock_uom"] == units[item["item_code"]]
+
+    # 소요량의 단위는 **하위 품목의** 것이다. 상위 하나를 만드는 데 드는 하위의
+    # 양이므로, 상위의 단위를 적으면 뜻이 뒤집힌다.
+    for requirement in master["bom_requirements"]:
+        assert requirement["unit_quantity_uom"] == units[requirement["material_code"]]
+
+
+def test_every_per_item_quantity_carries_its_own_unit(client: TestClient) -> None:
+    """품목 하나를 가리키는 수량은 어디서나 그 품목의 단위를 든다."""
+    units = {
+        row["material_code"]: row["stock_uom"]
+        for row in client.get("/api/materials").json()["data"]
+    }
+    assert len(set(units.values())) > 1
+
+    for order in client.get("/api/orders").json()["data"]:
+        assert order["stock_uom"] == "EA"
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+    # 제품별 계열은 계열마다 제품 하나라 단위가 정해진다. 전 제품 합계 추이의
+    # 점에는 그 칸이 없고, 대신 응답이 그 합의 단위를 따로 말한다.
+    assert {trend["stock_uom"] for trend in dashboard["product_trends"]} == {"EA"}
+    assert "stock_uom" not in dashboard["production_trend"][0]
+
+
+def test_cross_product_totals_say_which_unit_they_are_in(client: TestClient) -> None:
+    """제품을 넘어 더한 숫자는 **자기 단위를 스스로 말한다.**
+
+    지금은 완제품이 전부 `EA` 라 `quantity_uom` 이 `EA` 다. 시드가 그러하다는
+    것만 확인하면 아무것도 지키지 못한다 — 기준정보는 화면에서 늘 수 있고,
+    운영 데이터에 m² 완제품이 하나 생기는 순간 시드를 보는 검사는 여전히
+    통과하면서 화면은 그 합을 「개」로 적는다. 그래서 **단위가 다른 완제품을
+    실제로 넣어 보고** 응답이 스스로 「단위 없음」을 말하는지 본다.
+    """
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] == "EA"
+    results = client.get("/api/production-results").json()["data"]
+    assert {row["actual_quantity_uom"] for row in results if row["active_order_count"]} == {
+        "EA"
+    }
+
+    # m² 로 세는 완제품을 하나 들인다. 시트·필름 공장에서 이상한 품목이 아니다.
+    # **생산 실적까지 넣는 것이 요점이다** — 합계에 들어가지 않은 품목은 그 합의
+    # 단위를 바꾸지 않아야 하고, 아래에서 그 순서를 나누어 확인한다.
+    with db_base.SessionLocal() as session:
+        product = finished_item(code="FG-99", name="가상 광학필름", stock_uom="m2")
+        session.add(product)
+        session.flush()
+        order = Order(
+            order_number="MO-999",
+            item=product,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(order)
+        session.commit()
+
+    # 아직 실적이 없다. 합계에 들어가지 않았으므로 단위도 바뀌지 않는다.
+    assert client.get("/api/dashboard").json()["data"]["quantity_uom"] == "EA"
+
+    # 수량이 0 인 실적도 합에 아무것도 보태지 않는다. 날짜만으로 거르면 이 줄
+    # 하나가 개수만 더한 합을 「혼재」로 만든다.
+    with db_base.SessionLocal() as session:
+        order_id = session.scalars(
+            select(Order.id).where(Order.order_number == "MO-999")
+        ).one()
+        session.add(
+            DailyProduction(
+                order_id=order_id,
+                work_date=REFERENCE_DATE - timedelta(days=1),
+                planned_quantity=0,
+                actual_quantity=0,
+            )
+        )
+        session.commit()
+
+    assert client.get("/api/dashboard").json()["data"]["quantity_uom"] == "EA"
+
+    # 이제 실제로 더해지는 실적을 얹는다.
+    with db_base.SessionLocal() as session:
+        session.add(
+            DailyProduction(
+                order_id=order_id,
+                work_date=REFERENCE_DATE,
+                planned_quantity=20,
+                actual_quantity=18,
+            )
+        )
+        session.commit()
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] is None, (
+        "합계에 m² 가 실제로 섞였는데도 단위를 주장합니다 —"
+        " 제곱미터와 개수를 더한 숫자에는 붙일 단위가 없습니다."
+    )
+    today = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == REFERENCE_DATE.isoformat()
+    )
+    assert today["planned_quantity_uom"] is None
+
+
+def test_todays_kpi_unit_is_not_decided_by_the_rest_of_the_week(
+    client: TestClient,
+) -> None:
+    """오늘의 합계 단위는 오늘 보탠 것만 보고 정한다.
+
+    추이는 7일이고 KPI 는 오늘 하루다. 단위를 하나만 실으면 **이번 주에 m² 를
+    한 번 만들었다는 이유로 오늘의 개수 합계가 「단위 혼재」로 적힌다** — 오늘
+    더한 것은 전부 개인데도 그렇다. 7일 창은 오늘을 품으므로 거짓은 늘 이
+    방향으로만 난다(오늘이 섞였는데 7일이 안 섞일 수는 없다).
+    """
+    with db_base.SessionLocal() as session:
+        product = finished_item(code="FG-98", name="가상 광학필름", stock_uom="m2")
+        session.add(product)
+        session.flush()
+        order = Order(
+            order_number="MO-998",
+            item=product,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(order)
+        session.flush()
+        # 어제는 m² 를 만들었고, 오늘은 만들지 않았다.
+        session.add(
+            DailyProduction(
+                order_id=order.id,
+                work_date=REFERENCE_DATE - timedelta(days=1),
+                planned_quantity=20,
+                actual_quantity=18,
+            )
+        )
+        session.commit()
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+
+    # 7일 합계에는 실제로 m² 가 섞였다.
+    assert dashboard["quantity_uom"] is None
+    # 오늘 합계에는 섞이지 않았다.
+    assert dashboard["kpis"]["today_actual_quantity_uom"] == "EA", (
+        "오늘 보탠 것은 전부 개인데 지난 주의 m² 가 오늘의 단위를 바꿨습니다 —"
+        " 화면은 개수 합계를 「단위 혼재」라고 적게 됩니다."
+    )
+    assert dashboard["kpis"]["today_actual_quantity"] > 0
+
+
+def test_planned_and_actual_units_are_decided_apart(client: TestClient) -> None:
+    """계획과 실적은 **서로 다른 제품 집합에서 나온다.**
+
+    계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면, 단위를
+    하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다. 오늘
+    계획은 m² 뿐이고 오늘 실적은 개수뿐인 날을 만들어 그것을 확인한다.
+    """
+    with db_base.SessionLocal() as session:
+        # 계획만 서는 m² 오더.
+        film = finished_item(code="FG-97", name="가상 광학필름", stock_uom="m2")
+        session.add(film)
+        session.flush()
+        film_order = Order(
+            order_number="MO-997",
+            item=film,
+            due_date=REFERENCE_DATE + timedelta(days=7),
+            planned_quantity=100,
+        )
+        session.add(film_order)
+        session.flush()
+        session.add(
+            DailyProduction(
+                order_id=film_order.id,
+                work_date=REFERENCE_DATE,
+                planned_quantity=30,
+                actual_quantity=0,
+            )
+        )
+        # 시드의 개수 오더들이 오늘 계획도 함께 세우고 있으면 계획 쪽이 실제로
+        # 갈리므로, 오늘 계획을 m² 하나만 남기고 비운다.
+        session.query(DailyProduction).filter(
+            DailyProduction.work_date == REFERENCE_DATE,
+            DailyProduction.order_id != film_order.id,
+        ).update({DailyProduction.planned_quantity: 0}, synchronize_session=False)
+        session.commit()
+
+    kpis = client.get("/api/dashboard").json()["data"]["kpis"]
+
+    assert kpis["today_plan_quantity_uom"] == "m2", (
+        "오늘 계획은 m² 하나뿐인데 실적 쪽 단위가 계획의 단위를 바꿨습니다."
+    )
+    assert kpis["today_actual_quantity_uom"] == "EA", (
+        "오늘 실적은 개수뿐인데 계획 쪽의 m² 가 실적의 단위를 바꿨습니다."
+    )
+    assert kpis["today_plan_quantity"] == 30
+    assert kpis["today_actual_quantity"] > 0
+
+    today = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == REFERENCE_DATE.isoformat()
+    )
+    assert today["planned_quantity_uom"] == "m2"
+    assert today["actual_quantity_uom"] == "EA"
+    # 단위가 갈리면 실적÷계획은 뜻을 갖지 않는다. m² 계획을 개수 실적으로 나눈
+    # 숫자로 화면이 「계획 달성/미달」까지 적으므로, 값을 내지 않는다.
+    assert today["achievement_rate"] is None, (
+        "m² 계획을 개수 실적으로 나눈 값을 달성률이라 부르고 있습니다 —"
+        " 그 숫자로 판정까지 적힙니다."
+    )
+
+    # 계획을 통째로 놓친 날의 0% 는 살아 있어야 한다. 실적이 0 이면 단위가
+    # 갈릴 수 없으므로 그 나눗셈은 여전히 뜻을 갖는다. 기준일은 **실적이 있는
+    # 가장 최근 날**이라 오늘의 실적을 지우면 기준일 자체가 물러나므로, 지난
+    # 날 하나로 확인한다.
+    missed_day = REFERENCE_DATE - timedelta(days=2)
+    with db_base.SessionLocal() as session:
+        session.query(DailyProduction).filter(
+            DailyProduction.work_date == missed_day
+        ).update({DailyProduction.actual_quantity: 0}, synchronize_session=False)
+        session.commit()
+
+    missed = next(
+        row
+        for row in client.get("/api/production-results").json()["data"]
+        if row["work_date"] == missed_day.isoformat()
+    )
+    assert missed["planned_quantity"] > 0
+    assert missed["achievement_rate"] == 0.0, (
+        "실적이 0 인 날은 단위가 갈릴 수 없습니다 —"
+        " 계획을 놓친 날이 「비교 불가」로 바뀌면 구별 하나를 잃습니다."
+    )
+
+
+def test_an_unseeded_database_does_not_look_like_a_healthy_factory(
+    client: TestClient,
+) -> None:
+    """표만 있고 행이 없는 상태를 화면이 구별할 수 있어야 한다.
+
+    운영 기본값은 자동 시드를 켜지 않으므로(`SEED_SAMPLE_DATA` 미설정) 마이그레이션만
+    돈 데이터베이스가 정상 상태다. 그때 대시보드는 7일치 0 추이와 「현재 주요 위험이
+    없습니다」를 돌려주는데, 그 둘만 보면 **아무 문제 없는 공장**과 구별되지 않는다.
+
+    구별되는 자리는 제품별 계열이다 — 실적과 무관하게 완제품 마스터에서 나오므로,
+    비어 있다는 것은 기준정보가 아직 없다는 뜻이다. 화면의 빈 상태 판단이 이것을
+    쓴다.
+    """
+    db_base.drop_all()
+    db_base.create_all()
+
+    data = client.get("/api/dashboard").json()["data"]
+
+    # 이 둘만으로는 빈 데이터베이스를 알아볼 수 없다.
+    assert len(data["production_trend"]) == 7
+    assert data["recommended_actions"] == [
+        "현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."
+    ]
+    # 알아볼 수 있는 자리.
+    assert data["product_trends"] == []
+    assert data["top_order_risks"] == []
+    assert data["top_material_risks"] == []
+
+
+def test_an_empty_aggregate_is_not_reported_as_mixed_units(client: TestClient) -> None:
+    """더한 것이 없는 날과 단위가 섞인 날은 다르다.
+
+    둘 다 `quantity_uom` 이 `None` 이지만, 앞의 것은 합이 0 이다 — 수량은 음수가
+    될 수 없으므로 보태는 줄이 하나도 없으면 합은 반드시 0 이다. 화면이 그 둘을
+    가르는 근거가 이 불변식이고, 그것이 깨지면 평범한 0 인 날이 「0 (단위 혼재)」로
+    적힌다.
+    """
+    # 시드는 14일 창에 매일 실적이 있어 빈 날이 없다. 표를 비워 그 상태를 만든다.
+    db_base.drop_all()
+    db_base.create_all()
+
+    results = client.get("/api/production-results").json()["data"]
+    assert results, "일자별 실적은 실적이 없어도 날짜를 채워 보낸다."
+
+    for row in results:
+        assert row["planned_quantity_uom"] is None
+        assert row["actual_quantity_uom"] is None
+        assert row["planned_quantity"] == 0
+        assert row["actual_quantity"] == 0
+
+    dashboard = client.get("/api/dashboard").json()["data"]
+    assert dashboard["quantity_uom"] is None
+    assert dashboard["kpis"]["today_plan_quantity_uom"] is None
+    assert dashboard["kpis"]["today_actual_quantity_uom"] is None
+    assert dashboard["kpis"]["today_plan_quantity"] == 0
+    assert dashboard["kpis"]["today_actual_quantity"] == 0
+    assert all(
+        point["planned_quantity"] == 0 and point["actual_quantity"] == 0
+        for point in dashboard["production_trend"]
+    )

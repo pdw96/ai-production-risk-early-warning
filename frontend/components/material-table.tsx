@@ -19,7 +19,10 @@ function format_first_expiry_date(value: string | null): string {
   return value ? format_date(value) : "기간 내 없음";
 }
 
-function LotDetails({ lots }: Readonly<{ lots: MaterialLot[] }>) {
+function LotDetails({
+  lots,
+  unit,
+}: Readonly<{ lots: MaterialLot[]; unit: string }>) {
   if (lots.length === 0) {
     return <span className="table-secondary">보유 로트 없음</span>;
   }
@@ -33,7 +36,9 @@ function LotDetails({ lots }: Readonly<{ lots: MaterialLot[] }>) {
           <li key={`${lot.lot_number}-${lot.warehouse}-${index}`}>
             <span className="lot-details__number">{lot.lot_number}</span>
             <span className="lot-details__warehouse">{lot.warehouse}</span>
-            <span className="lot-details__quantity">{format_quantity(lot.quantity)}</span>
+            <span className="lot-details__quantity">
+              {format_quantity(lot.quantity, unit)}
+            </span>
             <span className="lot-details__dates">
               입고 {format_date(lot.received_date)} ·{" "}
               {format_lot_expiry(lot.expiry_date)}
@@ -75,21 +80,21 @@ export function MaterialTable({ materials }: Readonly<{ materials: Material[] }>
                 <span className="table-secondary">
                   {material.material_code} · ID {material.material_id}
                 </span>
-                <LotDetails lots={material.lots} />
+                <LotDetails lots={material.lots} unit={material.stock_uom} />
               </td>
-              <td className="numeric-cell">{format_quantity(material.current_stock)}</td>
+              <td className="numeric-cell">{format_quantity(material.current_stock, material.stock_uom)}</td>
               <td className="numeric-cell">
                 <span className="table-secondary">
-                  원재료창고 {format_quantity(material.raw_warehouse_stock)}
+                  원재료창고 {format_quantity(material.raw_warehouse_stock, material.stock_uom)}
                 </span>
                 <span className="table-secondary">
-                  생산창고 {format_quantity(material.production_warehouse_stock)}
+                  생산창고 {format_quantity(material.production_warehouse_stock, material.stock_uom)}
                 </span>
               </td>
-              <td className="numeric-cell">{format_quantity(material.safety_stock)}</td>
-              <td className="numeric-cell">{format_quantity(material.ending_stock)}</td>
-              <td className="numeric-cell">{format_quantity(material.minimum_stock)}</td>
-              <td className="numeric-cell">{format_quantity(material.expiring_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(material.safety_stock, material.stock_uom)}</td>
+              <td className="numeric-cell">{format_quantity(material.ending_stock, material.stock_uom)}</td>
+              <td className="numeric-cell">{format_quantity(material.minimum_stock, material.stock_uom)}</td>
+              <td className="numeric-cell">{format_quantity(material.expiring_quantity, material.stock_uom)}</td>
               <td>{format_first_expiry_date(material.first_expiry_date)}</td>
               <td>{material.shortage_expected ? "부족 예상" : "수급 가능"}</td>
               <td>{format_stockout_date(material.stockout_date)}</td>

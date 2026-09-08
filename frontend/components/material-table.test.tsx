@@ -6,6 +6,7 @@ import type { Material } from "../lib/api";
 import { MaterialTable } from "./material-table";
 
 const sample_material: Material = {
+  stock_uom: "kg",
   current_stock: 1200,
   ending_stock: 300,
   expiring_quantity: 500,
@@ -58,10 +59,12 @@ describe("MaterialTable", () => {
       "MAT-001",
       "ID 1",
       "가상 자재 A",
-      "1,200개",
-      "400개",
-      "300개",
-      "150개",
+      // 이 자재의 재고 단위는 kg 다. 수량마다 그 단위가 따라붙어야 한다 —
+      // 저장은 단위를 지키는데 표시가 「개」로 적으면 뜻이 없어진다.
+      "1,200 kg",
+      "400 kg",
+      "300 kg",
+      "150 kg",
       "부족 예상",
       "소진 없음",
       "주의",
@@ -73,7 +76,7 @@ describe("MaterialTable", () => {
   it("shows stock split by warehouse and the expiry summary", () => {
     const markup = renderToStaticMarkup(<MaterialTable materials={[sample_material]} />);
 
-    ["원재료창고 800개", "생산창고 400개", "500개", "2026.09.04"].forEach((value) =>
+    ["원재료창고 800 kg", "생산창고 400 kg", "500 kg", "2026.09.04"].forEach((value) =>
       expect(markup).toContain(value),
     );
   });

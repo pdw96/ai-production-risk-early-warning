@@ -8,13 +8,15 @@ import { FinishedGoodsTable } from "./finished-goods-table";
 const sample_product: FinishedGoods = {
   expired_stock: 40,
   inspection_pending_stock: 30,
+  intake_pending_stock: 15,
   product_code: "FG-01",
   product_id: 1,
   product_name: "가상 제품 A",
+  stock_uom: "EA",
   rejected_stock: 20,
   releasable_stock: 110,
   shelf_life_days: 180,
-  total_lot_quantity: 200,
+  total_lot_quantity: 215,
 };
 
 describe("FinishedGoodsTable", () => {
@@ -23,9 +25,23 @@ describe("FinishedGoodsTable", () => {
       <FinishedGoodsTable finishedGoods={[sample_product]} />,
     );
 
-    ["FG-01", "ID 1", "가상 제품 A", "180일", "110개", "30개", "20개", "40개", "200개"].forEach(
+    ["FG-01", "ID 1", "가상 제품 A"].forEach((expected) => {
+      expect(markup).toContain(expected);
+    });
+
+    // 칸 경계까지 함께 본다. 그냥 `toContain("15개")` 로 두면 보유 합계
+    // 「215개」가 그 문자열을 품어, 입고 대기 칸을 통째로 지워도 통과한다
+    // (그렇게 되는 것을 확인했다).
+    ["180일", "110개", "30개", "20개", "15개", "40개", "215개"].forEach(
       (expected) => {
-        expect(markup).toContain(expected);
+        expect(markup).toContain(`>${expected}</td>`);
+      },
+    );
+
+    // 값만 보면 머리글이 사라져도 알 수 없다. 다섯 수량의 이름도 함께 고정한다.
+    ["출하 가능", "검사 대기", "불합격", "입고 대기", "만료", "보유 합계"].forEach(
+      (heading) => {
+        expect(markup).toContain(`>${heading}</th>`);
       },
     );
   });

@@ -38,7 +38,7 @@ export function WarehouseStockTable({ lots }: Readonly<{ lots: WarehouseLot[] }>
                 <span className="table-secondary">{lot.item_code}</span>
               </td>
               <td><span className="table-secondary">{lot.lot_number}</span></td>
-              <td className="numeric-cell">{format_quantity(lot.quantity)}</td>
+              <td className="numeric-cell">{format_quantity(lot.quantity, lot.stock_uom)}</td>
               <td>
                 <span className="table-secondary">{format_stocked_label(lot)}</span>
                 {format_date(lot.stocked_date)}

@@ -3,8 +3,8 @@ import React from "react";
 import type { BomRequirement, MasterItem } from "../lib/api";
 import { format_quantity } from "../lib/format";
 
-function format_optional_quantity(value: number | null): string {
-  return value === null ? "해당 없음" : format_quantity(value);
+function format_optional_quantity(value: number | null, unit: string): string {
+  return value === null ? "해당 없음" : format_quantity(value, unit);
 }
 
 // 설정기간이 없다는 것은 유효기간을 두지 않는 품목이라는 뜻이다. "해당 없음"
@@ -40,7 +40,7 @@ export function MasterItemTable({ items }: Readonly<{ items: MasterItem[] }>) {
               <td>{item.item_type}</td>
               <td><span className="table-primary-link">{item.item_code}</span></td>
               <td><strong>{item.item_name}</strong></td>
-              <td className="numeric-cell">{format_optional_quantity(item.safety_stock)}</td>
+              <td className="numeric-cell">{format_optional_quantity(item.safety_stock, item.stock_uom)}</td>
               <td className="numeric-cell">{format_shelf_life(item.shelf_life_days)}</td>
               <td className="numeric-cell">
                 {item.lot_count === null ? "해당 없음" : `${item.lot_count}건`}
@@ -78,7 +78,7 @@ export function BomTable({
                 <strong>{requirement.material_name}</strong>
                 <span className="table-secondary">{requirement.material_code}</span>
               </td>
-              <td className="numeric-cell">{format_quantity(requirement.unit_quantity)}</td>
+              <td className="numeric-cell">{format_quantity(requirement.unit_quantity, requirement.unit_quantity_uom)}</td>
             </tr>
           ))}
         </tbody>

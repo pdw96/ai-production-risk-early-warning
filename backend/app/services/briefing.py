@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, timedelta
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import (
     FINISHED_GOODS_WAREHOUSES,
+    FINISHED_ITEM,
     INCOMING_INSPECTION,
     MATERIAL_WAREHOUSES,
     OUTGOING_INSPECTION,
@@ -17,17 +19,17 @@ from app.core.config import (
     QC_FAILED,
     QC_PASSED,
     QC_PENDING,
+    RAW_ITEM,
     RAW_MATERIAL_WAREHOUSE,
     WAREHOUSE_SLUGS,
 )
 from app.db.models import (
-    BomRequirement,
+    BomComponent,
     DailyProduction,
     FinishedGoodsLot,
-    Material,
+    Item,
     MaterialLot,
     Order,
-    Product,
     PurchaseReceipt,
     QualityInspection,
     RiskStatus,
@@ -72,7 +74,8 @@ RECENT_INSPECTIONS_PER_TYPE = 20
 WAREHOUSE_DESCRIPTIONS = {
     RAW_MATERIAL_WAREHOUSE: "입고된 자재를 보관합니다.",
     PRODUCTION_WAREHOUSE: (
-        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격한 완제품이 있습니다."
+        "원재료창고에서 이동한 자재와, 출하검사를 기다리거나 불합격했거나"
+        " 합격했지만 아직 제품창고로 옮겨지지 않은 완제품이 있습니다."
     ),
     PRODUCT_WAREHOUSE: "출하검사에 합격한 완제품만 적재됩니다. 출하는 여기서만 일어납니다.",
 }
@@ -97,7 +100,7 @@ def list_orders(session: Session) -> list[OrderResponse]:
     reference_date = get_reference_date(session)
     orders = session.scalars(
         select(Order)
-        .options(selectinload(Order.product), selectinload(Order.daily_productions))
+        .options(selectinload(Order.item), selectinload(Order.daily_productions))
         .order_by(Order.due_date, Order.id)
     ).all()
     return [_build_order_response(order, reference_date) for order in orders]
@@ -108,7 +111,7 @@ def get_order(session: Session, order_id: int) -> OrderDetailResponse | None:
     order = session.scalar(
         select(Order)
         .where(Order.id == order_id)
-        .options(selectinload(Order.product), selectinload(Order.daily_productions))
+        .options(selectinload(Order.item), selectinload(Order.daily_productions))
     )
     if order is None:
         return None
@@ -136,13 +139,14 @@ def get_order(session: Session, order_id: int) -> OrderDetailResponse | None:
 def list_materials(session: Session) -> list[MaterialResponse]:
     reference_date = get_reference_date(session)
     materials = session.scalars(
-        select(Material)
+        select(Item)
+        .where(Item.item_type == RAW_ITEM)
         .options(
-            selectinload(Material.bom_requirements),
-            selectinload(Material.purchase_receipts),
-            selectinload(Material.lots),
+            selectinload(Item.used_in),
+            selectinload(Item.purchase_receipts),
+            selectinload(Item.material_lots),
         )
-        .order_by(Material.code)
+        .order_by(Item.code)
     ).all()
     planned_by_product_day = _planned_quantities_by_product_day(
         session,
@@ -159,6 +163,56 @@ def list_materials(session: Session) -> list[MaterialResponse]:
     ]
 
 
+def _single_uom(units: Iterable[str]) -> str | None:
+    """여럿을 더한 수량이 쓸 단위. 갈리면 None 이다.
+
+    제품을 넘어 더하는 숫자에 단위를 붙일 수 있는 것은 **모두 같은 단위일 때뿐**
+    이다. 킬로그램과 개수를 더한 값에는 붙일 단위가 없고, 그때 화면은 「개」라고
+    적는 대신 단위가 혼재한다고 말해야 한다.
+
+    **더한 것이 하나도 없을 때도 None 이다.** 그 둘은 다른 상태이지만, 부르는
+    쪽이 보태는 줄만 넘기므로 여기 빈 목록이 오면 합이 0 이라는 뜻이고 — 수량은
+    음수가 될 수 없다 — 0 에는 붙일 단위도 잘못될 단위도 없다. 화면은 그래서
+    「0」을 그냥 적고 「혼재」라고 말하지 않는다.
+
+    그 「음수가 될 수 없다」를 **데이터베이스가 강제한다**(수량을 가진 표 여섯의
+    `>= 0` CHECK). 강제하지 않으면 음수가 섞여 서로 다른 단위가 0 으로 상쇄되고,
+    화면은 섞인 것을 빈 것으로 읽는다.
+    """
+    distinct = set(units)
+    return distinct.pop() if len(distinct) == 1 else None
+
+
+def _achievement_rate(
+    planned: float,
+    actual: float,
+    planned_uom: str | None,
+    actual_uom: str | None,
+) -> float | None:
+    """실적 ÷ 계획. **그 나눗셈이 뜻을 가질 때만** 값이 있다.
+
+    계획과 실적은 서로 다른 제품 집합에서 나오므로 단위가 갈릴 수 있다. m² 로
+    세운 계획과 개수로 오른 실적을 나누면 90% 같은 숫자가 나오는데 **그 숫자는
+    아무것도 뜻하지 않는다** — 화면은 그것으로 「계획 달성/미달」까지 적는다.
+    그때는 값을 내지 않고 화면이 비교 불가를 말하게 한다.
+
+    실적이 0 인 날은 단위가 갈릴 수 없다(보탠 것이 없으므로). 그래서 계획을
+    통째로 놓친 날의 0% 는 그대로 살아 있다 — 이 구별을 잃으면 「계획을 놓친
+    날」이 「비교할 수 없는 날」로 바뀐다.
+
+    계획이 0 인 날은 나눌 것이 없어 예전처럼 0 이다. 그날을 화면은 달성률이
+    아니라 **「계획 없음」**으로 읽으므로 이 값이 판정을 만들지 않는다.
+    """
+    if not planned:
+        return 0.0
+    if planned_uom is None:
+        # 계획 자체가 여러 단위를 더한 값이다. 분모가 이미 뜻이 없다.
+        return None
+    if actual and actual_uom != planned_uom:
+        return None
+    return round(actual / planned * 100, 1)
+
+
 def list_production_results(session: Session) -> list[ProductionResultResponse]:
     """생산관리 화면용 일자별 생산실적(생산일보)을 최근 날짜부터 만든다."""
     reference_date = get_reference_date(session)
@@ -169,16 +223,32 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
             DailyProduction.planned_quantity,
             DailyProduction.actual_quantity,
             DailyProduction.order_id,
-        ).where(DailyProduction.work_date.between(start_date, reference_date))
+            Item.stock_uom,
+        )
+        .join(Order, DailyProduction.order_id == Order.id)
+        .join(Item, Order.item_id == Item.id)
+        .where(DailyProduction.work_date.between(start_date, reference_date))
     ).all()
 
     planned_by_day: defaultdict[date, float] = defaultdict(float)
     actual_by_day: defaultdict[date, float] = defaultdict(float)
     orders_by_day: defaultdict[date, set[int]] = defaultdict(set)
-    for work_date, planned, actual, order_id in rows:
+    # 그날 더해진 제품들의 단위. 하나로 모이지 않으면 그 합에는 붙일 단위가 없다.
+    #
+    # **계획과 실적을 따로 모은다.** 둘은 서로 다른 제품 집합에서 나온다 —
+    # 계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면, 한
+    # 뭉치로 모을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    planned_units_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    actual_units_by_day: defaultdict[date, set[str]] = defaultdict(set)
+    for work_date, planned, actual, order_id, stock_uom in rows:
         planned_by_day[work_date] += float(planned or 0)
         actual_by_day[work_date] += float(actual or 0)
+        # 0 인 쪽은 그 합에 아무것도 보태지 않으므로 단위도 정하지 않는다 —
+        # 보태지 않은 것이 합의 단위를 바꿔서는 안 된다.
+        if planned:
+            planned_units_by_day[work_date].add(stock_uom)
         if actual:
+            actual_units_by_day[work_date].add(stock_uom)
             orders_by_day[work_date].add(order_id)
 
     results = []
@@ -186,13 +256,19 @@ def list_production_results(session: Session) -> list[ProductionResultResponse]:
         day = reference_date - timedelta(days=offset)
         planned = planned_by_day.get(day, 0.0)
         actual = actual_by_day.get(day, 0.0)
+        planned_uom = _single_uom(planned_units_by_day.get(day, ()))
+        actual_uom = _single_uom(actual_units_by_day.get(day, ()))
         results.append(
             ProductionResultResponse(
                 work_date=day,
                 planned_quantity=round(planned, 2),
                 actual_quantity=round(actual, 2),
-                achievement_rate=round(actual / planned * 100, 1) if planned else 0.0,
+                achievement_rate=_achievement_rate(
+                    planned, actual, planned_uom, actual_uom
+                ),
                 active_order_count=len(orders_by_day.get(day, ())),
+                planned_quantity_uom=planned_uom,
+                actual_quantity_uom=actual_uom,
             )
         )
     return results
@@ -213,22 +289,24 @@ def _distinct_lot_counts(session: Session, owner_column, lot_number_column) -> d
 def get_master_data(session: Session) -> MasterDataResponse:
     """기준정보관리 화면용 품목 마스터와 BOM을 만든다."""
     products = session.scalars(
-        select(Product)
-        .options(selectinload(Product.bom_requirements))
-        .order_by(Product.code)
+        select(Item)
+        .where(Item.item_type == FINISHED_ITEM)
+        .options(selectinload(Item.components))
+        .order_by(Item.code)
     ).all()
     materials = session.scalars(
-        select(Material)
-        .options(selectinload(Material.bom_requirements))
-        .order_by(Material.code)
+        select(Item)
+        .where(Item.item_type == RAW_ITEM)
+        .options(selectinload(Item.used_in))
+        .order_by(Item.code)
     ).all()
     # 로트는 영구 기록이라 계속 쌓인다. 화면이 쓰는 것은 품목당 정수 하나뿐이므로
     # 행을 다 적재하지 않고 집계 질의로 센다.
     finished_lot_counts = _distinct_lot_counts(
-        session, FinishedGoodsLot.product_id, FinishedGoodsLot.lot_number
+        session, FinishedGoodsLot.item_id, FinishedGoodsLot.lot_number
     )
     material_lot_counts = _distinct_lot_counts(
-        session, MaterialLot.material_id, MaterialLot.lot_number
+        session, MaterialLot.item_id, MaterialLot.lot_number
     )
 
     items = [
@@ -236,12 +314,13 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="제품",
             item_code=product.code,
             item_name=product.name,
+            stock_uom=product.stock_uom,
             # 안전재고는 자재만 관리한다.
             safety_stock=None,
             # 완제품 로트도 한 로트가 두 창고에 나뉠 수 있으므로 번호로 센다.
             lot_count=finished_lot_counts.get(product.id, 0),
             shelf_life_days=product.shelf_life_days,
-            linked_item_count=len(product.bom_requirements),
+            linked_item_count=len(product.components),
         )
         for product in products
     ] + [
@@ -249,29 +328,33 @@ def get_master_data(session: Session) -> MasterDataResponse:
             item_type="자재",
             item_code=material.code,
             item_name=material.name,
-            safety_stock=round(material.safety_stock, 2),
+            stock_uom=material.stock_uom,
+            safety_stock=(
+                None if material.safety_stock is None else round(material.safety_stock, 2)
+            ),
             # 한 로트가 두 창고에 나뉘어 있어도 물리적으로는 한 로트다.
             lot_count=material_lot_counts.get(material.id, 0),
             shelf_life_days=material.shelf_life_days,
-            linked_item_count=len(material.bom_requirements),
+            linked_item_count=len(material.used_in),
         )
         for material in materials
     ]
 
     bom_rows = session.scalars(
-        select(BomRequirement).options(
-            selectinload(BomRequirement.product),
-            selectinload(BomRequirement.material),
+        select(BomComponent).options(
+            selectinload(BomComponent.parent_item),
+            selectinload(BomComponent.child_item),
         )
     ).all()
     bom_requirements = sorted(
         (
             BomRequirementResponse(
-                product_code=row.product.code,
-                product_name=row.product.name,
-                material_code=row.material.code,
-                material_name=row.material.name,
+                product_code=row.parent_item.code,
+                product_name=row.parent_item.name,
+                material_code=row.child_item.code,
+                material_name=row.child_item.name,
                 unit_quantity=round(row.unit_quantity, 2),
+                unit_quantity_uom=row.child_item.stock_uom,
             )
             for row in bom_rows
         ),
@@ -286,15 +369,16 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
     horizon_end = reference_date + timedelta(days=HORIZON_DAYS - 1)
     receipts = session.scalars(
         select(PurchaseReceipt)
-        .options(selectinload(PurchaseReceipt.material))
+        .options(selectinload(PurchaseReceipt.item))
         .order_by(PurchaseReceipt.scheduled_date, PurchaseReceipt.id)
     ).all()
 
     return [
         PurchaseReceiptResponse(
             receipt_id=receipt.id,
-            material_code=receipt.material.code,
-            material_name=receipt.material.name,
+            material_code=receipt.item.code,
+            stock_uom=receipt.item.stock_uom,
+            material_name=receipt.item.name,
             scheduled_date=receipt.scheduled_date,
             scheduled_quantity=round(receipt.scheduled_quantity, 2),
             expiry_date=receipt.expiry_date,
@@ -308,9 +392,10 @@ def list_purchase_receipts(session: Session) -> list[PurchaseReceiptResponse]:
 def list_finished_goods(session: Session) -> list[FinishedGoodsResponse]:
     reference_date = get_reference_date(session)
     products = session.scalars(
-        select(Product)
-        .options(selectinload(Product.finished_goods_lots))
-        .order_by(Product.code)
+        select(Item)
+        .where(Item.item_type == FINISHED_ITEM)
+        .options(selectinload(Item.finished_goods_lots))
+        .order_by(Item.code)
     ).all()
     return [
         _build_finished_goods_response(product, reference_date)
@@ -327,11 +412,14 @@ def get_warehouse_stock(
     창고마다 담는 것이 정해져 있다.
 
     - 원재료창고 — 입고된 자재
-    - 생산창고 — 원재료창고에서 이동한 자재, 그리고 검사 대기·불합격 완제품
+    - 생산창고 — 원재료창고에서 이동한 자재, 그리고 검사 대기 · 불합격 · 합격했지만
+      아직 제품창고로 옮겨지지 않은 완제품
     - 제품창고 — 출하검사 합격 완제품만
 
-    이 규칙은 DB 제약으로 강제되므로 여기서 다시 거르지 않는다. 창고 값으로
-    가져온 것이 곧 그 창고에 있는 것이다.
+    제품창고 쪽만 DB 제약이 강제한다(`제품창고 ⟹ 합격`). 생산창고 쪽은 그
+    역이 아니라서 강제되지 않으며, 그래서 위의 셋째가 설 자리가 있다. 어느
+    쪽이든 여기서 다시 거르지 않는다 — 창고 값으로 가져온 것이 곧 그 창고에
+    있는 것이다.
     """
     warehouse = WAREHOUSE_SLUGS.get(warehouse_slug)
     if warehouse is None:
@@ -343,16 +431,17 @@ def get_warehouse_stock(
     if warehouse in MATERIAL_WAREHOUSES:
         material_lots = session.scalars(
             select(MaterialLot)
-            .options(selectinload(MaterialLot.material))
+            .options(selectinload(MaterialLot.item))
             .where(MaterialLot.warehouse == warehouse)
         ).all()
         rows.extend(
             WarehouseLotResponse(
                 item_type="자재",
-                item_code=lot.material.code,
-                item_name=lot.material.name,
+                item_code=lot.item.code,
+                item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
+                stock_uom=lot.item.stock_uom,
                 stocked_date=lot.received_date,
                 expiry_date=lot.expiry_date,
                 # 자재의 수입검사는 입고 시점에 이미 끝나 있다.
@@ -365,16 +454,17 @@ def get_warehouse_stock(
     if warehouse in FINISHED_GOODS_WAREHOUSES:
         product_lots = session.scalars(
             select(FinishedGoodsLot)
-            .options(selectinload(FinishedGoodsLot.product))
+            .options(selectinload(FinishedGoodsLot.item))
             .where(FinishedGoodsLot.warehouse == warehouse)
         ).all()
         rows.extend(
             WarehouseLotResponse(
                 item_type="제품",
-                item_code=lot.product.code,
-                item_name=lot.product.name,
+                item_code=lot.item.code,
+                item_name=lot.item.name,
                 lot_number=lot.lot_number,
                 quantity=round(lot.quantity, 2),
+                stock_uom=lot.item.stock_uom,
                 stocked_date=lot.produced_date,
                 expiry_date=lot.expiry_date,
                 qc_status=lot.qc_status,
@@ -455,13 +545,13 @@ def _recent_inspections_of_type(
             select(QualityInspection)
             .options(
                 selectinload(QualityInspection.material_lot).selectinload(
-                    MaterialLot.material
+                    MaterialLot.item
                 ),
                 selectinload(QualityInspection.daily_production)
                 .selectinload(DailyProduction.order)
-                .selectinload(Order.product),
+                .selectinload(Order.item),
                 selectinload(QualityInspection.finished_goods_lot).selectinload(
-                    FinishedGoodsLot.product
+                    FinishedGoodsLot.item
                 ),
             )
             .where(QualityInspection.inspection_type == inspection_type)
@@ -480,19 +570,19 @@ def _build_inspection_response(
     """검사 대상이 유형마다 다르므로 화면이 쓸 품목·대상 표기로 풀어 준다."""
     if inspection.material_lot is not None:
         target_type = "자재 로트"
-        item_code = inspection.material_lot.material.code
-        item_name = inspection.material_lot.material.name
+        item_code = inspection.material_lot.item.code
+        item_name = inspection.material_lot.item.name
         target_label = inspection.material_lot.lot_number
     elif inspection.daily_production is not None:
         order = inspection.daily_production.order
         target_type = "생산 실적"
-        item_code = order.product.code
-        item_name = order.product.name
+        item_code = order.item.code
+        item_name = order.item.name
         target_label = order.order_number
     else:
         target_type = "완제품 로트"
-        item_code = inspection.finished_goods_lot.product.code
-        item_name = inspection.finished_goods_lot.product.name
+        item_code = inspection.finished_goods_lot.item.code
+        item_name = inspection.finished_goods_lot.item.name
         target_label = inspection.finished_goods_lot.lot_number
 
     return QualityInspectionResponse(
@@ -514,22 +604,32 @@ def _is_expired(expiry_date: date | None, reference_date: date) -> bool:
 
 
 def _finished_goods_lot_state(lot: FinishedGoodsLot, reference_date: date) -> str:
-    """완제품 로트의 화면 상태. 요약의 네 수량과 1:1로 대응한다.
+    """완제품 로트의 화면 상태. 요약의 다섯 수량과 1:1로 대응한다.
 
     만료를 먼저 보는 이유는, 만료된 로트가 제품창고에 남아 있어도 출하할 수 없기
     때문이다. 그 다음은 창고가 곧 검사 결과라 창고만 보면 된다.
     """
     if _is_expired(lot.expiry_date, reference_date):
         return "만료"
-    if lot.warehouse == PRODUCT_WAREHOUSE:
-        return "출하 가능"
     if lot.qc_status == QC_PENDING:
         return "검사 대기"
-    return "불합격"
+    if lot.qc_status == QC_FAILED:
+        return "불합격"
+    # 여기부터는 합격이다. 합격이라고 곧바로 출하할 수 있는 것은 아니다 —
+    # 제품창고에 들어와 있어야 한다.
+    if lot.warehouse == PRODUCT_WAREHOUSE:
+        return "출하 가능"
+    # 합격했으나 아직 제품창고로 옮겨지지 않은 로트. 창고만 보고 판정하던
+    # 때에는 이 자리가 「불합격」으로 떨어져 **합격 재고가 불합격 수량에
+    # 잡혔다**. 양방향 CHECK 를 단방향 둘로 가르면서(지적 ①) 표현할 수 있게 된
+    # 상태이고, 넷 중 어디에 넣어도 화면이 거짓말을 하므로 **자기 칸이 있다**
+    # (`intake_pending_stock`). 실제로 채워지는 것은 관문 6(재고이동 요청·처리)이
+    # 서는 단계부터이며, 지금 시드에는 이 상태의 로트가 없다.
+    return "입고 대기"
 
 
 def _build_finished_goods_response(
-    product: Product,
+    product: Item,
     reference_date: date,
 ) -> FinishedGoodsResponse:
     lots = product.finished_goods_lots
@@ -541,10 +641,12 @@ def _build_finished_goods_response(
         product_id=product.id,
         product_code=product.code,
         product_name=product.name,
+        stock_uom=product.stock_uom,
         shelf_life_days=product.shelf_life_days,
         releasable_stock=round(quantity_by_state["출하 가능"], 2),
         inspection_pending_stock=round(quantity_by_state["검사 대기"], 2),
         rejected_stock=round(quantity_by_state["불합격"], 2),
+        intake_pending_stock=round(quantity_by_state["입고 대기"], 2),
         expired_stock=round(quantity_by_state["만료"], 2),
         total_lot_quantity=round(sum(lot.quantity for lot in lots), 2),
     )
@@ -679,7 +781,58 @@ def get_dashboard(session: Session) -> DashboardResponse:
     if not actions:
         actions = ["현재 주요 위험이 없습니다. 정상 모니터링을 유지하세요."]
 
+    # 전 제품 합계에 붙일 단위. 갈리면 None 이고, 그때 화면은 「개」라고 적는
+    # 대신 혼재를 말한다.
+    #
+    # 묻는 것은 **그 합에 실제로 들어간 제품들의 단위**다. 완제품 마스터를 전부
+    # 보면, 최근 7일에 생산이 하나도 없는 m² 제품 때문에 개수만 더한 합이
+    # 「혼재」로 표시된다 — 더해지지도 않은 것이 합의 단위를 바꾸는 셈이다.
+    #
+    # **기간이 다른 합에는 단위도 따로 붙는다.** 추이는 7일이고 KPI 는 오늘
+    # 하루인데 단위를 하나만 실으면, 이번 주에 m² 를 한 번 만들었다는 이유로
+    # 오늘의 개수 합계가 「단위 혼재」로 적힌다 — 오늘 더한 것은 전부 개인데도
+    # 그렇다. 7일은 오늘을 품으므로 거짓은 늘 이 방향으로만 난다.
+    contributing_rows = session.execute(
+        select(
+            DailyProduction.work_date,
+            DailyProduction.planned_quantity,
+            DailyProduction.actual_quantity,
+            Item.stock_uom,
+        )
+        .join(Order, Order.item_id == Item.id)
+        .join(DailyProduction, DailyProduction.order_id == Order.id)
+        .where(
+            DailyProduction.work_date.between(
+                reference_date - timedelta(days=6),
+                reference_date,
+            ),
+            # 계획도 실적도 0 인 줄은 합에 아무것도 보태지 않는다. 그런 줄까지
+            # 세면 수량 0 짜리 m² 실적 하나가 개수만 더한 합을 「혼재」로 만든다.
+            or_(
+                DailyProduction.planned_quantity != 0,
+                DailyProduction.actual_quantity != 0,
+            ),
+        )
+    ).all()
+    # 추이 차트는 계획과 실적을 **한 축 위에** 겹쳐 그린다. 그래서 축의 단위는
+    # 둘을 합쳐 하나이며, 실제로 갈리면 그 축이 혼재인 것이 맞다.
+    trend_units = {stock_uom for _d, _p, _a, stock_uom in contributing_rows}
+    # KPI 카드는 둘이 **따로 선 숫자**다. 계획만 선 m² 오더와 실적만 오른 개수
+    # 오더가 오늘 함께 있으면, 한 뭉치로 모을 경우 각각은 단위가 분명한데도 둘
+    # 다 「혼재」가 된다.
+    today_plan_units = {
+        stock_uom
+        for work_date, planned, _a, stock_uom in contributing_rows
+        if work_date == reference_date and planned
+    }
+    today_actual_units = {
+        stock_uom
+        for work_date, _p, actual, stock_uom in contributing_rows
+        if work_date == reference_date and actual
+    }
+
     return DashboardResponse(
+        quantity_uom=_single_uom(trend_units),
         kpis=DashboardKpis(
             due_risk_order_count=sum(
                 order.severity == "위험" for order in orders
@@ -687,6 +840,8 @@ def get_dashboard(session: Session) -> DashboardResponse:
             material_shortage_count=len(material_risks),
             today_plan_quantity=round(today_plan, 2),
             today_actual_quantity=round(today_actual, 2),
+            today_plan_quantity_uom=_single_uom(today_plan_units),
+            today_actual_quantity_uom=_single_uom(today_actual_units),
         ),
         production_trend=production_trend,
         product_trends=product_trends,
@@ -707,13 +862,15 @@ def _build_product_trends(
     """
     # 제품 목록은 실적과 무관하게 전부 가져온다. 조인으로만 뽑으면 최근 7일에
     # 실적이 한 줄도 없는 제품이 선택지에서 통째로 사라진다.
-    names: dict[int, tuple[str, str]] = {
-        product.id: (product.code, product.name)
-        for product in session.scalars(select(Product).order_by(Product.code)).all()
+    names: dict[int, tuple[str, str, str]] = {
+        product.id: (product.code, product.name, product.stock_uom)
+        for product in session.scalars(
+            select(Item).where(Item.item_type == FINISHED_ITEM).order_by(Item.code)
+        ).all()
     }
     rows = session.execute(
         select(
-            Order.product_id,
+            Order.item_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.planned_quantity),
             func.sum(DailyProduction.actual_quantity),
@@ -725,7 +882,7 @@ def _build_product_trends(
                 reference_date,
             )
         )
-        .group_by(Order.product_id, DailyProduction.work_date)
+        .group_by(Order.item_id, DailyProduction.work_date)
     ).all()
 
     totals: dict[int, dict[date, tuple[float, float]]] = defaultdict(dict)
@@ -733,7 +890,7 @@ def _build_product_trends(
         totals[product_id][work_date] = (float(planned or 0), float(actual or 0))
 
     trends = []
-    for product_id, (code, name) in sorted(names.items(), key=lambda item: item[1][0]):
+    for product_id, (code, name, uom) in sorted(names.items(), key=lambda item: item[1][0]):
         points = []
         for offset in range(6, -1, -1):
             day = reference_date - timedelta(days=offset)
@@ -746,7 +903,12 @@ def _build_product_trends(
                 )
             )
         trends.append(
-            ProductTrend(product_code=code, product_name=name, points=points)
+            ProductTrend(
+                product_code=code,
+                product_name=name,
+                stock_uom=uom,
+                points=points,
+            )
         )
     return trends
 
@@ -778,8 +940,9 @@ def _build_order_response(order: Order, reference_date: date) -> OrderResponse:
     return OrderResponse(
         order_id=order.id,
         order_number=order.order_number,
-        product_code=order.product.code,
-        product_name=order.product.name,
+        product_code=order.item.code,
+        product_name=order.item.name,
+        stock_uom=order.item.stock_uom,
         due_date=order.due_date,
         planned_quantity=round(order.planned_quantity, 2),
         actual_quantity=round(actual_quantity, 2),
@@ -799,13 +962,13 @@ def _planned_quantities_by_product_day(
     horizon_end = reference_date + timedelta(days=HORIZON_DAYS - 1)
     rows = session.execute(
         select(
-            Order.product_id,
+            Order.item_id,
             DailyProduction.work_date,
             func.sum(DailyProduction.planned_quantity),
         )
         .join(Order, DailyProduction.order_id == Order.id)
         .where(DailyProduction.work_date.between(reference_date, horizon_end))
-        .group_by(Order.product_id, DailyProduction.work_date)
+        .group_by(Order.item_id, DailyProduction.work_date)
     ).all()
     return {
         (product_id, work_date): float(quantity or 0)
@@ -814,16 +977,16 @@ def _planned_quantities_by_product_day(
 
 
 def _build_material_response(
-    material: Material,
+    material: Item,
     reference_date: date,
     planned_by_product_day: dict[tuple[int, date], float],
 ) -> MaterialResponse:
     daily_demands: defaultdict[date, float] = defaultdict(float)
-    for requirement in material.bom_requirements:
+    for requirement in material.used_in:
         for offset in range(HORIZON_DAYS):
             day = reference_date + timedelta(days=offset)
             daily_demands[day] += (
-                planned_by_product_day.get((requirement.product_id, day), 0)
+                planned_by_product_day.get((requirement.parent_item_id, day), 0)
                 * requirement.unit_quantity
             )
 
@@ -836,7 +999,7 @@ def _build_material_response(
             received_date=lot.received_date,
             expiry_date=lot.expiry_date,
         )
-        for lot in material.lots
+        for lot in material.material_lots
     ]
     # 예정 입고는 도착하면 원재료창고의 로트가 된다.
     scheduled_lots = [
@@ -919,6 +1082,7 @@ def _build_material_response(
         material_id=material.id,
         material_code=material.code,
         material_name=material.name,
+        stock_uom=material.stock_uom,
         current_stock=round(result.available_stock, 2),
         raw_warehouse_stock=round(
             result.stock_by_warehouse.get(RAW_MATERIAL_WAREHOUSE, 0.0), 2

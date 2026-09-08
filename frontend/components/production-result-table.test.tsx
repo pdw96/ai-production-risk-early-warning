@@ -9,6 +9,8 @@ function result(overrides: Partial<ProductionResult> = {}): ProductionResult {
   return {
     achievement_rate: 94.3,
     active_order_count: 30,
+    planned_quantity_uom: "EA",
+    actual_quantity_uom: "EA",
     actual_quantity: 337,
     planned_quantity: 357.22,
     work_date: "2026-08-31",
@@ -49,6 +51,29 @@ describe("ProductionResultTable", () => {
 
     expect(markup).toContain("계획 없음");
     expect(markup).not.toContain("계획 미달");
+  });
+
+  it("neither claims nor denies achievement when the units differ", () => {
+    // 계획은 m² 로 서고 실적은 개수로 올랐다. 나눗셈이 뜻을 갖지 않으므로
+    // 달성률도 판정도 지어내지 않는다.
+    const markup = renderToStaticMarkup(
+      <ProductionResultTable
+        results={[
+          result({
+            achievement_rate: null,
+            planned_quantity: 30,
+            planned_quantity_uom: "m2",
+            actual_quantity: 18,
+            actual_quantity_uom: "EA",
+          }),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("비교 불가");
+    expect(markup).not.toContain("계획 달성");
+    expect(markup).not.toContain("계획 미달");
+    expect(markup).not.toContain("%");
   });
 
   it("calls a fully missed plan a shortfall, not a missing plan", () => {

@@ -23,12 +23,34 @@ InspectionType = Literal["IQC", "PQC", "OQC"]
 InspectionResult = Literal["합격", "불합격"]
 InspectionTargetType = Literal["자재 로트", "생산 실적", "완제품 로트"]
 
+# 제품을 넘어 더한 수량이 쓰는 단위. **더해진 것들의 단위가 하나일 때만 값이
+# 있고, 갈리면 `None` 이다** — 킬로그램과 개수를 더한 숫자에는 붙일 단위가 없다.
+#
+# **더한 것이 하나도 없을 때도 `None`** 이다. 그러나 그때는 합이 0 이다(수량은
+# 음수가 될 수 없다). 그래서 화면은 `None` 을 값으로 갈라 읽는다 — 0 이면 붙일
+# 단위가 없을 뿐이니 「0」을 그냥 적고, 0 이 아니면 실제로 섞인 것이므로
+# 「단위 혼재」라고 말한다. 「0 (단위 혼재)」는 아무 일도 없었다는 뜻이 되어
+# 거짓말이다.
+#
+# 시드가 전부 `EA` 인 것에 기대지 않는다. 기준정보는 화면에서 늘 수 있고, 그때
+# 이 값이 `None` 이 되어 화면이 「단위 혼재」라고 말한다 — 조용히 「개」로 적는
+# 것보다 낫다. 그 합 자체를 단위별로 가르는 것은 그런 완제품이 실제로 생기는
+# 단계의 일이다.
+CrossProductUom = str | None
+
 
 class Envelope(BaseModel, Generic[DataT]):
     data: DataT
 
 
 class ProductionPoint(BaseModel):
+    """하루치 계획·실적 한 점.
+
+    제품별 계열에서는 그 제품의 단위이고, 전 제품 합계 추이에서는 여러 제품을
+    더한 값이다. 후자의 단위는 응답의 `quantity_uom` 이 말한다 — 비어 있으면
+    더할 수 없는 것을 더한 숫자라는 뜻이다.
+    """
+
     work_date: date
     planned_quantity: float
     actual_quantity: float
@@ -39,6 +61,8 @@ class OrderResponse(BaseModel):
     order_number: str
     product_code: str
     product_name: str
+    # 이 오더의 모든 수량이 쓰는 단위. 오더는 제품 하나를 가리키므로 값이 하나다.
+    stock_uom: str
     due_date: date
     planned_quantity: float
     actual_quantity: float
@@ -67,6 +91,10 @@ class MaterialResponse(BaseModel):
     material_id: int
     material_code: str
     material_name: str
+    # 아래 모든 수량의 단위(지적 ㉛). 자재는 kg · L · m2 로 갈리므로 이 칸이
+    # 없으면 화면이 320kg 을 「320개」로 적는다 — 저장이 단위를 지키는데 표시가
+    # 지키지 않으면 단위를 못박은 뜻이 없어진다.
+    stock_uom: str
     # 기준일에 도착했고 만료되지 않은 로트의 합(두 창고 합산). 입고를 수요
     # 차감보다 먼저 반영하므로 기준일 당일 도착하는 예정 입고분이 포함되며,
     # 그래서 `material_lots` 행 합계와 다를 수 있다.
@@ -87,10 +115,15 @@ class MaterialResponse(BaseModel):
 
 
 class ProductTrend(BaseModel):
-    """추이 차트에서 제품 하나를 따로 볼 때 쓰는 계열."""
+    """추이 차트에서 제품 하나를 따로 볼 때 쓰는 계열.
+
+    제품 하나를 보는 계열이므로 **단위가 하나로 정해진다.** 전 제품 합계 추이와
+    다른 점이 그것이다.
+    """
 
     product_code: str
     product_name: str
+    stock_uom: str
     points: list[ProductionPoint]
 
 
@@ -101,9 +134,17 @@ class ProductionResultResponse(BaseModel):
     planned_quantity: float
     actual_quantity: float
     # 계획이 0이면 0으로 둔다(나눗셈 불가).
-    achievement_rate: float
+    # 실적 ÷ 계획. **그 나눗셈이 뜻을 가질 때만** 값이 있다 — 계획과 실적의
+    # 단위가 갈리면(둘이 서로 다른 제품 집합에서 나오므로 갈릴 수 있다) `None`
+    # 이다. m² 계획을 개수 실적으로 나눈 90% 는 아무것도 뜻하지 않는다.
+    achievement_rate: float | None
     # 그날 실적이 잡힌 오더 수
     active_order_count: int
+    # 위 두 수량이 각각 쓰는 단위. **계획과 실적은 서로 다른 제품 집합에서
+    # 나온다** — 계획만 선 m² 오더와 실적만 오른 개수 오더가 한 날에 함께 있으면,
+    # 단위를 하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    planned_quantity_uom: CrossProductUom = None
+    actual_quantity_uom: CrossProductUom = None
 
 
 class MasterItemResponse(BaseModel):
@@ -112,6 +153,8 @@ class MasterItemResponse(BaseModel):
     item_type: ItemType
     item_code: str
     item_name: str
+    # 이 품목의 재고 단위. 안전재고가 이 단위로 적힌다.
+    stock_uom: str
     # 안전재고는 자재만 값을 가진다.
     safety_stock: float | None
     # 제품·자재 모두 로트를 가진다(제품은 완제품 로트).
@@ -128,6 +171,9 @@ class BomRequirementResponse(BaseModel):
     material_code: str
     material_name: str
     unit_quantity: float
+    # 소요량의 단위는 **하위 품목의** 재고 단위다. 상위 하나를 만드는 데 드는
+    # 하위의 양이므로, 상위의 단위를 적으면 뜻이 뒤집힌다.
+    unit_quantity_uom: str
 
 
 class MasterDataResponse(BaseModel):
@@ -138,13 +184,15 @@ class MasterDataResponse(BaseModel):
 class FinishedGoodsResponse(BaseModel):
     """제품 한 건의 완제품 재고.
 
-    네 수량은 서로 겹치지 않으며 합이 `total_lot_quantity` 와 같다. 로트를
+    다섯 수량은 서로 겹치지 않으며 합이 `total_lot_quantity` 와 같다. 로트를
     지우지 않으므로(영구 기록) 만료분도 합계에 남는다.
     """
 
     product_id: int
     product_code: str
     product_name: str
+    # 아래 모든 수량이 쓰는 단위. 제품 하나를 보는 응답이라 값이 하나다.
+    stock_uom: str
     shelf_life_days: int | None
     # 제품창고에 있고 만료되지 않은 재고. 출하는 여기서만 일어난다.
     releasable_stock: float
@@ -152,6 +200,13 @@ class FinishedGoodsResponse(BaseModel):
     inspection_pending_stock: float
     # OQC 불합격 재고(생산창고)
     rejected_stock: float
+    # 합격했으나 아직 제품창고로 옮겨지지 않은 재고(생산창고).
+    #
+    # 양방향 CHECK 를 단방향 둘로 가르면서(지적 ①) 표현할 수 있게 된 상태다.
+    # 출하할 수 없으니 「출하 가능」이 아니고, 판정은 끝났으니 「검사 대기」도
+    # 「불합격」도 아니다 — 넷 중 어디에 넣어도 화면이 거짓말을 하므로 칸을
+    # 하나 더 둔다. 채워지는 것은 관문 6(재고이동 요청·처리)이 서는 단계부터다.
+    intake_pending_stock: float = 0.0
     expired_stock: float
     total_lot_quantity: float
 
@@ -168,6 +223,8 @@ class WarehouseLotResponse(BaseModel):
     item_name: str
     lot_number: str
     quantity: float
+    # 수량의 단위. 창고에는 kg 와 L 이 나란히 쌓이므로 줄마다 필요하다.
+    stock_uom: str
     # 자재는 입고일, 완제품은 생산일이다.
     stocked_date: date
     expiry_date: date | None
@@ -185,6 +242,9 @@ class WarehouseStockResponse(BaseModel):
     # 이 창고가 무엇을 담는지 — 화면 설명에 그대로 쓴다.
     description: str
     material_lot_count: int
+    # **단위를 넘어 더한 값이다.** 창고에 kg 와 L 이 함께 있으면 이 숫자는
+    # 뜻이 없다. 칸을 지우면 응답 모양이 깨지므로 남겨 두되, 화면은 이것을
+    # 쓰지 않고 `lots` 의 단위별 합을 직접 낸다.
     material_quantity: float
     product_lot_count: int
     product_quantity: float
@@ -229,6 +289,7 @@ class PurchaseReceiptResponse(BaseModel):
     receipt_id: int
     material_code: str
     material_name: str
+    stock_uom: str
     scheduled_date: date
     scheduled_quantity: float
     expiry_date: date | None
@@ -259,10 +320,21 @@ class DashboardKpis(BaseModel):
     material_shortage_count: int
     today_plan_quantity: float
     today_actual_quantity: float
+    # 위 두 수량이 각각 쓰는 단위. **오늘 하루**에 실제로 보탠 제품들의
+    # 단위이며, 추이의 `quantity_uom` 과 기간이 다르므로 값이 다를 수 있다.
+    #
+    # 계획과 실적을 나누어 싣는 것은 **둘이 서로 다른 제품 집합에서 나오기**
+    # 때문이다. 계획만 선 m² 오더와 실적만 오른 개수 오더가 오늘 함께 있으면,
+    # 단위를 하나만 실을 경우 각각은 단위가 분명한데도 둘 다 「혼재」가 된다.
+    today_plan_quantity_uom: CrossProductUom = None
+    today_actual_quantity_uom: CrossProductUom = None
 
 
 class DashboardResponse(BaseModel):
     kpis: DashboardKpis
+    # 아래 `production_trend` 의 7일 합계가 쓰는 단위. 오늘 하루치 KPI 는
+    # 기간이 달라 단위도 따로 싣는다(`kpis.today_quantity_uom`).
+    quantity_uom: CrossProductUom = None
     # 전 제품 합계 추이. 차트의 기본값이다.
     production_trend: list[ProductionPoint]
     # 같은 기간을 제품별로 나눈 추이. 합계와 날짜 축이 같다.

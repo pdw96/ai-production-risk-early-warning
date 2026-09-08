@@ -1,21 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 import { DataState } from "../components/data-state";
 import { KpiCard } from "../components/kpi-card";
 import { ProductionTrendChart } from "../components/production-trend-chart";
 import { StatusBadge } from "../components/status-badge";
 import { getDashboard, type Dashboard } from "../lib/api";
-
-function format_quantity(value: number): string {
-  return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value)}개`;
-}
-
-function format_percentage(value: number): string {
-  return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(value)}%`;
-}
+// 수량 표기는 한 곳에서만 정한다. 여기 사본을 두었더니 자재에 단위가 생겼을 때
+// 이 화면만 「개」로 남았다 — 같은 규칙을 두 곳에 적으면 반드시 갈린다.
+//
+// 백분율도 같은 일을 겪었다. 「이 화면만의 표기」라고 적어 두고 사본을 두었는데
+// 최소 자릿수가 빠져 있어, 같은 달성률 하나가 대시보드에서는 「100%」 오더
+// 화면에서는 「100.0%」로 나왔다. 사본이 아니라 같은 함수를 쓴다.
+//
+// 날짜만 이 화면의 표기가 맞다 — 여기만 「2026년 9월 7일」로 풀어 적는다.
+import {
+  format_count,
+  format_mixed_quantity,
+  format_percentage,
+  format_quantity,
+} from "../lib/format";
 
 function format_date(value: string | null): string {
   if (!value) {
@@ -26,12 +32,24 @@ function format_date(value: string | null): string {
   return `${year}년 ${month}월 ${day}일`;
 }
 
+/**
+ * 데이터베이스에 아직 아무것도 없는가.
+ *
+ * 이 판단이 **한 번도 참이 될 수 없었다.** 추이는 실적이 없어도 7일치 0을 채워
+ * 보내므로 `production_trend` 는 언제나 7이고, 권고도 위험이 없으면 「현재 주요
+ * 위험이 없습니다」 한 줄이 들어가 0이 되지 않는다. 그래서 표가 비어 있는
+ * 데이터베이스(운영 기본값은 자동 시드를 켜지 않는다)에서 화면은 **아무 문제
+ * 없는 공장**처럼 보였다 — 0으로 채운 차트와 「위험 없음」이 그렇게 읽힌다.
+ *
+ * 대신 **제품이 하나라도 있는가**를 본다. 제품별 계열은 실적과 무관하게 완제품
+ * 마스터에서 나오므로, 그것이 비어 있다는 것은 기준정보가 아직 없다는 뜻이다.
+ * 정상적으로 도는 공장에서는 위험이 없어도 이 목록이 차 있다.
+ */
 function is_empty_dashboard(dashboard: Dashboard): boolean {
   return (
-    dashboard.production_trend.length === 0 &&
+    dashboard.product_trends.length === 0 &&
     dashboard.top_order_risks.length === 0 &&
-    dashboard.top_material_risks.length === 0 &&
-    dashboard.recommended_actions.length === 0
+    dashboard.top_material_risks.length === 0
   );
 }
 
@@ -86,22 +104,30 @@ export default function HomePage() {
 
       <section aria-label="핵심 운영 지표" className="kpi-grid">
         <Link aria-label={`납기 위험 오더 ${dashboard.kpis.due_risk_order_count}건 상세 보기`} href="/orders">
-          <KpiCard detail="납기 일정 재확인 필요" label="납기 위험 오더" value={`${format_quantity(dashboard.kpis.due_risk_order_count).replace("개", "건")}`} />
+          <KpiCard detail="납기 일정 재확인 필요" label="납기 위험 오더" value={format_count(dashboard.kpis.due_risk_order_count)} />
         </Link>
         <Link aria-label={`자재 부족 위험 ${dashboard.kpis.material_shortage_count}건 상세 보기`} href="/materials">
-          <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={`${format_quantity(dashboard.kpis.material_shortage_count).replace("개", "건")}`} />
+          <KpiCard detail="14일 수급 점검 필요" label="자재 부족 위험" value={format_count(dashboard.kpis.material_shortage_count)} />
         </Link>
-        <Link aria-label={`오늘 생산 계획 ${format_quantity(dashboard.kpis.today_plan_quantity)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_quantity(dashboard.kpis.today_plan_quantity)} />
+        {/* 아래 둘은 제품을 넘어 더한 값이고, **각각 자기 단위**를 쓴다. 완제품
+            단위가 갈리면 null 이 되어 「단위 혼재」로 적힌다.
+            추이의 `quantity_uom` 을 쓰지 않는 것은 기간이 다르기 때문이고(이번
+            주에 m² 를 한 번 만들었다는 이유로 오늘의 개수 합계가 혼재가 된다),
+            계획과 실적이 단위를 나눠 갖는 것은 둘이 서로 다른 제품 집합에서
+            나오기 때문이다 — 계획만 선 m² 오더와 실적만 오른 개수 오더가 오늘
+            함께 있으면, 하나로 묶을 때 각각은 분명한데도 둘 다 혼재가 된다. */}
+        <Link aria-label={`오늘 생산 계획 ${format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_plan_quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 계획 물량" label="오늘 생산 계획" value={format_mixed_quantity(dashboard.kpis.today_plan_quantity, dashboard.kpis.today_plan_quantity_uom)} />
         </Link>
-        <Link aria-label={`오늘 생산 실적 ${format_quantity(dashboard.kpis.today_actual_quantity)} 상세 보기`} href="/orders">
-          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_quantity(dashboard.kpis.today_actual_quantity)} />
+        <Link aria-label={`오늘 생산 실적 ${format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_actual_quantity_uom)} 상세 보기`} href="/orders">
+          <KpiCard detail="당일 누적 실적" label="오늘 생산 실적" value={format_mixed_quantity(dashboard.kpis.today_actual_quantity, dashboard.kpis.today_actual_quantity_uom)} />
         </Link>
       </section>
 
       <ProductionTrendChart
         data={dashboard.production_trend}
         productTrends={dashboard.product_trends}
+        totalUnit={dashboard.quantity_uom}
       />
 
       <section className="dashboard-lower-grid">
@@ -145,11 +171,11 @@ export default function HomePage() {
                 <Link href="/materials">
                   <div>
                     <strong>{material.material_name}</strong>
-                    <span>{material.material_code} · 재고 {format_quantity(material.current_stock)}</span>
+                    <span>{material.material_code} · 재고 {format_quantity(material.current_stock, material.stock_uom)}</span>
                   </div>
                   <div className="risk-list__metrics">
                     <StatusBadge severity={material.severity} />
-                    <span>안전재고 {format_quantity(material.safety_stock)}</span>
+                    <span>안전재고 {format_quantity(material.safety_stock, material.stock_uom)}</span>
                   </div>
                 </Link>
               </li>

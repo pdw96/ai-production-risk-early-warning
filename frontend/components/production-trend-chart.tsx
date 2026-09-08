@@ -13,10 +13,16 @@ import {
 import React, { useState } from "react";
 
 import type { ProductionPoint, ProductTrend } from "../lib/api";
+import { format_mixed_quantity, unit_label } from "../lib/format";
 
 interface ProductionTrendChartProps {
   data: ProductionPoint[];
   productTrends?: ProductTrend[];
+  /**
+   * 전 제품 합계가 쓰는 단위. 완제품 단위가 갈리면 `null` 이고, 그때 그 합에는
+   * 붙일 단위가 없다. 제품을 고르면 그 계열의 단위가 이것을 대신한다.
+   */
+  totalUnit?: string | null;
 }
 
 const ALL_PRODUCTS = "전체";
@@ -38,6 +44,7 @@ function format_full_date(value: string): string {
 export function ProductionTrendChart({
   data,
   productTrends = [],
+  totalUnit = "EA",
 }: Readonly<ProductionTrendChartProps>) {
   const [selected_code, set_selected_code] = useState<string | null>(null);
   const selected_trend =
@@ -49,6 +56,16 @@ export function ProductionTrendChart({
   const scope_label = selected_trend
     ? `${selected_trend.product_name} · ${selected_trend.product_code}`
     : "전 제품 합계";
+  // 제품을 고르면 그 제품의 단위가 정해진다. 전 제품 합계는 여러 제품을 더한
+  // 값이라 응답이 그 단위를 따로 말해 주며, 완제품 단위가 갈리면 `null` 이다.
+  const unit = selected_trend ? selected_trend.stock_uom : totalUnit;
+  const quantity_label = (value: number) => format_mixed_quantity(value, unit);
+  // 단위가 없는 이유가 둘이다 — 실제로 섞였거나, 더한 것이 하나도 없거나.
+  // 아무 실적도 없는 창에 「단위: 혼재」라고 적으면 없던 일을 있었다고 말한다.
+  const has_quantity = points.some(
+    (point) => point.planned_quantity !== 0 || point.actual_quantity !== 0,
+  );
+  const unit_heading = unit === null && !has_quantity ? "—" : unit_label(unit);
 
   return (
     <section aria-labelledby="production-trend-title" className="dashboard-panel trend-panel">
@@ -57,7 +74,7 @@ export function ProductionTrendChart({
           <p className="section-kicker">OUTPUT TREND</p>
           <h2 id="production-trend-title">최근 7일 생산 계획 대비 실적</h2>
         </div>
-        <span className="dashboard-panel__meta">{scope_label} · 단위: 개</span>
+        <span className="dashboard-panel__meta">{scope_label} · 단위: {unit_heading}</span>
       </div>
       {productTrends.length > 0 && (
         <div aria-label="추이를 볼 제품 선택" className="trend-panel__filter" role="group">
@@ -103,7 +120,7 @@ export function ProductionTrendChart({
             />
             <Tooltip
               contentStyle={{ background: "#111820", border: "1px solid #2a3945" }}
-              formatter={(value) => `${format_number(Number(value ?? 0))}개`}
+              formatter={(value) => quantity_label(Number(value ?? 0))}
               labelFormatter={(label) => format_full_date(String(label ?? ""))}
             />
             <Legend />
@@ -125,8 +142,8 @@ export function ProductionTrendChart({
           {points.map((point) => (
             <tr key={point.work_date}>
               <th>{format_full_date(point.work_date)}</th>
-              <td>{format_number(point.planned_quantity)}개</td>
-              <td>{format_number(point.actual_quantity)}개</td>
+              <td>{quantity_label(point.planned_quantity)}</td>
+              <td>{quantity_label(point.actual_quantity)}</td>
             </tr>
           ))}
         </tbody>
