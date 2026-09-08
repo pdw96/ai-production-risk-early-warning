@@ -11,7 +11,17 @@ import {
 
 describe("operation formatters", () => {
   it("formats quantities with Korean numeric grouping", () => {
-    expect(format_quantity(1234.5)).toBe("1,234.5개");
+    expect(format_quantity(1234.5, "EA")).toBe("1,234.5개");
+  });
+
+  it("requires the unit — a call site cannot fall back to 개", () => {
+    // 기본값이 있던 동안에는 단위를 빠뜨린 자리가 컴파일되고 조용히 「개」를
+    // 적었고, 그것이 리뷰 열두 라운드의 뿌리였다. 이제 `tsc --noEmit` 이
+    // 호출부에서 잡으므로 사람이 훑을 일이 아니다.
+    // @ts-expect-error 단위 없이 부를 수 없다
+    expect(() => format_quantity(1234.5)).not.toBeNull();
+    // @ts-expect-error 단위 없이 부를 수 없다
+    expect(() => unit_label()).not.toBeNull();
   });
 
   it("writes the item's own unit, and counts EA as 개", () => {
