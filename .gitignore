@@ -1,6 +1,8 @@
 .worktrees/
 .superpowers/
 backend/.venv/
+# 개발 세션이 정한 데이터베이스 주소. 환경마다 다르고 저장소의 사실이 아니다.
+.devcontainer/database.env
 backend/*.db
 backend/__pycache__/
 backend/**/__pycache__/

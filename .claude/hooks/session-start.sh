@@ -14,16 +14,13 @@ fi
 PROJECT_DIRECTORY="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$PROJECT_DIRECTORY"
 
-# 데이터베이스를 먼저 세워 주소를 얻는다. 세우지 못하는 환경이면 빈 값이다.
-DATABASE_URL="$(bash .devcontainer/database.sh || true)"
-
-if [ -n "$DATABASE_URL" ]; then
-  export DATABASE_URL
-  # 세션의 모든 명령이 같은 엔진을 보게 한다. 이것을 남기지 않으면 준비만
-  # PostgreSQL 로 해 두고 정작 pytest 는 SQLite 로 돌아, 세션과 CI 가 다시 갈린다.
-  if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-    echo "export DATABASE_URL='${DATABASE_URL}'" >> "$CLAUDE_ENV_FILE"
-  fi
-fi
-
 bash .devcontainer/setup.sh
+
+# 준비가 정한 엔진을 세션의 모든 명령이 이어받게 한다. 여기서 다시 판단하지
+# 않는다 — 두 곳이 각자 판단하면 준비는 PostgreSQL 로 해 놓고 pytest 는 SQLite 로
+# 도는 상태가 만들어진다. 그 줄은 `setup.sh` 가 `printf %q` 로 이미 셸에 안전하게
+# 적어 두었으므로 그대로 옮긴다.
+DATABASE_ENVIRONMENT_FILE=".devcontainer/database.env"
+if [ -f "$DATABASE_ENVIRONMENT_FILE" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  cat "$DATABASE_ENVIRONMENT_FILE" >> "$CLAUDE_ENV_FILE"
+fi

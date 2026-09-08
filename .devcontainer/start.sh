@@ -5,10 +5,15 @@ set -euo pipefail
 set -m
 
 # 준비가 PostgreSQL 로 끝났는데 서버만 SQLite 로 뜨면 화면이 빈 데이터베이스를
-# 그린다. 준비와 같은 자리에 물어 같은 답을 받는다.
+# 그린다. 준비가 남긴 주소를 먼저 읽고, 없을 때만 직접 세운다.
 if [ -z "${DATABASE_URL:-}" ]; then
-  DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
-  export DATABASE_URL
+  __database_environment_file="$(dirname "${BASH_SOURCE[0]}")/database.env"
+  if [ -f "$__database_environment_file" ]; then
+    . "$__database_environment_file"
+  else
+    DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
+    export DATABASE_URL
+  fi
 fi
 
 server_pids=()
