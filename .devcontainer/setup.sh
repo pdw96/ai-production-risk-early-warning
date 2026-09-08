@@ -73,6 +73,29 @@ redact_url() {
   printf '%s?%s' "$base" "$redacted"
 }
 
+# 의존성 설치는 **여기서부터 잠근다.** 백엔드도 프론트도 「보고 나서 고치는」
+# 구간이고, 준비와 세션 시작 훅이 겹치면 둘 다 고친다.
+#
+# 실측(2026-09-08): 아래 세 줄을 0.4초 차이로 겹쳐 돌리니 **두 번 다** 한쪽이
+# 종료코드 1 로 죽었다 — `ModuleNotFoundError: No module named
+# 'pip._internal.utils'` · `No module named 'pip._vendor.rich'`. 한쪽의
+# `pip install --upgrade pip` 이 다른 쪽이 쓰고 있는 pip 을 갈아 끼운 것이다.
+# `python -m venv` 만 겹쳤을 때는 세 번 다 무사했으므로, 무는 것은 venv 가
+# 아니라 **pip** 이다.
+#
+# 잠금은 `lock.sh` 한 곳에 있다. 저장소마다 따로 잠근다 — 다른 체크아웃의
+# 설치를 기다릴 이유가 없다.
+# shellcheck source=.devcontainer/lock.sh
+. "$REPOSITORY_ROOT/.devcontainer/lock.sh"
+
+repository_key="$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
+
+# 실패를 **값으로 받는다.** `set -e` 아래에서 0 아닌 값이 그대로 나가면 잠글
+# 자리가 없는 것만으로 준비 전체가 죽는다.
+install_lock_status=0
+open_production_risk_lock "install-${repository_key}" 8 || install_lock_status=$?
+production_risk_lock_note "$install_lock_status"
+
 python -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip
 backend/.venv/bin/python -m pip install -r backend/requirements.txt
@@ -95,20 +118,8 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 # `npm error code ENOTEMPTY / syscall rmdir / path .../node_modules/ws/lib` 와
 # `.../node_modules/esbuild` 의 설치 실패. 한쪽만 실패하는 것이 아니라 **둘 다**다.
 #
-# 잠금은 `prepare-database.sh` 와 같은 것을 쓴다 — 규칙이 두 곳에 적히지 않는다.
-# 저장소마다 따로 잠근다: 다른 체크아웃의 설치를 기다릴 이유가 없다.
-# shellcheck source=.devcontainer/lock.sh
-. "$REPOSITORY_ROOT/.devcontainer/lock.sh"
-
 FRONTEND_LOCK_HASH_FILE="frontend/node_modules/.package-lock-sha256"
 frontend_lock_hash="$(sha256sum frontend/package-lock.json | cut -d' ' -f1)"
-repository_key="$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
-
-# 실패를 **값으로 받는다.** `set -e` 아래에서 0 아닌 값이 그대로 나가면 잠글 자리가
-# 없는 것만으로 준비 전체가 죽는다.
-install_lock_status=0
-open_production_risk_lock "install-${repository_key}" 8 || install_lock_status=$?
-production_risk_lock_note "$install_lock_status"
 
 # **잠근 뒤에 다시 본다.** 앞 사람이 방금 설치를 끝냈다면 해시가 이미 맞다.
 if [ "$(cat "$FRONTEND_LOCK_HASH_FILE" 2>/dev/null || true)" != "$frontend_lock_hash" ]; then
@@ -268,11 +279,34 @@ SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
 } > "$SHELL_HOOK_FILE"
 
 SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 데이터베이스 주소"
+
+# **프로파일도 잠근다 — 여기가 남의 파일을 고치는 유일한 자리다.**
+#
+# 겹쳐 돌면 둘이 같은 임시 파일을 쓰고, 한쪽이 그것을 읽는 동안 다른 쪽이
+# 잘라 버린다. 그러면 사람의 셸 설정이 **영구히 사라진다.**
+# 실측(2026-09-08): 30만 줄짜리 프로파일에 0.12초 차이로 겹쳐 돌리니 네 번 중
+# 한 번 **9,144줄이 없어졌다**(290,856/300,000 남음). 우리 토막이 아니라
+# 그 사람의 줄이다.
+#
+# 잠금 열쇠는 저장소가 아니라 **집**이다 — 두 체크아웃이 같은 `$HOME/.bashrc` 를
+# 고치므로, 저장소마다 잠그면 서로를 못 본다.
+home_key="$(printf '%s' "$HOME" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
+profile_lock_status=0
+open_production_risk_lock "profile-${home_key}" 7 || profile_lock_status=$?
+production_risk_lock_note "$profile_lock_status"
+
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue
   # 예전 형태로 적힌 것이 남아 있을 수 있다. 표식부터 그 토막의 `esac` 까지를
   # 걷어내고 새로 적는다 — 이 줄은 이제 늘 같으므로 결과는 안정된다.
   if grep -qF "$SHELL_HOOK_MARKER" "$profile"; then
+    # 임시 이름에 **이 프로세스의 번호**를 넣는다. 잠금이 서지 않는 환경에서도
+    # 둘이 같은 파일을 밟지 않게 하는 마지막 방어다.
+    scratch="${profile}.production-risk.$$"
+    # `cp -p` 로 먼저 권한과 소유를 그대로 가져오고, `>` 로 **내용만** 갈아
+    # 끼운다(자르기는 모드와 소유를 건드리지 않는다). 그래야 `mv` 로 옮긴 뒤에도
+    # 그 집 사람의 파일 그대로다 — 준비 스크립트가 정할 것이 아니다.
+    cp -p "$profile" "$scratch"
     awk -v marker="$SHELL_HOOK_MARKER" '
       $0 == "" && !dropping { blanks++; next }
       $0 == marker { dropping = 1; blanks = 0; next }
@@ -280,11 +314,10 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
       dropping { next }
       { for (; blanks > 0; blanks--) print ""; print }
       END { for (; blanks > 0; blanks--) print "" }
-    ' "$profile" > "${profile}.production-risk"
-    # 새 파일로 갈아 끼우지 않고 **내용만** 옮긴다. 프로파일의 권한과 소유는
-    # 그 집 사람의 것이고, 준비 스크립트가 정할 것이 아니다.
-    cat "${profile}.production-risk" > "$profile"
-    rm -f "${profile}.production-risk"
+    ' "$profile" > "$scratch"
+    # **한 순간에** 갈아 끼운다. `cat` 은 쓰는 동안 파일이 반쯤인 상태가 있고,
+    # 하필 그때 셸이 읽으면 그 사람의 설정이 반만 실린다.
+    mv "$scratch" "$profile"
   fi
   {
     printf '\n%s\n' "$SHELL_HOOK_MARKER"
@@ -301,6 +334,8 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
       "$SHELL_HOOK_FILE" "$SHELL_HOOK_FILE"
   } >> "$profile"
 done
+
+close_production_risk_lock 7
 
 # 고른 엔진을 쓸 수 있는 상태로 만든다. 차례는 `prepare-database.sh` 한 곳에만
 # 적혀 있고, 엔진을 고르는 곳(`setup.sh` · `start.sh`)이 둘 다 그것을 부른다.

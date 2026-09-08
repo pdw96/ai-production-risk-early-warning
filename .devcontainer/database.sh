@@ -279,7 +279,17 @@ if ! database_exists; then
   #
   # 그래서 실패했을 때 한 번 더 **있는지 묻는다.** 있으면 이긴 쪽이 만든 것이니
   # 그대로 간다 — 쓸 수 있는지는 어차피 아래 판정이 마지막에 묻는다.
-  if ! $CREATEDB "$DATABASE_NAME" 2>/dev/null && ! database_exists; then
+  #
+  # **붙을 곳을 여기에도 적는다.** 위의 권한 명령들과 같은 이유다 — 다만 이쪽은
+  # 지금 당장 깨지는 자리가 아니라 **약속되지 않은 동작에 기대고 있던** 자리다.
+  # 실측(2026-09-08, createdb 16.13): `postgres` 는 있는데 이 역할의 `CONNECT` 이
+  # 없고 `template1` 은 되는 상태를 만들어 돌리니 `createdb` 는 **세 번 다
+  # 성공**했다 — 접속이 거부되면 스스로 `template1` 로 물러난다. 그런데 문서가
+  # 약속하는 것은 「`postgres` 가 **없거나** 대상 자신일 때 `template1` 을 쓴다」
+  # 뿐이고, 접속 실패 시의 대체는 적혀 있지 않다. 우리가 이미 고른 값이 있는데
+  # 구현의 습관에 기댈 이유가 없다.
+  if ! $CREATEDB --maintenance-db="$maintenance_database" "$DATABASE_NAME" \
+    2>/dev/null && ! database_exists; then
     fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 을 만들지 못했습니다."
   fi
 fi

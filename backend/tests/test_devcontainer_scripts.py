@@ -502,16 +502,21 @@ def _install_hook(tmp_path: Path, database_url: str) -> tuple[str, str]:
     repository = tmp_path / "repo"
     (repository / ".devcontainer").mkdir(parents=True, exist_ok=True)
 
-    region = _shell_region(SETUP_SCRIPT, "database_host=", "done")
+    region = _shell_region(
+        SETUP_SCRIPT, "database_host=", "close_production_risk_lock 7"
+    )
     script = tmp_path / "install.sh"
     script.write_text(
         "set -euo pipefail\n"
         f'REPOSITORY_ROOT={repository}\n'
         f'DATABASE_ENVIRONMENT_FILE={repository}/.devcontainer/database.env\n'
-        f'DATABASE_URL={database_url!r}\n' + region + "\n",
+        f'DATABASE_URL={database_url!r}\n'
+        # 프로파일 토막이 잠금을 쓴다 — 준비가 그러듯 여기서도 물려 준다.
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n" + region + "\n",
         encoding="utf-8",
     )
     environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
     result = subprocess.run(
         ["bash", str(script)],
         capture_output=True,
@@ -1116,3 +1121,130 @@ def test_dependency_installation_is_serialized(tmp_path: Path) -> None:
     assert len(set(owners)) == 2, f"두 쪽이 다 돌지 않았다: {owners}"
     changes = sum(1 for before, after in zip(owners, owners[1:]) if before != after)
     assert changes == 1, f"설치 구간이 서로 끼어들었다: {owners}"
+
+
+def test_the_profile_rewrite_never_loses_the_persons_lines(tmp_path: Path) -> None:
+    """프로파일은 **남의 파일**이다 — 겹쳐 돌아도 한 줄도 잃지 않는다.
+
+    표식이 이미 있으면 그 토막을 걷어내고 다시 적는데, 겹쳐 돌면 둘이 같은 임시
+    파일을 쓰고 한쪽이 그것을 읽는 동안 다른 쪽이 잘라 버린다. 그러면 **그 사람의
+    셸 설정이 영구히 사라진다.**
+
+    실측(2026-09-08): 30만 줄짜리 프로파일에 0.12초 차이로 겹쳐 돌리니 네 번 중
+    한 번 **9,144줄이 없어졌다**(290,856/300,000 남음). 우리 토막이 아니라 그
+    사람의 줄이다.
+
+    그래서 잠그고, 임시 이름에 프로세스 번호를 넣고, `mv` 로 한 순간에 갈아
+    끼운다. 잃지 않는 것을 **실제로 겹쳐 돌려** 본다 — 글자만 보면 알 수 없다.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    repository = tmp_path / "repo"
+    (repository / ".devcontainer").mkdir(parents=True)
+
+    marker = f"# ai-production-risk({repository}): 개발 세션의 데이터베이스 주소"
+    # 파일이 작으면 겹칠 틈이 없어 이 검사가 무는지 알 수 없다.
+    theirs = [f"export THEIRS_{index}=value_long_enough_{index}" for index in range(40000)]
+    original = "\n".join(
+        theirs
+        + [
+            "",
+            marker,
+            f'case "$PWD/" in {repository}/*)',
+            "  if [ -f /x ]; then",
+            "    . /x",
+            "  fi ;;",
+            "esac",
+            "",
+            "alias ll='ls -l'",
+        ]
+    ) + "\n"
+
+    region = _shell_region(SETUP_SCRIPT, "SHELL_HOOK_MARKER=", "close_production_risk_lock 7")
+    script = tmp_path / "rewrite.sh"
+    script.write_text(
+        "set -uo pipefail\n"
+        f"REPOSITORY_ROOT={repository}\n"
+        f"SHELL_HOOK_FILE={repository}/.devcontainer/shell-hook.sh\n"
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n" + region + "\n",
+        encoding="utf-8",
+    )
+
+    environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
+
+    for _ in range(3):
+        (home / ".bashrc").write_text(original, encoding="utf-8")
+        runs = [
+            subprocess.Popen(
+                ["bash", str(script)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            for _ in range(2)
+        ]
+        for run in runs:
+            assert run.wait(timeout=180) == 0, run.stderr.read()
+
+        written = (home / ".bashrc").read_text(encoding="utf-8")
+        kept = sum(1 for line in written.splitlines() if line.startswith("export THEIRS_"))
+        assert kept == len(theirs), f"그 사람의 줄이 {len(theirs) - kept}개 사라졌다"
+        assert "alias ll='ls -l'" in written
+        # 그러면서 우리 토막은 하나여야 한다 — 겹쳐 돌아도 쌓이지 않는다.
+        assert written.count("ai-production-risk(") == 1
+
+
+def test_the_backend_install_is_inside_the_lock() -> None:
+    """백엔드 설치도 **잠금 안**에 있다.
+
+    실측(2026-09-08): `python -m venv` → `pip install --upgrade pip` →
+    `pip install -r requirements.txt` 세 줄을 0.4초 차이로 겹쳐 돌리니 두 번 다
+    한쪽이 종료코드 1 로 죽었다 —
+    `ModuleNotFoundError: No module named 'pip._internal.utils'`.
+    한쪽의 pip 갈아 끼우기가 다른 쪽이 쓰고 있는 pip 을 무너뜨린 것이다.
+    (`python -m venv` 만 겹쳤을 때는 세 번 다 무사했다 — 무는 것은 venv 가 아니라
+    pip 이다.)
+
+    부르는 쪽이 `set -e` 아래이므로 그 종료 1 은 준비 전체를 끊는다.
+    """
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+    def _line(needle: str) -> int:
+        return next(index for index, line in enumerate(lines) if needle in line)
+
+    opens = _line('open_production_risk_lock "install-')
+    venv = _line("python -m venv backend/.venv")
+    pip = _line("pip install -r backend/requirements.txt")
+    npm = _line("npm --prefix frontend ci")
+    closes = _line("close_production_risk_lock 8")
+
+    assert opens < venv < pip < npm < closes, (
+        "설치 세 갈래가 한 잠금 안에 들어 있지 않다"
+    )
+
+
+def test_createdb_names_the_maintenance_database() -> None:
+    """`createdb` 에도 **붙을 곳을 적는다.**
+
+    이 자리는 지금 당장 깨지지 않는다 — 실측(2026-09-08, createdb 16.13):
+    `postgres` 는 있는데 이 역할의 `CONNECT` 이 없고 `template1` 은 되는 상태에서
+    `createdb` 는 **세 번 다 성공**했다. 접속이 거부되면 스스로 `template1` 로
+    물러난다.
+
+    그런데 문서가 약속하는 것은 「`postgres` 가 **없거나** 대상 자신일 때
+    `template1` 을 쓴다」뿐이고 접속 실패 시의 대체는 적혀 있지 않다. 우리가 이미
+    고른 값이 있는데 **구현의 습관에 기댈 이유가 없다** — 위의 권한 명령들이
+    이미 같은 이유로 `-d` 를 명시한다.
+    """
+    body = "\n".join(
+        line
+        for line in DATABASE_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert '--maintenance-db="$maintenance_database"' in body
