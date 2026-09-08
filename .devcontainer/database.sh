@@ -21,6 +21,26 @@ log() { echo "$@" >&2; }
 
 DATABASE_NAME="production_risk"
 SOCKET_DIRECTORY="/var/run/postgresql"
+DATABASE_PORT="5432"
+
+# 목적지를 **못 박는다.** `pg_isready` · `psql` · `createdb` 는 모두 환경의
+# `PGHOST` · `PGPORT` · `PGUSER` 같은 libpq 변수를 읽는다. 개발자의 셸에 그런
+# 것이 하나라도 내보내져 있으면 조사와 생성은 그쪽 클러스터로 가는데, 이 파일이
+# 마지막에 내미는 주소는 아래의 소켓과 포트로 **고정**되어 있다. 그러면 만든
+# 곳과 알려 준 곳이 갈린다.
+#
+# 실측(2026-09-08): 같은 호스트에 16/alt(5433)를 띄우고 `PGPORT=5433` 을 내보낸
+# 채 이 스크립트를 돌리면 `production_risk` 는 5433 에 생기는데 돌려주는 주소는
+# 포트가 없어 5432 를 가리켰다.
+#
+# 그래서 우리가 약속하는 그 자리만 남기고 나머지는 전부 지운다. 여기 없는
+# 클러스터라면 아래 검사가 실패하고 SQLite 로 물러난다 — 그것이 맞다. 엉뚱한
+# 곳에 데이터베이스를 만들어 놓고 성공했다고 말하는 것보다 낫다.
+unset PGHOSTADDR PGUSER PGDATABASE PGSERVICE PGSERVICEFILE PGPASSFILE \
+  PGPASSWORD PGOPTIONS PGSSLMODE PGREQUIRESSL PGCHANNELBINDING \
+  PGTARGETSESSIONATTRS PGCLIENTENCODING PGCONNECT_TIMEOUT
+export PGHOST="$SOCKET_DIRECTORY"
+export PGPORT="$DATABASE_PORT"
 
 # 못 세우고 물러나는 단 하나의 출구. 표준출력에 아무것도 남기지 않는다.
 fall_back_to_sqlite() {
@@ -103,10 +123,21 @@ fi
 # 하나가 된다 — 데이터베이스가 없을 때는 `createdb` 가 실패해 SQLite 로 물러나고,
 # 있을 때는 준비가 성공한 뒤 **검사가 `CREATE DATABASE` 에서 죽는다.**
 # 그래서 존재가 아니라 **권한**을 묻는다.
+#
+# 그리고 이 조회는 **실패할 수 있다.** 역할이 아예 없으면 소켓 접속이 그 자리에서
+# 거부되어 `psql` 이 0 아닌 값으로 끝나는데, `set -euo pipefail` 아래에서 그
+# 파이프라인을 변수에 담으면 **대입이 곧 종료**가 된다. 그러면 역할을 만들려고
+# 둔 아래 갈래에 영영 닿지 못하고, 「실패해도 죽지 않는다」던 이 파일이 0 아닌
+# 값으로 나가 부르는 쪽의 `set -e` 까지 끌고 내려간다 — 역할이 없는 바로 그
+# 경우에. 실측(2026-09-08): `PGPORT` 로 역할 없는 클러스터를 가리키면 종료코드 2.
+#
+# 그래서 실패를 **빈 답으로 받는다.** 빈 답은 아래에서 「역할이 없다」로 읽히고,
+# 그것이 이 조회가 실패하는 가장 흔한 이유다. 역할이 있는데도 다른 이유로 못
+# 붙은 것이었다면 이어지는 생성이 실패하고, 그때는 SQLite 로 물러난다.
 role="$(id -un)"
 role_can_create="$(psql -d postgres -qtAc \
   "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
-  2>/dev/null | tr -d '[:space:]')"
+  2>/dev/null | tr -d '[:space:]' || true)"
 
 if [ "$role_can_create" = "f" ]; then
   log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
@@ -142,5 +173,20 @@ if ! psql -d postgres -qtAc \
   fi
 fi
 
-# 비밀번호가 들어갈 자리가 아예 없는 주소다.
-echo "postgresql+psycopg:///${DATABASE_NAME}?host=${SOCKET_DIRECTORY}"
+# **있다는 것과 쓸 수 있다는 것은 다르다.** 위의 카탈로그 조회는 남이 만들어 둔
+# `production_risk` 도 「있다」로 답한다. 그 데이터베이스에 이 역할의 `CONNECT`
+# 이 없으면 생성을 건너뛴 채 멀쩡한 주소를 내밀게 되고, 그러면 `setup.sh` 가
+# 약속된 SQLite 로 물러나는 대신 `set -e` 아래 기동 전 검사나 Alembic 에서
+# 죽는다. 실측(2026-09-08): `REVOKE CONNECT ON DATABASE ... FROM PUBLIC` 한
+# 데이터베이스에 대해 카탈로그 조회는 `1` 을 돌려주고 접속은
+# `permission denied for database` 로 거부됐다.
+#
+# 그래서 내밀기 전에 **그 자리로 한 번 붙어 본다.** 못 붙으면 그것도 SQLite 로
+# 가는 길이다.
+if ! psql -d "$DATABASE_NAME" -qtAc "SELECT 1" > /dev/null 2>&1; then
+  fall_back_to_sqlite "데이터베이스 ${DATABASE_NAME} 에 붙지 못했습니다."
+fi
+
+# 비밀번호가 들어갈 자리가 아예 없는 주소다. 소켓과 포트는 위에서 못 박은 그
+# 값이다 — 조사하고 만든 자리와 알려 주는 자리가 같아야 한다.
+echo "postgresql+psycopg:///${DATABASE_NAME}?host=${SOCKET_DIRECTORY}&port=${DATABASE_PORT}"

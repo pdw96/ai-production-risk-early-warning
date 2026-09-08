@@ -7,6 +7,11 @@ cd "$REPOSITORY_ROOT"
 # 정해진 엔진을 이후 명령들이 이어받는 자리. 이 파일 하나가 유일한 대응표다.
 DATABASE_ENVIRONMENT_FILE="$REPOSITORY_ROOT/.devcontainer/database.env"
 
+# 물려받은 주소가 우리 것인지 묻는 판단. `start.sh` · 세션 시작 훅과 **같은
+# 정의**를 쓴다.
+# shellcheck source=.devcontainer/autoselected.sh
+. "$REPOSITORY_ROOT/.devcontainer/autoselected.sh"
+
 # 주소에서 비밀번호만 가린다. 어느 엔진·어느 데이터베이스인지는 사람이 봐야
 # 하므로 통째로 숨기지 않는다.
 #
@@ -38,14 +43,13 @@ if [ "$(cat "$FRONTEND_LOCK_HASH_FILE" 2>/dev/null || true)" != "$frontend_lock_
   printf '%s' "$frontend_lock_hash" > "$FRONTEND_LOCK_HASH_FILE"
 fi
 
-# 지난 세션이 **우리가 고른** 주소를 물려줬다면 그것을 믿지 않는다. 호스트나
-# 컨테이너가 다시 뜨면 그 소켓 뒤의 서버는 내려가 있고, 주소만 물려받으면
-# 준비가 죽은 서버를 향해 돈다. 서버를 세우는 것은 `database.sh` 뿐이므로
-# 그 자리를 지나가야 한다. 사람이 직접 준 주소는 표식이 없으므로 그대로 둔다 —
-# 남의 서버를 우리가 기동할 일이 아니다.
-if [ "${PRODUCTION_RISK_DATABASE_AUTOSELECTED:-}" = "1" ]; then
-  unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED
+# 지난 세션이 **우리가 고른** 주소를 물려줬다면 그것을 믿지 않는다. 왜 그런지와
+# 왜 값까지 견주는지는 `autoselected.sh` 에 적혀 있다.
+if production_risk_url_is_inherited_ours; then
+  unset DATABASE_URL
 fi
+# 표식은 여기서 끝난다. 남겨 두면 아래에서 다시 적는 값과 어긋날 수 있다.
+unset PRODUCTION_RISK_DATABASE_AUTOSELECTED
 
 # 개발 세션도 운영과 같은 엔진을 본다. 세우지 못하는 환경이면 빈 값이 오고,
 # 그때는 예전처럼 SQLite 파일 하나로 돈다.
@@ -78,7 +82,8 @@ if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
     umask 077
     {
       printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
-      printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=1\n'
+      # 표식은 `1` 이 아니라 **자기가 표시하는 그 값**을 들고 다닌다.
+      printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=%q\n' "$DATABASE_URL"
     } > "$DATABASE_ENVIRONMENT_FILE"
   )
 else

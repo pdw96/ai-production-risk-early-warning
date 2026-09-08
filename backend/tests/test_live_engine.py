@@ -46,6 +46,33 @@ from app.db.models import failure_reason_is_present
 # 일회용 데이터베이스 이름의 앞부분. 뒤에는 **이번 실행에만 있는 값**이 붙는다.
 THROWAWAY_PREFIX = "live_engine_"
 
+# PostgreSQL 식별자의 상한. `NAMEDATALEN - 1` 이고, 넘기면 **조용히 잘린다.**
+MAXIMUM_IDENTIFIER_BYTES = 63
+
+
+def _throwaway_name(source: str) -> str:
+    """상한 안에서 만들되, 이번 실행에만 있는 값은 **반드시 남긴다.**
+
+    이름을 그냥 이어 붙이면 63바이트에서 잘리는데, 잘려 나가는 쪽이 하필 뒤에
+    붙인 그 값이다. 설정된 데이터베이스 이름이 38바이트를 넘으면 고유한 꼬리가
+    깎이기 시작하고, 63바이트짜리 이름이면 **잘린 결과가 원본 이름 그 자체**가
+    되어 `CREATE DATABASE` 가 늘 「이미 있다」로 끝난다. 그보다 조금 짧으면 더
+    나쁘다 — 나란히 도는 두 실행이 같은 이름을 얻고, 한쪽의 뒷정리가 다른 쪽이
+    쓰고 있는 데이터베이스를 `WITH (FORCE)` 로 지운다.
+
+    실측(2026-09-08, PostgreSQL 16.13): 63바이트 이름 뒤에 꼬리를 붙여 만들려
+    하면 `NOTICE: identifier ... will be truncated` 에 이어
+    `ERROR: database "aaa…" already exists` 가 났다.
+
+    그래서 깎는 쪽을 **앞부분으로 바꾼다.** 앞부분은 읽는 사람을 위한 것이고,
+    뒤의 값은 안전을 위한 것이다. 바이트로 자르므로 다중바이트 글자가 반 토막
+    날 수 있어, 깨진 조각은 버린다.
+    """
+    suffix = f"_{THROWAWAY_PREFIX}{uuid.uuid4().hex[:12]}"
+    room = MAXIMUM_IDENTIFIER_BYTES - len(suffix.encode("utf-8"))
+    stem = source.encode("utf-8")[:room].decode("utf-8", "ignore")
+    return f"{stem}{suffix}"
+
 
 def _admin_engine(url: sa.engine.URL) -> sa.Engine:
     """일회용 데이터베이스를 만들고 지울 때 붙는 관리용 접속.
@@ -81,7 +108,7 @@ def _make_throwaway_database(url: sa.engine.URL) -> sa.engine.URL:
     `DROP ... IF EXISTS` 로 앞길을 치우지 않는다. 부딪히면 지우는 것이 아니라
     거기서 터지는 것이 맞다.
     """
-    throwaway = f"{url.database}_{THROWAWAY_PREFIX}{uuid.uuid4().hex[:12]}"
+    throwaway = _throwaway_name(url.database)
     admin = _admin_engine(url)
     try:
         with admin.connect() as connection:
@@ -332,3 +359,31 @@ def test_this_engine_refuses_an_integer_written_into_a_boolean_column(
                     " VALUES ('ZZZ', '일회용', 1, '일회용')"
                 )
             )
+
+
+def test_the_throwaway_name_stays_inside_the_identifier_limit() -> None:
+    """긴 데이터베이스 이름에서도 고유한 꼬리가 살아남는다.
+
+    이 검사는 데이터베이스를 열지 않는다. 이름을 짓는 규칙만 묻는다 — 63바이트를
+    넘겨 잘리는 순간 이 파일의 격리가 통째로 무너지기 때문이다.
+    """
+    for length in (1, 37, 38, 39, 50, 63):
+        source = "a" * length
+        first = _throwaway_name(source)
+        second = _throwaway_name(source)
+
+        assert len(first.encode("utf-8")) <= MAXIMUM_IDENTIFIER_BYTES, source
+        # 잘린 결과가 원본 이름이 되면 `CREATE DATABASE` 가 늘 「이미 있다」다.
+        assert first != source
+        # 나란히 도는 두 실행이 같은 이름을 얻으면 한쪽이 다른 쪽을 지운다.
+        assert first != second
+        assert THROWAWAY_PREFIX in first
+
+
+def test_the_throwaway_name_never_splits_a_multibyte_character() -> None:
+    """바이트로 자르므로 글자가 반 토막 날 수 있다. 깨진 조각은 남기지 않는다."""
+    name = _throwaway_name("한" * 40)
+
+    assert len(name.encode("utf-8")) <= MAXIMUM_IDENTIFIER_BYTES
+    # 되감아 인코딩해도 같아야 한다 = 깨진 조각이 없다.
+    assert name.encode("utf-8").decode("utf-8") == name

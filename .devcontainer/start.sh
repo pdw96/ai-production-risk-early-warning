@@ -9,11 +9,14 @@ set -m
 # 다시 뜨면 그 소켓 뒤의 서버는 내려가 있고, 서버를 세우는 것은 `database.sh`
 # 하나뿐이라 그 자리를 건너뛰면 백엔드가 죽은 서버를 향해 뜬다.
 #
-# 그래서 **우리가 고른 주소면 다시 고른다.** 표식이 그 둘을 가른다. 사람이 준
-# 주소에는 표식이 없고, 그대로 쓴다.
-if [ "${PRODUCTION_RISK_DATABASE_AUTOSELECTED:-}" = "1" ]; then
-  unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED
+# 그래서 **우리가 고른 주소면 다시 고른다.** 그 판단은 `setup.sh` · 세션 시작
+# 훅과 같은 정의를 쓴다 — 셋이 각자 적었더니 셋 다 같은 모양으로 틀렸다.
+# shellcheck source=.devcontainer/autoselected.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/autoselected.sh"
+if production_risk_url_is_inherited_ours; then
+  unset DATABASE_URL
 fi
+unset PRODUCTION_RISK_DATABASE_AUTOSELECTED
 if [ -z "${DATABASE_URL:-}" ]; then
   DATABASE_URL="$(bash "$(dirname "${BASH_SOURCE[0]}")/database.sh")"
   export DATABASE_URL
