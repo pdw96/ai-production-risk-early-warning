@@ -895,3 +895,59 @@ def test_the_preparation_sequence_is_serialized(tmp_path: Path) -> None:
     assert len(set(owners)) == 2, f"두 쪽이 다 돌지 않았다: {owners}"
     changes = sum(1 for before, after in zip(owners, owners[1:]) if before != after)
     assert changes == 1, f"준비가 서로 끼어들었다: {owners}"
+
+
+def test_losing_a_role_creation_race_does_not_discard_postgresql(
+    tmp_path: Path,
+) -> None:
+    """역할 경합에서 **진 쪽**도 멀쩡한 엔진을 버리지 않는다.
+
+    데이터베이스 생성과 똑같은 자리다. 준비와 세션 시작 훅이 겹쳐 돌면 둘 다
+    「역할이 없다」를 보고 한쪽만 만든다. 실측(2026-09-08, PostgreSQL 16.13):
+    `CREATE ROLE` 둘을 겹쳐 돌리니 진 쪽이 `duplicate key value violates unique
+    constraint "pg_authid_rolname_index"` 로 끝났고, 역할은 `rolcreatedb = t` 로
+    멀쩡히 있었다.
+
+    진 쪽이 그것을 「권한을 얻지 못했다」로 읽으면 SQLite 로 물러나고, 그러면
+    이긴 쪽이 고른 PostgreSQL 을 지운다.
+    """
+    created = tmp_path / "role-created-by-the-winner"
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            "psql": (
+                'case "$*" in\n'
+                # 역할 조회는 이긴 쪽이 만들었는지에 따라 답이 달라진다.
+                "  *rolcreatedb*)\n"
+                f'    [ -e {created} ] && echo t\n'
+                "    exit 0;;\n"
+                "  *has_schema_privilege*) echo t;;\n"
+                # 우리가 만들려는 사이에 이긴 쪽이 이미 만들어 두었다.
+                "  *CREATE\\ ROLE*)\n"
+                f"    touch {created}\n"
+                '    echo "ERROR:  duplicate key value violates unique constraint'
+                ' \\"pg_authid_rolname_index\\"" >&2\n'
+                "    exit 1;;\n"
+                "  *) echo 1;;\n"
+                "esac"
+            ),
+            "createdb": "exit 0",
+            # 권한 상승은 열어 둔다 — 막으면 이 갈래에 닿지 못한다.
+            "su": 'shift\n[ "$1" = "-c" ] && shift\nexec sh -c "$*"',
+            "sudo": (
+                'while [ "$1" = "-n" ] || [ "$1" = "-u" ]; do\n'
+                '  [ "$1" = "-u" ] && shift\n'
+                "  shift\n"
+                "done\n"
+                'exec "$@"'
+            ),
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip(), (
+        f"역할 경합에서 졌다고 쓸 수 있는 엔진을 버렸다: {result.stderr}"
+    )
