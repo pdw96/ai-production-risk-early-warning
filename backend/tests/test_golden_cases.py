@@ -448,6 +448,17 @@ ORDER_GOLDEN: dict[str, tuple[str, date | None, float]] = {
 }
 
 
+# `ORDER_GOLDEN` 을 보는 두 검사가 함께 쓰는 실패 메시지. 3.11 로 돌리면 001 ·
+# 004 · 025 가 어긋나는데, 맨 diff 만 보면 원인이 판본이라는 것을 알 길이 없다.
+# 건너뛰지 않고 이유를 싣는 쪽을 고른 것은, 건너뛰면 그 판본에서 이 검사가
+# 조용히 사라지기 때문이다(지적 — CodeRabbit).
+_RUNTIME_HINT = (
+    "완료예정일이 어긋난다면 실행 판본부터 보라 — 이 표는 파이썬 3.12 기준이고 "
+    f"지금 {sys.version_info.major}.{sys.version_info.minor} 로 돌고 있다. "
+    "3.11 의 sum() 은 보정 없이 더해 001 · 004 · 025 를 하루씩 뒤로 민다."
+)
+
+
 def test_the_order_risk_of_every_seeded_order_is_fixed(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
@@ -495,11 +506,7 @@ def test_the_order_risk_of_every_seeded_order_is_fixed(
             if (order.due_date - REFERENCE_DATE).days == WARNING_BUFFER_DAYS:
                 boundary_orders.add(order.order_number)
 
-    assert actual == ORDER_GOLDEN, (
-        "완료예정일이 어긋난다면 실행 판본부터 보라 — 이 표는 파이썬 3.12 "
-        f"기준이고 지금 {sys.version_info.major}.{sys.version_info.minor} 로 돌고 있다. "
-        "3.11 에서는 001 · 004 · 025 가 하루씩 뒤로 밀린다."
-    )
+    assert actual == ORDER_GOLDEN, _RUNTIME_HINT
     # 완충 기간 경계를 실제로 밟는 오더가 시드에 남아 있어야 위 표가 그 경계를
     # 지킨다. 시드가 바뀌어 경계 오더가 사라지면 여기서 먼저 드러난다.
     assert boundary_orders, "납기가 기준일 +WARNING_BUFFER_DAYS 인 오더가 없습니다."
@@ -526,7 +533,7 @@ def test_the_order_list_agrees_with_the_golden(
             for order in list_orders(session)
         }
 
-    assert listed == ORDER_GOLDEN
+    assert listed == ORDER_GOLDEN, _RUNTIME_HINT
 
 
 # 아래 셋은 시드의 MO-20260901-025 에서 그대로 가져온 실제 값이다. 계획 600,
