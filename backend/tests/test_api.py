@@ -11,9 +11,8 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.db import base as db_base
 from app.main import app
@@ -28,18 +27,37 @@ REFERENCE_DATE = date(2026, 8, 31)
 
 
 @pytest.fixture
-def client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Generator[TestClient, None, None]:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", session_factory)
+def client(bound_engine: Engine) -> Generator[TestClient, None, None]:
+    """엔드포인트가 붙을 곳은 `DATABASE_URL` 의 엔진 위 **일회용**이다.
+
+    예전에는 여기서 `sqlite://` 인메모리 엔진을 만들어 `db_base` 에 물렸다.
+    그래서 `DATABASE_URL` 을 무엇으로 주든 SQLite 로 돌았고, CI 가 두 엔진에서
+    각각 돌려도 이 파일의 53개는 **같은 엔진을 두 번** 볼 뿐이었다. 화면이 타는
+    길이 **라우터 → ORM** 인데 PR #10 에서 걸린 방언 결함 셋(`LIKE` 대소문자 ·
+    불리언 칸의 정수 · `trim`/`btrim`)이 전부 그 길에서 났으므로, 하필 가장
+    밟아야 할 길이 한 엔진에서만 밟히고 있었다.
+
+    안전장치는 옮긴 것이지 걷어낸 것이 아니다(`conftest.py` 의 `bound_engine`).
+
+    **`StaticPool` 과 `check_same_thread` 를 여기서 지정하지 않는다.**
+    둘 다 `sqlite://` **인메모리** 때문에 있던 것이다 — 인메모리는 접속마다 다른
+    데이터베이스라, 풀을 하나로 묶어 두지 않으면 표를 만든 쪽과 `TestClient` 가
+    다른 스레드에서 읽는 쪽이 갈린다. 공용 엔진의 SQLite 는 **파일**이라 접속이
+    여럿이어도 같은 데이터베이스를 보고, `check_same_thread=False` 는 공용
+    픽스처가 이미 `db_base` 와 같은 모양으로 걸어 둔다. PostgreSQL 은 애초에
+    둘 다 해당이 없다.
+
+    표는 `reset_database(REFERENCE_DATE)` 가 검사마다 지웠다 다시 만든다. 일회용
+    데이터베이스는 모듈마다 하나여서 검사끼리 이어지므로 그 초기화가 있어야
+    앞 검사가 넣은 행이 다음 검사의 단언에 섞이지 않는다.
+
+    엔진을 여기서 `dispose` 하지 않는다 — 만든 것이 아니므로 치우는 것도
+    이쪽 일이 아니다. 공용 픽스처가 제 `finally` 에서 치운다.
+    """
     reset_database(REFERENCE_DATE)
+    session_factory = sessionmaker(
+        bind=bound_engine, autoflush=False, autocommit=False
+    )
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()
@@ -52,7 +70,6 @@ def client(
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    engine.dispose()
 
 
 def test_dashboard_returns_kpis_trend_top_risks_and_actions(client: TestClient) -> None:
