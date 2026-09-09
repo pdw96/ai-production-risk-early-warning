@@ -52,6 +52,23 @@
 # 데이터베이스에 관리자 소유 `audit_log` 하나를 두니, 앱은 `SELECT`·`ALTER` 를
 # 멀쩡히 해내는데 판정만 **1**(SQLite 로 물러남)이었다.
 #
+# **표가 기대는 시퀀스도 함께 본다.** 생성 ID 한 줄을 넣는 데 필요한 것은 표 권한만이
+# 아니다 — 기본값이 부르는 시퀀스에 `USAGE` 가 없으면 그 자리에서 죽는다.
+#
+# 실측(2026-09-09). 이 앱이 만드는 시퀀스는 표에 **묶여** 있어(`OWNED BY`)
+# PostgreSQL 이 소유자 분리를 아예 거부한다:
+# `ERROR: cannot change owner of sequence "items_id_seq" — Sequence is linked to
+# table "items"`. 그래서 그 형태로는 이 틈이 생기지 않는다.
+#
+# 그런데 **묶이지 않은 시퀀스**는 다르다. `CREATE SEQUENCE loose_seq` 를 남이
+# 소유하고 표는 `DEFAULT nextval('loose_seq')` 로 그것을 부르게 두니, 판정은
+# 종료코드 **0**(쓸 수 있다)이었고 바로 다음 `INSERT` 는
+# `permission denied for sequence loose_seq` 였다. 복구했거나 손으로 고친
+# 데이터베이스에서 나올 수 있는 모양이다.
+#
+# 그래서 「이 앱의 표가 기본값으로 부르는 시퀀스」를 `pg_attrdef` 의존으로 찾아
+# 함께 묻는다 — 이름으로 짐작하지 않는다.
+#
 # 목록은 `app-tables.txt` 에서 온다. 그 파일은 `app.db.table_names` 가 만들고
 # `preflight.py` 와 같은 출처(`Base.metadata` · `LEGACY_TABLE_NAMES`)를 쓰며,
 # 낡으면 검사가 빨갛다. 파이썬을 여기서 띄우지 않는 이유는 이 판정을 프로파일
@@ -96,7 +113,17 @@ psql -w -h "$1" -p "$2" -d "$3" -qtAc \
                         FROM pg_class c
                         JOIN pg_namespace n ON n.oid = c.relnamespace
                        WHERE n.nspname = 'public'
-                         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
-                         AND c.relname = ANY (ARRAY[${app_tables}])
-                         AND NOT pg_has_role(current_user, c.relowner, 'USAGE'))" \
+                         AND NOT pg_has_role(current_user, c.relowner, 'USAGE')
+                         AND ((c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                               AND c.relname = ANY (ARRAY[${app_tables}]))
+                           OR (c.relkind = 'S'
+                               AND c.oid IN (SELECT d.refobjid
+                                               FROM pg_depend d
+                                               JOIN pg_attrdef a ON a.oid = d.objid
+                                               JOIN pg_class t ON t.oid = a.adrelid
+                                               JOIN pg_namespace tn ON tn.oid = t.relnamespace
+                                              WHERE d.classid = 'pg_attrdef'::regclass
+                                                AND d.refclassid = 'pg_class'::regclass
+                                                AND tn.nspname = 'public'
+                                                AND t.relname = ANY (ARRAY[${app_tables}])))))" \
   2> /dev/null | grep -qx t

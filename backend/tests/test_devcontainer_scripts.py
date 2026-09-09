@@ -2329,3 +2329,203 @@ def test_the_version_is_probed_through_a_reachable_maintenance_database(
     assert "판입니다" in result.stderr, (
         f"`postgres` 가 없다는 이유로 판 견주기를 건너뛰었다: {result.stderr!r}"
     )
+
+
+def test_the_host_lock_refuses_an_untrusted_directory(tmp_path: Path) -> None:
+    """호스트 잠금 자리는 **믿을 수 있어야** 연다.
+
+    17차에 잠금을 호스트 공용으로 옮기며 「디렉터리 0755, 파일 0666」으로 두었는데,
+    **그 디렉터리를 누가 만드느냐**를 묻지 않았다. 공격자가 먼저 자기 것으로
+    만들어 두면 그 안은 그 사람이 정한다.
+
+    실측(2026-09-09, 이 환경은 `fs.protected_symlinks = 0`): 다른 사용자가
+    `/run/lock/production-risk` 를 자기 0755 디렉터리로 만들고 **매달린 링크**
+    `provision.lock -> /tmp/attack-target` 을 심으니, `[ -e ]` 는 거짓이라 통과했고
+    이어지는 `: >` 가 `umask 0000` 아래에서 그것을 따라가
+    **`-rw-rw-rw- root root /tmp/attack-target`** 을 만들었다. 잠금을 고치려다
+    root 가 남이 고른 경로에 세계쓰기 파일을 만드는 길을 낸 셈이다.
+
+    그래서 소유자·모드·링크 셋을 함께 본다. 여기서는 **그 판정을 직접 돌린다** —
+    실제 `/run/lock` 을 건드리지 않고도 규칙을 물을 수 있다.
+    """
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+
+    def trusted(directory: Path) -> bool:
+        runner = tmp_path / "ask.sh"
+        runner.write_text(
+            f". {lock_script}\n"
+            f'production_risk_directory_is_trusted {shlex.quote(str(directory))}\n',
+            encoding="utf-8",
+        )
+        return (
+            subprocess.run(
+                ["bash", str(runner)], capture_output=True, text=True, timeout=60
+            ).returncode
+            == 0
+        )
+
+    # 우리가 만든 0755 는 믿는다.
+    ours = tmp_path / "ours"
+    ours.mkdir(mode=0o755)
+    assert trusted(ours), "우리 소유의 0755 를 믿지 않는다"
+
+    # 누구나 쓸 수 있으면 안 된다 — 그러면 지금도 링크를 심을 수 있다.
+    loose = tmp_path / "loose"
+    loose.mkdir(mode=0o777)
+    loose.chmod(0o777)
+    assert not trusted(loose), "세계쓰기 디렉터리를 믿는다 — 링크를 심을 수 있다"
+
+    # 링크는 따라가지 않는다.
+    linked = tmp_path / "linked"
+    linked.symlink_to(ours)
+    assert not trusted(linked), "링크된 디렉터리를 믿는다"
+
+    # 그리고 잠금 파일을 여는 자리도 링크를 거부해야 한다.
+    dangling = ours / "victim.lock"
+    dangling.symlink_to(tmp_path / "never-created")
+    runner = tmp_path / "open.sh"
+    runner.write_text(
+        f". {lock_script}\n"
+        'candidate="$1"\n'
+        'if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then\n'
+        '  (set -C; umask 0000; : > "$candidate") 2> /dev/null || true\n'
+        "fi\n"
+        '[ -L "$candidate" ] && exit 1\n'
+        '[ -f "$candidate" ] || exit 1\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["bash", str(runner), str(dangling)], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode != 0, "매달린 링크를 잠금 파일로 받아들였다"
+    assert not (tmp_path / "never-created").exists(), (
+        "매달린 링크를 따라가 공격자가 고른 경로에 파일을 만들었다"
+    )
+
+
+def test_a_username_with_an_at_sign_is_redacted(tmp_path: Path) -> None:
+    """`@` 가 든 사용자 이름 뒤의 비밀번호도 **가려진다.**
+
+    파서는 **마지막 `@`** 로 사용자 정보와 호스트를 가른다. 실측(2026-09-09,
+    SQLAlchemy 2.0.52):
+
+        make_url("postgresql+psycopg://a@b:secret@host/db")
+          → username='a@b' password='secret' host='host'
+
+    그런데 옛 사용자 이름 묶음 `[^:/@]*` 는 첫 `@` 에서 막혀 이 주소를 통째로
+    통과시켰다 — 비밀번호가 세션 시작 로그에 그대로 박힌다.
+    """
+    region = _shell_region(SETUP_SCRIPT, "redact_url() {", "}")
+    keys = next(
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("SAFE_QUERY_KEYS=")
+    )
+    script = tmp_path / "redact.sh"
+    script.write_text(f"{keys}\n{region}\nredact_url \"$1\"\n", encoding="utf-8")
+
+    def redacted(url: str) -> str:
+        done = subprocess.run(
+            ["bash", str(script), url], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    assert "secret" not in redacted("postgresql+psycopg://a@b:secret@host/db")
+    # 사용자 이름 자체는 남겨 둔다 — 비밀이 아니고, 사람이 보아야 하는 값이다.
+    assert "a@b" in redacted("postgresql+psycopg://a@b:secret@host/db")
+    # 그러면서 앞서 고친 것들이 그대로여야 한다.
+    assert "sec/ret" not in redacted("postgresql+psycopg://u:sec/ret@h/db")
+    assert "5432/db" not in redacted("postgresql+psycopg://h:5432/db?options=@x")
+    plain = "postgresql+psycopg:///production_risk?host=/var/run/postgresql&port=5432"
+    assert redacted(plain).strip() == plain
+
+
+def test_the_session_hook_does_not_publish_a_stale_url(tmp_path: Path) -> None:
+    """준비가 **일찍** 실패해도 낡은 주소를 싣지 않는다.
+
+    준비는 데이터베이스를 다시 보기 훨씬 전에 죽을 수 있다 — venv · pip · npm ·
+    잠금. 그때는 옛 `database.env` 가 그대로 남아 있고, 상태를 보지 않으면 그
+    파일을 세션에 그대로 실어 보낸다. 컨테이너를 다시 띄워 PostgreSQL 이 내려간
+    채로 pip 이 실패하면, 엔진을 고르지도 않았는데 죽은 주소를 물려받는다.
+
+    파일이 **남아 있는데도** 싣지 않는지를 본다 — 앞선 검사(파일이 지워진 경우)와
+    다른 자리다.
+    """
+    project = tmp_path / "project"
+    (project / ".devcontainer").mkdir(parents=True)
+    (project / ".claude" / "hooks").mkdir(parents=True)
+    (project / ".claude" / "hooks" / "session-start.sh").write_text(
+        (REPOSITORY_ROOT / ".claude" / "hooks" / "session-start.sh").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    (project / ".devcontainer" / "autoselected.sh").write_text(
+        AUTOSELECTED_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # 의존성 설치에서 죽는다 — 데이터베이스는 보지도 못했다.
+    (project / ".devcontainer" / "setup.sh").write_text(
+        "#!/usr/bin/env bash\nexit 1\n", encoding="utf-8"
+    )
+    # 그래서 지난번 주소가 그대로 남아 있다.
+    (project / ".devcontainer" / "database.env").write_text(
+        "export DATABASE_URL=stale\n", encoding="utf-8"
+    )
+
+    environment_file = tmp_path / "session.env"
+    environment_file.write_text("", encoding="utf-8")
+    done = subprocess.run(
+        ["bash", str(project / ".claude" / "hooks" / "session-start.sh")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            **_environment_without_a_url({}),
+            "CLAUDE_CODE_REMOTE": "true",
+            "CLAUDE_PROJECT_DIR": str(project),
+            "CLAUDE_ENV_FILE": str(environment_file),
+        },
+    )
+
+    written = environment_file.read_text(encoding="utf-8")
+    assert "stale" not in written, "준비가 실패했는데 낡은 주소를 세션에 실었다"
+    assert done.returncode != 0, "준비의 실패가 훅 밖으로 나가지 않는다"
+
+
+def test_a_foreign_owned_sequence_is_not_advertised(tmp_path: Path) -> None:
+    """표가 기대는 **시퀀스**도 함께 묻는다.
+
+    생성 ID 한 줄을 넣는 데 필요한 것은 표 권한만이 아니다. 실측(2026-09-09):
+    이 앱이 만드는 시퀀스는 표에 묶여 있어(`OWNED BY`) PostgreSQL 이 소유자 분리를
+    거부하지만(`Sequence "items_id_seq" is linked to table "items"`), **묶이지 않은
+    시퀀스**는 다르다 — 남이 소유한 `loose_seq` 를 `DEFAULT nextval` 로 부르게 두니
+    판정은 0 이었고 다음 `INSERT` 는 `permission denied for sequence loose_seq` 였다.
+
+    질의가 시퀀스를 **이름이 아니라 의존으로** 찾는지 본다.
+    """
+    usable_script = REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "psql": (
+                'case "$*" in\n'
+                # 시퀀스를 의존으로 찾는 형태면 남의 시퀀스가 걸린다.
+                "  *pg_attrdef*) echo f;;\n"
+                "  *) echo t;;\n"
+                "esac"
+            )
+        },
+    )
+    result = subprocess.run(
+        ["bash", str(usable_script), "/socket", "5432", "production_risk"],
+        capture_output=True,
+        text=True,
+        env=_environment_without_a_url(
+            {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}
+        ),
+        timeout=60,
+    )
+    assert result.returncode != 0, (
+        "표가 기대는 시퀀스를 묻지 않는다 — 시드가 첫 insert 에서 죽는다"
+    )

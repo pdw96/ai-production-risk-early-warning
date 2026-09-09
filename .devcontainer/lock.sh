@@ -19,6 +19,29 @@ PRODUCTION_RISK_LOCK_TIMEOUT=300
 # 같은 문장으로 나오고, 사람이 무엇을 고쳐야 하는지 알 수 없다.
 PRODUCTION_RISK_LOCK_BUSY=77
 
+# 호스트 공용 잠금을 둘 자리인지 묻는다. 믿을 만하면 0.
+#
+#   - 링크가 아니어야 한다(매달린 링크도 링크다).
+#   - 소유자가 root 이거나 우리여야 한다 — 남의 것이면 그 안은 남이 정한다.
+#   - 누구나 쓸 수 있으면 안 된다 — 그러면 지금도 링크를 심을 수 있다.
+#
+# 없으면 0755 로 만들어 본다. 못 만들면 그 자리는 못 쓰는 것이다.
+production_risk_directory_is_trusted() {
+  local directory="$1" owner mode
+  [ -L "$directory" ] && return 1
+  if [ ! -d "$directory" ]; then
+    mkdir -m 0755 "$directory" 2> /dev/null || return 1
+  fi
+  command -v stat > /dev/null 2>&1 || return 1
+  owner="$(stat -c %u "$directory" 2> /dev/null)" || return 1
+  [ "$owner" = "0" ] || [ "$owner" = "$(id -u)" ] || return 1
+  mode="$(stat -c %a "$directory" 2> /dev/null)" || return 1
+  case "$mode" in
+    *[2367]) return 1 ;;
+  esac
+  return 0
+}
+
 # open_production_risk_lock <열쇠> <파일서술자> [범위]
 #   0 잠갔다 · 1 잠글 자리가 없다 · 2 기다리다 지쳤다 · 3 잠금 자체가 실패했다
 #
@@ -48,32 +71,47 @@ PRODUCTION_RISK_LOCK_BUSY=77
 # 여는 길을 내는 셈이 된다 — 병보다 약이 나쁘다.
 #
 # 그래서 **디렉터리는 0755 로 두고 파일만 0666 으로** 만든다. 디렉터리에 쓸 수
-# 있는 것은 그것을 만든 쪽(놓기를 할 수 있는, 즉 root 인 쪽)뿐이라 링크를 심을
-# 자리가 없고, 파일은 이미 있으므로 다른 사용자도 열어서 겨룰 수 있다.
+# 있는 것은 그것을 만든 쪽뿐이라 링크를 심을 자리가 없고, 파일은 이미 있으므로
+# 다른 사용자도 열어서 겨룰 수 있다.
 #
-# 처음 만드는 것이 root 가 아니면 여기서 1 이 나가고 부르는 쪽은 「잠글 자리가
-# 없다」로 다룬다. 그것으로 충분하다 — 이 잠금이 지키는 일(apt · 클러스터)은
-# 어차피 root 여야 할 수 있다.
+# **그런데 「디렉터리를 만든 쪽」이 우리라는 보장이 없다.** 공격자가 먼저 만들어
+# 두면 그 안은 그 사람의 것이다. 실측(2026-09-09): 다른 사용자가
+# `/run/lock/production-risk` 를 자기 것으로 만들고 그 안에 **매달린 링크**
+# `provision.lock -> /tmp/attack-target` 을 심으니, `[ -e ]` 는 거짓이고(링크가
+# 가리키는 것이 없으므로) 이어지는 `: >` 가 `umask 0000` 아래에서 그것을 따라가
+# **`-rw-rw-rw- root root /tmp/attack-target`** 을 만들었다. 잠금을 고치려다 root
+# 가 남이 고른 경로에 세계쓰기 파일을 만드는 길을 낸 셈이다.
+#
+# 그래서 셋을 함께 건다.
+#
+#   1. 디렉터리의 **소유자**가 root 이거나 우리여야 한다. 남의 것이면 믿지 않는다.
+#   2. 디렉터리가 **누구나 쓸 수 있으면** 안 된다 — 그러면 지금도 링크를 심는다.
+#   3. 파일은 `set -C`(noclobber)로 만든다. 그것은 `O_CREAT|O_EXCL` 이라
+#      **경로가 링크이면 매달렸든 아니든 그 자리에서 실패한다.** 그리고 열기
+#      직전에 링크인지 한 번 더 본다.
+#
+# 셋 다 막히면 1 이 나가고 부르는 쪽은 「잠글 자리가 없다」로 다룬다 — 잠그지
+# 못하는 것이지 남의 파일을 여는 것이 아니다.
 open_production_risk_lock() {
-  local key="$1" descriptor="$2" scope="${3:-user}" directory candidate status
+  local key="$1" descriptor="$2" scope="${3:-user}" base directory candidate status
   command -v flock > /dev/null 2>&1 || return 1
   if [ "$scope" = "host" ]; then
-    for directory in /run/lock /var/lock /tmp; do
-      [ -d "$directory" ] || continue
-      directory="$directory/production-risk"
-      # 링크를 따라가지 않는다 — 위의 설명이 그 이유다.
-      if [ -L "$directory" ]; then
-        directory=""
-        continue
-      fi
-      [ -d "$directory" ] || mkdir -m 0755 "$directory" 2> /dev/null || directory=""
-      [ -n "$directory" ] && break
+    for base in /run/lock /var/lock /tmp; do
+      [ -d "$base" ] || continue
+      directory="$base/production-risk"
+      production_risk_directory_is_trusted "$directory" || { directory=""; continue; }
+      break
     done
     [ -n "$directory" ] || return 1
     candidate="$directory/${key}.lock"
-    # 파일은 **모두가 열 수 있어야** 겨룰 수 있다. 디렉터리가 0755 라 이 자리에
-    # 링크를 심을 수 있는 것은 그것을 만든 쪽뿐이다.
-    [ -e "$candidate" ] || (umask 0000 && : > "$candidate") 2> /dev/null || return 1
+    # 파일은 **모두가 열 수 있어야** 겨룰 수 있다. `set -C` 는 `O_CREAT|O_EXCL`
+    # 이라 이 이름이 링크이면 매달렸든 아니든 그 자리에서 실패한다.
+    if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+      (set -C; umask 0000; : > "$candidate") 2> /dev/null || true
+    fi
+    # 열기 직전에 다시 본다 — 만들지 않고 지나온 길도 있다.
+    [ -L "$candidate" ] && return 1
+    [ -f "$candidate" ] || return 1
   else
     directory="${XDG_CACHE_HOME:-$HOME/.cache}/production-risk"
     mkdir -p "$directory" 2> /dev/null || return 1

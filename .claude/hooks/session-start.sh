@@ -35,7 +35,12 @@ DATABASE_ENVIRONMENT_FILE=".devcontainer/database.env"
 # shellcheck source=.devcontainer/autoselected.sh
 . "$PROJECT_DIRECTORY/.devcontainer/autoselected.sh"
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  if [ -f "$DATABASE_ENVIRONMENT_FILE" ]; then
+  # **성공했을 때만 알린다.** 준비는 의존성 설치(venv · pip · npm)나 잠금에서
+  # 먼저 죽을 수 있고, 그때는 데이터베이스를 다시 보지도 못했으므로 옛
+  # `database.env` 가 그대로 남아 있다. 상태를 보지 않으면 그 낡은 주소를 세션에
+  # 그대로 실어 보내게 된다 — 이를테면 컨테이너를 다시 띄워 PostgreSQL 이 내려간
+  # 채로 pip 이 실패한 경우, 엔진을 고르지도 않았는데 죽은 주소를 물려받는다.
+  if [ "$setup_status" = "0" ] && [ -f "$DATABASE_ENVIRONMENT_FILE" ]; then
     cat "$DATABASE_ENVIRONMENT_FILE" >> "$CLAUDE_ENV_FILE"
   elif production_risk_url_is_inherited_ours; then
     # 지난 세션이 고른 PostgreSQL 주소를 물려받았는데 이번에는 그 서버를 세우지
