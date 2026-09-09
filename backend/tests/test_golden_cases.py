@@ -82,6 +82,7 @@ def seeded_session_factory(
 
 
 def _load_material(session: Session, code: str) -> Item:
+    """골든 케이스가 보는 자재 하나를, 계산에 필요한 관계까지 붙여 읽는다."""
     material = session.scalar(
         select(Item)
         .where(Item.code == code)
@@ -147,6 +148,7 @@ def _material_risk_inputs(
 
 
 def _expansion_row(result: MaterialRiskResult) -> dict[str, object]:
+    """전개 한 칸. 고정할 여덟 항목만 남기고 수량은 소수 둘째로 맞춘다."""
     return {
         "stockout_date": result.stockout_date,
         "first_shortage_date": result.first_shortage_date,
@@ -323,9 +325,11 @@ MATERIAL_GOLDEN_EXPANSION: dict[int, dict[str, object]] = {
 def test_the_material_risk_expansion_of_a_seeded_material_is_fixed(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
-    # 시드가 만든 실제 자재 하나를 1일부터 14일까지 전 구간으로 돌려, 어느
-    # 날 무엇이 일어나는지를 통째로 고정한다. 값 하나만 보면 중간 판단이
-    # 그대로 통과하기 때문이다.
+    """시드 자재의 1~14일 전개를 통째로 고정한다.
+
+    시드가 만든 실제 자재 하나를 전 구간으로 돌려 어느 날 무엇이 일어나는지를
+    한 번에 비교한다. 값 하나만 보면 중간 판단이 그대로 통과하기 때문이다.
+    """
     with seeded_session_factory() as session:
         material = _load_material(session, GOLDEN_MATERIAL_CODE)
         lots, safety_stock, daily_demands = _material_risk_inputs(session, material)
@@ -349,9 +353,11 @@ def test_the_material_risk_expansion_of_a_seeded_material_is_fixed(
 def test_the_material_response_agrees_with_the_golden_expansion(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
-    # 위 검사는 엔진에 직접 입력을 넣는다. 그 입력을 만드는 조립 경로가
-    # 어긋나면 엔진이 맞아도 화면이 틀리므로, 실제 응답이 같은 값을 내는지
-    # 한 번 더 본다.
+    """화면 조립 경로가 엔진과 같은 값을 내는지 본다.
+
+    위 검사는 엔진에 직접 입력을 넣는다. 그 입력을 만드는 조립 경로가 어긋나면
+    엔진이 맞아도 화면이 틀리므로, 실제 응답으로 한 번 더 확인한다.
+    """
     with seeded_session_factory() as session:
         material = _load_material(session, GOLDEN_MATERIAL_CODE)
         response = _build_material_response(
@@ -420,6 +426,11 @@ ORDER_GOLDEN: dict[str, tuple[str, date | None, float]] = {
 def test_the_order_risk_of_every_seeded_order_is_fixed(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
+    """시드 생산오더 30건의 심각도 · 완료예정일 · 잔여수량을 고정한다.
+
+    셋을 함께 봐야 하는 것은 심각도만 보면 완료예정일이 하루 밀려도 같은 등급에
+    머물러 통과하기 때문이다. 완충 기간 경계를 밟는 오더가 남아 있는지도 본다.
+    """
     with seeded_session_factory() as session:
         orders = session.scalars(
             select(Order)
@@ -543,6 +554,11 @@ FINISHED_GOODS_STATE_GOLDEN: dict[str, tuple[int, float]] = {
 def test_the_finished_goods_lot_states_of_the_seed_are_fixed(
     seeded_session_factory: sessionmaker[Session],
 ) -> None:
+    """완제품 로트 전체를 상태별로 세어 고정한다.
+
+    다섯 상태의 수량이 화면의 다섯 칸과 1:1 로 대응하므로, 로트 하나가 옆 칸으로
+    새면 그 자리에서 드러난다. 판정 순서가 이 시드에서 실제로 일을 하는지도 본다.
+    """
     with seeded_session_factory() as session:
         lots = session.scalars(select(FinishedGoodsLot)).all()
 
