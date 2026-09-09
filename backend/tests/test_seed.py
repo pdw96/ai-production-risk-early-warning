@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from alembic.config import Config
@@ -862,3 +866,53 @@ def test_preflight_ignores_tables_this_app_does_not_own(tmp_path, monkeypatch) -
     monkeypatch.setattr(preflight, "engine", engine)
 
     assert preflight.check() is None
+
+
+BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
+
+
+def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) -> None:
+    """컨테이너 기동이 오는 길을 **프로세스째** 밟는다.
+
+    `docker-entrypoint.sh` 는 `alembic upgrade head` 로 표를 맞춘 뒤
+    `python -m app.seed --if-empty` 로 내용만 넣는다. 그 길은 표를 만들지 않으므로
+    `drop_all`/`create_all` 안에서 일어나던 모델 등록이 **아무 데서도 일어나지
+    않는다** — 기준정보 모듈의 `common_codes` 가 메타데이터에 없어 품목의 복합
+    외래키가 가리킬 표를 찾지 못하고, 첫 flush 가 `NoReferencedTableError` 로
+    죽는다. 지금까지 CI 는 인자 없는 `python -m app.seed`(표를 지우고 다시 만드는
+    길)만 돌려 이 자리를 한 번도 밟지 않았다.
+
+    같은 프로세스 안에서는 재현되지 않는다. 다른 검사가 이미 두 모듈을 불러
+    등록해 두기 때문이다 — 메타데이터는 프로세스 하나에 하나다. 그래서 프로세스를
+    따로 띄운다.
+
+    엔진은 SQLite 로 고정한다. 이것은 방언 문제가 아니라 **길** 의 문제이고,
+    설정이 가리키는 데이터베이스를 그대로 쓰면 옆에서 돌던 시드와 부딪힌다.
+    """
+    environment = {**os.environ, "DATABASE_PATH": str(tmp_path / "startup.db")}
+    environment.pop("DATABASE_URL", None)
+
+    def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, *arguments],
+            cwd=BACKEND_DIRECTORY,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+    migrated = run("-m", "alembic", "upgrade", "head")
+    assert migrated.returncode == 0, migrated.stderr
+
+    seeded = run("-m", "app.seed", "--if-empty")
+    assert seeded.returncode == 0, seeded.stderr
+
+    # 두 번째 기동은 아무것도 하지 않아야 한다. 하면 사람이 넣은 데이터가 지워진다.
+    again = run("-m", "app.seed", "--if-empty")
+    assert again.returncode == 0, again.stderr
+    assert "건너뜁니다" in again.stdout
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'startup.db').as_posix()}")
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(Item)) == 20
+    engine.dispose()

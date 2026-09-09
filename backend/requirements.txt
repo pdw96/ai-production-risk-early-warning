@@ -5,3 +5,7 @@ pytest>=8.0,<10.0
 httpx2>=2.0,<3.0
 alembic>=1.13,<2.0
 psycopg[binary]>=3.1,<4.0
+# 워크플로 YAML 을 읽는 검사(tests/test_ci_workflow.py)가 쓴다. uvicorn[standard]
+# 가 이미 끌어오지만, 직접 쓰는 것은 직접 적는다 — 남의 부록에 기대면 그쪽이
+# 부록을 정리하는 날 조용히 사라진다.
+pyyaml>=6.0,<7.0

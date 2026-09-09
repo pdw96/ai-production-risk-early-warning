@@ -12,7 +12,6 @@ from sqlalchemy import func, select, text
 from app.core.config import (
     BACKEND_DIRECTORY,
     DEFECTIVE_STOCK,
-    is_sqlite,
     FINISHED_ITEM,
     GOOD_STOCK,
     INCOMING_INSPECTION,
@@ -151,6 +150,14 @@ def seed_if_empty(reference_date: date | None = None) -> bool:
     없어진다. 파일을 지우고 다시 시작하는 탈출구가 PostgreSQL 에는 없으므로,
     그 상태를 만들지 않는 것이 유일한 방어다.
     """
+    # 이 길은 표를 만들지 않으므로 **아무도 메타데이터를 채우지 않는다.**
+    # `reset_database` 는 `drop_all`/`create_all` 안에서 등록이 끝나지만, 여기는
+    # 마이그레이션이 이미 맞춰 둔 표에 내용만 넣는 길이라 그 앞줄이 없다. 그러면
+    # 기준정보 모듈의 `common_codes` 가 메타데이터에 없고, 품목의 복합 외래키가
+    # 가리킬 표를 찾지 못해 첫 flush 가 `NoReferencedTableError` 로 죽는다 —
+    # 컨테이너 기동이 오는 길이 바로 이쪽이다.
+    db_base.register_models()
+
     with db_base.SessionLocal() as session:
         _lock_for_seeding(session)
         if session.scalar(select(func.count()).select_from(Item)):
@@ -166,8 +173,13 @@ def _lock_for_seeding(session) -> None:
     컨테이너가 둘 이상 동시에 뜨면 둘 다 「비어 있다」를 보고 둘 다 시드한다.
     이것은 PostgreSQL 이라서 생기는 문제다 — 파일 하나였을 때는 없던 일이다.
     트랜잭션 잠금이라 커밋이나 롤백에서 저절로 풀린다.
+
+    어느 엔진인지는 **설정이 아니라 이 세션이 붙은 연결**에 묻는다. 설정에
+    물으면 `DATABASE_URL` 이 PostgreSQL 을 가리키는데 세션은 SQLite 에 붙어
+    있는 상태에서 `pg_advisory_xact_lock` 을 SQLite 에 던진다 — 두 값이 갈릴 수
+    있는 자리에서는 문장을 실제로 받는 쪽이 답을 갖고 있다.
     """
-    if is_sqlite():
+    if session.get_bind().dialect.name == "sqlite":
         # 파일 하나를 쓰는 동안 다른 쓰기는 어차피 줄을 선다.
         return
     session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": FIXED_SEED})

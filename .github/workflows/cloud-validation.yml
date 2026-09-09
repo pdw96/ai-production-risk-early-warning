@@ -9,7 +9,36 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    # 운영과 컨테이너가 쓰는 엔진에서 돈다. 여기까지 CI 는 SQLite 하나로 돌았고,
+    # PR #10 에서 걸린 방언 결함 셋(`LIKE` 대소문자 · 불리언 칸의 `1` ·
+    # `trim`/`btrim`)은 **전부 CI 밖에서** 잡혔다 — 리뷰봇과 사람이 직접 컨테이너를
+    # 띄워서다.
+    #
+    # 아래 주소와 서비스의 값이 어긋나면 접속이 그 자리에서 죽는다. 두 곳에 같은
+    # 값을 적는 것을 사람의 주의에 맡기지 않는다 — `backend/tests/test_ci_workflow.py`
+    # 가 이 파일을 읽어 짝을 확인한다.
+    env:
+      DATABASE_URL: postgresql+psycopg://erp:cloud-validation-throwaway@127.0.0.1:5432/production_risk
+
+    services:
+      database:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: erp
+          # 이 잡 안에서만 사는 컨테이너의 비밀번호다. 밖에서 닿지 않으므로 비밀이
+          # 아니며, 운영 비밀번호(`.env` 의 `POSTGRES_PASSWORD`)는 여기 오지 않는다.
+          POSTGRES_PASSWORD: cloud-validation-throwaway
+          POSTGRES_DB: production_risk
+        ports:
+          - 5432:5432
+        # 건강검사가 없으면 첫 접속이 컨테이너 기동보다 앞서 죽는다.
+        options: >-
+          --health-cmd "pg_isready -U erp -d production_risk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     steps:
       - uses: actions/checkout@v7
@@ -29,12 +58,38 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
 
-      - name: Initialize synthetic SQLite data
+      # ── 운영이 실제로 타는 길 ──────────────────────────────────────────
+      # `docker-entrypoint.sh` 와 같은 차례다: 옛 데이터베이스인지 보고,
+      # 마이그레이션으로 표를 맞춘 뒤, 비어 있을 때만 채운다. 지금까지 CI 는
+      # 인자 없는 `python -m app.seed`(= `drop_all`/`create_all`)만 돌려
+      # **마이그레이션 경로를 한 번도 밟지 않았다.**
+      - name: 기동 전 검사와 마이그레이션 (PostgreSQL)
         working-directory: backend
-        run: python -m app.seed
+        run: |
+          python -m app.db.preflight
+          python -m alembic upgrade head
 
-      - name: Test backend
+      - name: 컨테이너 기동과 같은 길로 시드 (PostgreSQL)
         working-directory: backend
+        run: python -m app.seed --if-empty
+
+      # ── 두 엔진 모두에서 돌린다 ────────────────────────────────────────
+      # PostgreSQL 만 돌리면 안 되는 이유: 이 저장소는 SQLite 도 **함께 낸다**.
+      # `app/core/config.py` 의 기본값이 SQLite 파일이고 `db/base.py` 에는
+      # SQLite 전용 외래키 PRAGMA 가 있으며, 기존 검사 대부분이 스스로 SQLite
+      # 엔진을 만들어 붙는다 — 그 길을 아무도 밟지 않으면 배포되는 코드의 한쪽이
+      # 검증 없이 나간다.
+      #
+      # SQLite 만 돌리면 안 되는 이유는 위 서비스 블록의 주석에 있다.
+      - name: 백엔드 검사 — PostgreSQL
+        working-directory: backend
+        run: python -m pytest tests -v
+
+      - name: 백엔드 검사 — SQLite
+        working-directory: backend
+        env:
+          # 빈 값이면 설정이 SQLite 파일로 떨어진다(`app/core/config.py`).
+          DATABASE_URL: ""
         run: python -m pytest tests -v
 
       - name: Install frontend dependencies
