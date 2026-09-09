@@ -39,11 +39,23 @@
 # `must be owner of table items` 로 거부됐다. 앞의 것은 `app.db.preflight` 와
 # 시드가 하는 일이고, 뒤의 것은 `alembic upgrade head` 가 하는 일이다.
 #
-# 그래서 `public` 에 있는 모든 표·뷰·시퀀스의 소유 역할을 이 역할이 지니는지
-# 묻는다 — `pg_has_role(..., 'USAGE')` 는 자기 자신, 물려받은 구성원 자격,
-# 슈퍼유저를 모두 참으로 본다. 실측: `GRANT otherdev TO devprobe` 뒤에는 판정이
-# `t` 로 바뀌었고 그때 `ALTER TABLE` 도 실제로 통과했으며, 되돌리자 다시 `f` 였다.
-# 능력과 판정이 한 칸도 어긋나지 않는다.
+# 그래서 소유 역할을 이 역할이 지니는지 묻는다 — `pg_has_role(..., 'USAGE')` 는
+# 자기 자신, 물려받은 구성원 자격, 슈퍼유저를 모두 참으로 본다. 실측:
+# `GRANT otherdev TO devprobe` 뒤에는 판정이 `t` 로 바뀌었고 그때 `ALTER TABLE` 도
+# 실제로 통과했으며, 되돌리자 다시 `f` 였다. 능력과 판정이 한 칸도 어긋나지 않는다.
+#
+# **묻는 대상은 이 앱의 표뿐이다.** 한때 `public` 의 모든 관계를 물었는데, 그것은
+# 이 저장소가 이미 내린 결정과 어긋난다 — `preflight.py` 는 「보는 것은 이 앱의
+# 표뿐이다. 아무 표나 있으면 막으면, 스키마를 나눠 쓰는 곳에서는 옆에 있는 남의
+# 표 하나 때문에 첫 기동이 영영 마이그레이션을 하지 못한다」고 적어 두었고,
+# `drop_all` 도 같은 목록을 본다. 실측(2026-09-09): 앱의 표는 전부 이 역할 소유인
+# 데이터베이스에 관리자 소유 `audit_log` 하나를 두니, 앱은 `SELECT`·`ALTER` 를
+# 멀쩡히 해내는데 판정만 **1**(SQLite 로 물러남)이었다.
+#
+# 목록은 `app-tables.txt` 에서 온다. 그 파일은 `app.db.table_names` 가 만들고
+# `preflight.py` 와 같은 출처(`Base.metadata` · `LEGACY_TABLE_NAMES`)를 쓰며,
+# 낡으면 검사가 빨갛다. 파이썬을 여기서 띄우지 않는 이유는 이 판정을 프로파일
+# 훅이 새 셸마다 부르기 때문이다 — 실측 0.7초가 셸마다 붙는다.
 #
 # 그래서 이 파일이 답하는 것은 「붙을 수 있는가」가 아니라 **「이 저장소가 이
 # 데이터베이스에 하려는 일을 다 할 수 있는가」**다. `database.sh` 는 이 판정에
@@ -57,9 +69,22 @@ set -uo pipefail
 
 [ "$#" -eq 3 ] || exit 2
 
+DEVCONTAINER_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # shellcheck source=.devcontainer/libpq.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/libpq.sh"
+. "$DEVCONTAINER_DIRECTORY/libpq.sh"
 clear_ambient_libpq_environment
+
+# 목록을 SQL 배열로 옮긴다. 이름은 소문자·숫자·밑줄뿐임을 여기서 **거른다** —
+# 그 파일은 자동 생성물이지만, 질의에 끼워 넣는 값을 믿지 않는 것이 맞다.
+app_tables="$(sed 's/#.*//' "$DEVCONTAINER_DIRECTORY/app-tables.txt" 2> /dev/null \
+  | grep -xE '[a-z][a-z0-9_]*' \
+  | sed "s/.*/'&'/" | paste -sd, -)"
+
+# 목록이 비면 물을 것이 없다. 그때 앞의 세 조건만으로 답하는 것이 맞다 — 빈
+# 목록으로 `= ANY (ARRAY[])` 를 만들면 SQL 이 깨져 **모든 데이터베이스가 못 쓰는
+# 것이 된다.**
+[ -n "$app_tables" ] || app_tables="''"
 
 # `-w` 는 「비밀번호를 절대 묻지 말라」다. 부르는 자리 중 하나는 프로파일 훅이고,
 # 거기서 물음이 뜨면 사람이 새 셸을 열 때마다 프롬프트에 걸린다.
@@ -71,6 +96,7 @@ psql -w -h "$1" -p "$2" -d "$3" -qtAc \
                         FROM pg_class c
                         JOIN pg_namespace n ON n.oid = c.relnamespace
                        WHERE n.nspname = 'public'
-                         AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                         AND c.relname = ANY (ARRAY[${app_tables}])
                          AND NOT pg_has_role(current_user, c.relowner, 'USAGE'))" \
   2> /dev/null | grep -qx t

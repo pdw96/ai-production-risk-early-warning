@@ -19,11 +19,31 @@ set -euo pipefail
 # 안내 문구는 표준오류로 보낸다. 표준출력은 주소 한 줄만 나가는 자리다.
 log() { echo "$@" >&2; }
 
-DATABASE_NAME="production_risk"
 SOCKET_DIRECTORY="/var/run/postgresql"
 DATABASE_PORT="5432"
 
 DEVCONTAINER_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPOSITORY_ROOT="$(cd "$DEVCONTAINER_DIRECTORY/.." && pwd)"
+
+# 판 번호는 `postgresql-version.sh` 한 곳에만 있다 — 놓는 쪽도 같은 숫자를 본다.
+# shellcheck source=.devcontainer/postgresql-version.sh
+. "$DEVCONTAINER_DIRECTORY/postgresql-version.sh"
+
+# **이름은 체크아웃마다 다르다.**
+#
+# 예전에는 `production_risk` 한 이름이었다. 그러면 워크트리 둘이나 나란한 체크아웃
+# 둘이 같은 클러스터에서 **같은 데이터베이스**를 준비하고 검사한다 — 파일과
+# 마이그레이션은 서로 다른데.
+#
+# 실측(2026-09-09): 다른 가지가 남긴 리비전 `deadbeefcafe` 가 `alembic_version` 에
+# 든 데이터베이스에 이 체크아웃이 `alembic upgrade head` 를 돌리니
+# `Can't locate revision identified by 'deadbeefcafe'` 로 죽었다. 가지가 서로
+# 맞더라도 시드 데이터와 손으로 고친 값을 말없이 나눠 쓴다.
+#
+# 그래서 잠금이 이미 쓰는 것과 **같은 열쇠**(저장소 뿌리의 해시)를 이름에 붙인다.
+# `production_risk_` 16자 + 해시 16자 = 32자로, PostgreSQL 의 이름 한계인
+# `NAMEDATALEN-1`(63) 안에 넉넉히 든다.
+DATABASE_NAME="production_risk_$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
 
 # 목적지를 **못 박는다.** 환경에 내보내져 있던 libpq 변수를 지우고(목록은
 # `libpq.sh` 한 곳에 있다) 우리가 약속하는 자리만 다시 세운다. 여기 없는
@@ -125,6 +145,36 @@ if ! pg_isready --quiet 2>/dev/null; then
     fall_back_to_sqlite "PostgreSQL 을 기동하지 못했습니다."
   fi
 fi
+
+# **판을 견준다.** 여기까지 오면 포트 ${DATABASE_PORT} 에 서버가 하나 서 있는데,
+# 그것이 우리가 약속한 판이라는 보장은 아직 없다 — 위의 갈래는 포트로 고르고,
+# 이미 돌고 있었다면 그 갈래조차 지나친다. 데비안에서 판을 올리면 옛 클러스터가
+# 5432를 그대로 쥐는 것이 정상 상태이므로, 16을 깔아 두고도 15에 붙는 일이
+# 생긴다(실측 2026-09-09). 그것이 이 PR 이 없애려던 어긋남이고, **조용하다는
+# 점에서 더 나쁘다** — CI 는 16이라 아무도 알아채지 못한다.
+#
+# `server_version_num` 은 `160013`(16.13) 같은 정수다. 뒤 네 자리가 부판이므로
+# 앞을 떼어 견준다.
+#
+# **못 읽었으면 버리지 않는다.** 물음이 실패했거나 답이 이 꼴이 아니면 우리가
+# 아는 것은 「판을 모른다」이지 「판이 다르다」가 아니다. 모른다는 이유로 멀쩡한
+# PostgreSQL 을 버리면, 이 검사가 막으려던 것보다 큰 것을 막는다 — 확실히 읽힌
+# 값이 어긋날 때만 문다.
+# 실패를 **값으로 받는다.** `|| true` 가 없으면 `set -euo pipefail` 아래에서 이
+# 대입이 곧 종료가 된다 — 역할이 없어 `psql` 이 거부당하는 것은 흔한 상태이고,
+# 그때 이 파일은 SQLite 로 물러나야지 죽으면 안 된다. 같은 결함을 5차에 고쳤고
+# `test_a_failing_role_probe_does_not_kill_the_script` 가 그것을 지킨다.
+server_version="$($PSQL -d postgres -qtAc "SHOW server_version_num" 2> /dev/null \
+  | tr -d '[:space:]' || true)"
+case "$server_version" in
+  [0-9][0-9][0-9][0-9][0-9] | [0-9][0-9][0-9][0-9][0-9][0-9])
+    server_major="${server_version%????}"
+    if [ "$server_major" != "$PRODUCTION_RISK_POSTGRESQL_MAJOR" ]; then
+      fall_back_to_sqlite \
+        "포트 ${DATABASE_PORT} 의 PostgreSQL 이 ${server_major} 판입니다 — 운영·CI 는 ${PRODUCTION_RISK_POSTGRESQL_MAJOR} 판입니다."
+    fi
+    ;;
+esac
 
 # peer 인증은 **운영체제 사용자와 같은 이름의 역할**을 요구한다. 그 역할이
 # 없으면 소켓 접속이 그 자리에서 거부된다.

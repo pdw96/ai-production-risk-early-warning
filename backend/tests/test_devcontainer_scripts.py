@@ -1269,14 +1269,33 @@ def test_the_devcontainer_provisions_postgresql() -> None:
     install = REPOSITORY_ROOT / ".devcontainer" / "install-postgresql.sh"
     assert install.exists(), "devcontainer 가 PostgreSQL 을 놓지 않는다"
 
-    body = install.read_text(encoding="utf-8")
-    # compose 가 쓰는 판과 같아야 한다 — 두 곳에 숫자를 적었으면 견준다.
-    compose = (REPOSITORY_ROOT / "compose.yaml").read_text(encoding="utf-8")
-    major = re.search(r"^MAJOR_VERSION=(\d+)$", body, re.MULTILINE)
+    # 판 번호는 **한 곳**에만 있어야 한다. 놓는 쪽과 고르는 쪽이 각자 숫자를 들고
+    # 있으면 언젠가 어긋나고, 그때 16을 깔아 놓고 15에 붙는 상태가 조용히 선다.
+    version_file = REPOSITORY_ROOT / ".devcontainer" / "postgresql-version.sh"
+    assert version_file.exists(), "판 번호를 둘 한 곳이 없다"
+    major = re.search(
+        r"^PRODUCTION_RISK_POSTGRESQL_MAJOR=(\d+)$",
+        version_file.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
     assert major, "놓을 판이 적혀 있지 않다"
+
+    # compose 가 쓰는 판과 같아야 한다.
+    compose = (REPOSITORY_ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert f"postgres:{major.group(1)}" in compose, (
         f"개발이 놓는 판({major.group(1)})이 compose 의 판과 다르다"
     )
+
+    # 그리고 두 스크립트가 그 한 곳에서 받아 쓴다 — 자기 숫자를 들고 있으면 안 된다.
+    for script in (install, REPOSITORY_ROOT / ".devcontainer" / "database.sh"):
+        body = script.read_text(encoding="utf-8")
+        assert "postgresql-version.sh" in body, f"{script.name} 이 판을 따로 정한다"
+        stray = [
+            line
+            for line in body.splitlines()
+            if re.match(r"^\s*(MAJOR_VERSION|POSTGRESQL_MAJOR)=\d+\s*$", line)
+        ]
+        assert not stray, f"{script.name} 에 판 번호가 따로 박혀 있다: {stray}"
 
     # 그리고 준비가 그것을 **엔진을 고르기 전에** 부른다.
     lines = [
@@ -1635,4 +1654,254 @@ def test_a_client_only_installation_still_provisions_the_server(
     assert "SQLite" in result.stderr, (
         "클라이언트만 보고 서버가 있다고 여겨 건너뛰었다 — "
         f"아무 말이 없다: {result.stderr!r}"
+    )
+
+
+def test_the_app_table_list_matches_the_models() -> None:
+    """`app-tables.txt` 는 **모델과 한 글자도 다르면 안 된다.**
+
+    셸 판정(`database-usable.sh`)이 「이미 서 있는 표를 이 역할이 만질 수 있는가」를
+    물을 때 그 목록이 필요한데, 목록의 출처인 파이썬을 새 셸마다 띄우면 실측
+    0.7초가 붙는다. 그래서 값만 미리 꺼내 두었고 — 미리 꺼낸 값은 **낡는다.**
+
+    낡으면 조용히 틀린다. 새 표가 목록에 없으면 남이 소유한 그 표를 판정이 못 보고
+    쓸 수 있다고 답하며, 없어진 표가 남아 있으면 없는 이름을 묻는다. 그래서 여기가
+    그 파일과 `Base.metadata` 를 견주는 자리다 — `preflight.py` 가 보는 것과 같은
+    출처다.
+    """
+    from app.db.table_names import table_names
+
+    listed = [
+        line.strip()
+        for line in (REPOSITORY_ROOT / ".devcontainer" / "app-tables.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert listed == table_names(), (
+        "`.devcontainer/app-tables.txt` 가 모델과 다릅니다. 다시 만드십시오:\n"
+        "  cd backend && .venv/bin/python -m app.db.table_names "
+        "> ../.devcontainer/app-tables.txt"
+    )
+
+
+def test_an_unrelated_table_does_not_push_the_session_to_sqlite(
+    tmp_path: Path,
+) -> None:
+    """**남의 표 하나 때문에 SQLite 로 물러나지 않는다.**
+
+    스키마를 나눠 쓰는 곳에는 이 앱과 무관한 표가 함께 산다 — 관리자가 만든 감사
+    표 같은 것. `preflight.py` 는 그것을 두고 「보는 것은 이 앱의 표뿐이다. 아무
+    표나 있으면 막으면 ... 첫 기동이 영영 마이그레이션을 하지 못한다」고 적어 두었고
+    `drop_all` 도 같은 목록을 본다. 판정이 그것과 다른 답을 내면 저장소 안에서 두
+    곳이 같은 질문에 다르게 답하는 것이다.
+
+    실측(2026-09-09, PostgreSQL 16.13): 앱의 표는 전부 이 역할 소유인 데이터베이스에
+    관리자 소유 `audit_log` 하나를 두니, 앱은 `SELECT count(*) FROM items` 와
+    `ALTER TABLE orders` 를 멀쩡히 해내는데 판정만 1(SQLite 로 물러남)이었다.
+    """
+    usable_script = REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"
+
+    # 가짜 `psql` 은 질의를 평가하지 않는다. 대신 **질의가 무엇을 묻는지**를 본다 —
+    # 앱의 표 이름으로 좁혀 묻고 있으면 그 데이터베이스를 받아들이는 것이 맞다.
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "psql": (
+                'case "$*" in\n'
+                # 앱의 표 이름으로 좁혀 물으면 남의 표는 애초에 걸리지 않는다.
+                '  *"c.relname = ANY"*) echo t;;\n'
+                # 좁히지 않고 `public` 전체를 묻는 형태에는 남의 표가 걸린다.
+                "  *pg_has_role*) echo f;;\n"
+                "  *) echo t;;\n"
+                "esac"
+            )
+        },
+    )
+    result = subprocess.run(
+        ["bash", str(usable_script), "/socket", "5432", "production_risk"],
+        capture_output=True,
+        text=True,
+        env=_environment_without_a_url(
+            {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}
+        ),
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        "앱의 표로 좁혀 묻지 않는다 — 무관한 표 하나에 SQLite 로 물러난다"
+    )
+
+
+def test_a_busy_lock_stops_instead_of_entering(tmp_path: Path) -> None:
+    """잠금을 **다른 실행이 쥐고 있으면 들어가지 않는다.**
+
+    상태 셋은 서로 다른 사실이다. 「잠글 자리가 없다」(1)와 「잠그지 못했다」(3)는
+    겹쳐 돈다는 증거가 아니므로 알리고 나아가는 것이 맞다. 그런데 「다른 실행이
+    쥐고 있다」(2)는 겹쳐 돈다는 증거 **그 자체**이고, 그때 들어가면 잠금이
+    막으려던 바로 그 상황에서만 잠금 없이 들어가는 셈이 된다.
+
+    이 잠금들이 지키는 것은 되돌릴 수 없는 것들이다 — `npm ci` 는 `node_modules` 를
+    지우고 다시 만들고(실측 2026-09-08: 겹쳐 돌린 세 번 중 두 번 양쪽이 다 실패해
+    0개로 남았다), 프로파일 다시 쓰기는 남의 `.bashrc` 를 갈아 끼운다(실측: 30만
+    줄 중 9,144줄이 사라졌다).
+
+    규칙은 `lock.sh` 한 곳에 있으므로 여기서 그것을 직접 돌려 본다.
+    """
+    script = tmp_path / "permits.sh"
+    script.write_text(
+        "set -uo pipefail\n"
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n"
+        'for status in 0 1 2 3; do\n'
+        '  if production_risk_lock_permits "$status" "무엇" 2> /dev/null; then\n'
+        '    echo "$status 들어감"\n'
+        '  else\n'
+        '    echo "$status 멈춤"\n'
+        '  fi\n'
+        'done\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "0", "들어감", "1", "들어감", "2", "멈춤", "3", "들어감",
+    ], result.stdout
+
+
+def test_provisioning_and_selection_share_one_lock() -> None:
+    """놓기와 고르기는 **한 잠금 안**에 함께 있다.
+
+    이 둘이 건드리는 것은 저장소 안이 아니라 호스트 전체다 — apt 저장소와 키링,
+    꾸러미 데이터베이스, PostgreSQL 클러스터와 그 안의 역할. 위의 설치 잠금은
+    저장소 열쇠라 여기서는 쓸 수 없고 그마저 이미 놓았다.
+
+    겹치면 무엇이 나쁜가. 놓기는 **실패해도 0 으로 끝나기로** 되어 있으므로, 한쪽이
+    반쯤 놓인 상태를 보고 물러나면 그쪽은 SQLite 를 고르고 다른 쪽은 마저 놓고
+    PostgreSQL 을 고른다 — 같은 컨테이너의 두 세션이 서로 다른 엔진 위에서 돈다.
+
+    글자로 「안에 있다」를 확인하는 대신 **줄 번호로 가둔다.**
+    """
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+    opens = next(
+        index
+        for index, line in enumerate(lines)
+        if "open_production_risk_lock" in line and '"provision"' in line
+    )
+    closes = next(
+        index
+        for index, line in enumerate(lines[opens:], opens)
+        if line.strip().startswith("close_production_risk_lock")
+    )
+    installs = next(
+        index for index, line in enumerate(lines) if "install-postgresql.sh" in line
+    )
+    chooses = next(
+        index
+        for index, line in enumerate(lines)
+        if "bash .devcontainer/database.sh" in line
+    )
+
+    assert opens < installs < closes, "놓기가 잠금 밖에 있다"
+    assert opens < chooses < closes, "고르기가 잠금 밖에 있다"
+    # 그리고 그 잠금 열쇠는 저장소가 아니라 호스트여야 한다 — apt 는 하나뿐이다.
+    assert "repository_key" not in lines[opens], (
+        "놓기 잠금이 저장소마다 따로 걸린다 — 다른 체크아웃과 겹친다"
+    )
+
+
+def test_each_checkout_gets_its_own_database() -> None:
+    """체크아웃마다 **다른 데이터베이스**를 고른다.
+
+    워크트리 둘이나 나란한 체크아웃 둘이 같은 클러스터에서 같은 이름을 고르면,
+    파일과 마이그레이션은 서로 다른데 데이터베이스는 하나다.
+
+    실측(2026-09-09): 다른 가지가 남긴 리비전 `deadbeefcafe` 가 `alembic_version` 에
+    든 데이터베이스에 이 체크아웃이 `alembic upgrade head` 를 돌리니
+    `Can't locate revision identified by 'deadbeefcafe'` 로 죽었다.
+
+    이름 규칙을 베끼지 않는다 — **실제 스크립트를 두 자리에서 돌려** 서로 다른
+    이름이 나오는지 본다.
+    """
+    database_script = REPOSITORY_ROOT / ".devcontainer" / "database.sh"
+    # 규칙을 베끼지 않는다 — 그 줄을 파일에서 그대로 꺼내 돌린다.
+    name_of = next(
+        line
+        for line in database_script.read_text(encoding="utf-8").splitlines()
+        if line.startswith("DATABASE_NAME=")
+    )
+
+    names = []
+    for root in ("/home/someone/repo-a", "/home/someone/repo-b"):
+        script = f'REPOSITORY_ROOT={root}\n{name_of}\nprintf %s "$DATABASE_NAME"\n'
+        done = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr
+        names.append(done.stdout)
+
+    assert names[0] != names[1], f"두 체크아웃이 같은 이름을 고른다: {names[0]}"
+    for name in names:
+        assert name.startswith("production_risk"), name
+        # PostgreSQL 의 이름 한계는 `NAMEDATALEN-1` = 63 이다.
+        assert len(name) <= 63, f"이름이 {len(name)}자다 — 잘려서 서로 부딪친다"
+
+
+def test_an_older_server_on_the_port_is_not_used(tmp_path: Path) -> None:
+    """포트를 지키는 서버가 **다른 판이면 쓰지 않는다.**
+
+    데비안에서 판을 올리면 옛 클러스터가 5432를 그대로 쥔 채 새 판이 5433으로
+    밀리는 것이 정상 상태다. 그때 16 바이너리는 분명히 있는데 붙는 자리는 15다.
+    실측(2026-09-09, 가짜 `pg_lsclusters` 로 `15 main 5432 down` 을 놓고):
+    `install-postgresql.sh` 는 아무 말 없이 0 으로 끝났고 `database.sh` 는
+    **"PostgreSQL 15/main 를 기동합니다"** 라고 답했다. 조용하다는 점에서 더 나쁘다 —
+    CI 는 16이라 아무도 알아채지 못한다.
+
+    **못 읽었을 때는 버리지 않는다.** 물음이 실패했거나 답이 그 꼴이 아니면 아는
+    것은 「판을 모른다」이지 「판이 다르다」가 아니다. 두 자리를 함께 본다.
+    """
+    version_file = REPOSITORY_ROOT / ".devcontainer" / "postgresql-version.sh"
+    major = re.search(
+        r"^PRODUCTION_RISK_POSTGRESQL_MAJOR=(\d+)$",
+        version_file.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert major
+    ours = int(major.group(1))
+
+    def run(server_version_num: str) -> subprocess.CompletedProcess[str]:
+        room = tmp_path / server_version_num
+        room.mkdir(parents=True, exist_ok=True)
+        stub = _stub_directory(
+            room,
+            {
+                "pg_isready": "exit 0",
+                "psql": (
+                    'case "$*" in\n'
+                    f"  *server_version_num*) echo {server_version_num};;\n"
+                    "  *) exit 2;;\n"
+                    "esac"
+                ),
+                "createdb": "exit 1",
+                "su": "exit 1",
+                "sudo": "exit 1",
+            },
+        )
+        return _run_database_script(stub)
+
+    older = run(f"{ours - 1}0013")
+    assert older.returncode == 0, older.stderr
+    assert older.stdout.strip() == "", "한 판 뒤처진 서버의 주소를 내밀었다"
+    assert f"{ours - 1} 판입니다" in older.stderr, older.stderr
+
+    # 판을 알 수 없을 때는 이 검사 때문에 물러나지 않는다.
+    unknown = run("알수없음")
+    assert unknown.returncode == 0, unknown.stderr
+    assert "판입니다" not in unknown.stderr, (
+        f"판을 못 읽었는데 판이 다르다고 말한다: {unknown.stderr!r}"
     )

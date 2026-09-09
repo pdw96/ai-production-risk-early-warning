@@ -94,7 +94,7 @@ repository_key="$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | c
 # 자리가 없는 것만으로 준비 전체가 죽는다.
 install_lock_status=0
 open_production_risk_lock "install-${repository_key}" 8 || install_lock_status=$?
-production_risk_lock_note "$install_lock_status"
+production_risk_lock_permits "$install_lock_status" "의존성 설치" || exit 1
 
 python -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip
@@ -143,6 +143,27 @@ unset PRODUCTION_RISK_DATABASE_AUTOSELECTED
 # 그때는 예전처럼 SQLite 파일 하나로 돈다.
 database_url_is_ours=0
 if [ -z "${DATABASE_URL:-}" ]; then
+  # **놓기와 고르기를 함께 잠근다 — 그리고 열쇠는 저장소가 아니라 호스트다.**
+  #
+  # 이 두 줄이 건드리는 것은 저장소 안이 아니라 **호스트 전체**다 — apt 저장소와
+  # 키링, 꾸러미 데이터베이스, 그리고 PostgreSQL 클러스터와 그 안의 역할이다.
+  # 위의 설치 잠금은 저장소 열쇠라 여기서는 쓸 수 없고, 그마저 132번째 줄에서
+  # 이미 놓았다. 그러면 `postCreateCommand` 와 세션 시작 훅이 갓 만든 컨테이너에서
+  # 겹칠 때 둘 다 여기에 닿는다.
+  #
+  # 겹치면 무엇이 나쁜가. 놓기는 **실패해도 0 으로 끝나기로** 되어 있다(그것이
+  # 이 저장소가 실패에 대해 약속한 자리다). 그래서 한쪽이 반쯤 놓인 상태를 보고
+  # 물러나면 그쪽은 SQLite 를 고르고, 다른 쪽은 마저 놓고 PostgreSQL 을 고른다 —
+  # **같은 컨테이너의 두 세션이 서로 다른 엔진 위에서 돈다.** 이 PR 이 없애려던
+  # 어긋남이 세션 사이로 돌아온다.
+  #
+  # 그래서 놓기와 고르기를 한 잠금 안에 함께 둔다. 고르기까지 넣는 이유는 그것이
+  # 역할과 데이터베이스를 만드는 자리이기도 하고, 무엇보다 **본 것과 고른 것이
+  # 갈라지지 않아야** 하기 때문이다.
+  provision_lock_status=0
+  open_production_risk_lock "provision" 6 || provision_lock_status=$?
+  production_risk_lock_permits "$provision_lock_status" "PostgreSQL 놓기와 엔진 고르기" || exit 1
+
   # **고르기 전에 놓는다.** `database.sh` 는 「있으면 세우고 없으면 물러난다」인데,
   # 이 저장소의 devcontainer 이미지에는 PostgreSQL 이 **없었다** — 그래서 새로 만든
   # Codespace 에서는 늘 SQLite 로 물러났고, 이 PR 이 세우려던 「개발 세션도 운영과
@@ -159,6 +180,8 @@ if [ -z "${DATABASE_URL:-}" ]; then
   DATABASE_URL="$(bash .devcontainer/database.sh)"
   export DATABASE_URL
   database_url_is_ours=1
+
+  close_production_risk_lock 6
 fi
 
 # 여기서 export 한 값은 **이 프로세스와 함께 사라진다.** 이 스크립트는
@@ -313,7 +336,7 @@ SHELL_HOOK_MARKER="# ai-production-risk(${REPOSITORY_ROOT}): 개발 세션의 �
 home_key="$(printf '%s' "$HOME" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
 profile_lock_status=0
 open_production_risk_lock "profile-${home_key}" 7 || profile_lock_status=$?
-production_risk_lock_note "$profile_lock_status"
+production_risk_lock_permits "$profile_lock_status" "프로파일 고쳐 쓰기" || exit 1
 
 for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$profile" ] || continue

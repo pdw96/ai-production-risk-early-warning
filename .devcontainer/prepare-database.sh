@@ -69,6 +69,6 @@ key="$(printf '%s' "${DATABASE_URL:-sqlite}" | sha256sum | cut -c1-16)"
 # 「잠금 없이 진행」이다. 같은 형태를 5차 리뷰에서 한 번 맞았다.
 lock_status=0
 open_production_risk_lock "prepare-${key}" 9 || lock_status=$?
-production_risk_lock_note "$lock_status"
+production_risk_lock_permits "$lock_status" "데이터베이스 준비" || exit 1
 
 prepare

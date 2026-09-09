@@ -19,7 +19,21 @@
 # 여기서 나가는 0 아닌 값은 준비 전체를 끌고 내려간다.
 set -uo pipefail
 
-MAJOR_VERSION=16
+# 판 번호는 `postgresql-version.sh` 한 곳에만 있다 — 고르는 쪽도 같은 숫자를 본다.
+#
+# 자리를 찾는 데 **바깥 명령을 쓰지 않는다.** `$(dirname ...)` 로 적었더니,
+# `dirname` 이 없는 좁은 PATH 에서 소스가 실패하고 곧바로 변수가 없어
+# `unbound variable` 로 죽었다 — 이 파일이 「무슨 일이 있어도 0 으로 끝난다」고
+# 약속한 자리에서. 껍데기 안의 매개변수 확장은 아무것도 부르지 않는다.
+# shellcheck source=.devcontainer/postgresql-version.sh
+. "${BASH_SOURCE[0]%/*}/postgresql-version.sh" 2> /dev/null || true
+if [ -z "${PRODUCTION_RISK_POSTGRESQL_MAJOR:-}" ]; then
+  log() { echo "$@" >&2; }
+  log "놓을 PostgreSQL 판을 알 수 없습니다 — SQLite 로 진행합니다."
+  exit 0
+fi
+MAJOR_VERSION="$PRODUCTION_RISK_POSTGRESQL_MAJOR"
+DATABASE_PORT="5432"
 
 log() { echo "$@" >&2; }
 
@@ -42,8 +56,28 @@ log() { echo "$@" >&2; }
 #
 # 데비안·PGDG 는 서버를 `/usr/lib/postgresql/<판>/bin/postgres` 에 둔다. 그것과
 # `pg_ctlcluster`(`postgresql-common`) 둘 다 있어야 `database.sh` 가 실제로 세운다.
+#
+# **그리고 바이너리가 있다는 것으로도 모자란다.** 데비안에서 판을 올리면 옛
+# 클러스터가 5432를 그대로 쥔 채 새 판이 5433으로 밀리는 것이 정상 상태다. 그때
+# 16 바이너리는 분명히 있는데 `database.sh` 가 붙는 자리는 15다. 실측
+# (2026-09-09, 가짜 `pg_lsclusters` 로 `15 main 5432 down` 을 놓고): 이 파일은
+# 아무 말 없이 0 으로 끝났고, 곧바로 `database.sh` 는 **"PostgreSQL 15/main 를
+# 기동합니다"** 라고 답했다. 개발만 한 판 뒤처진 채로 도는 것 — 이 파일이 PGDG
+# 에서 16을 받아 오는 이유가 바로 그 어긋남이다.
+#
+# 그러니 묻는 것은 **「우리가 붙을 포트를 지키는 클러스터가 이 판인가」**다.
+# 아니면 건너뛰지 않고 아래로 내려가 놓기를 시도한다. 놓아도 그 포트를 못 잡는
+# 배치라면 `database.sh` 가 판을 견주어 SQLite 로 물러난다 — 조용히 옛 판에
+# 붙는 것보다 낫다.
+cluster_version_on_port() {
+  command -v pg_lsclusters > /dev/null 2>&1 || return 1
+  pg_lsclusters --no-header 2> /dev/null \
+    | awk -v port="$DATABASE_PORT" '$3 == port { print $1; exit }'
+}
+
 if [ -x "/usr/lib/postgresql/${MAJOR_VERSION}/bin/postgres" ] \
-  && command -v pg_ctlcluster > /dev/null 2>&1; then
+  && command -v pg_ctlcluster > /dev/null 2>&1 \
+  && [ "$(cluster_version_on_port)" = "$MAJOR_VERSION" ]; then
   exit 0
 fi
 

@@ -1,0 +1,36 @@
+# 이 앱이 쓰는 표 이름. **자동 생성물이다 — 손으로 고치지 말 것.**
+#
+# 왜 파일로 두는가. `database-usable.sh` 는 「이 데이터베이스를 지금 쓸 수 있는가」
+# 를 답하면서 **이미 서 있는 표의 소유**를 봐야 하는데, 그 판정을 프로파일 훅이
+# 새 셸마다 부른다. 목록의 출처인 파이썬을 그때마다 띄우면 실측 0.7초가 셸마다
+# 붙는다 — 그래서 값만 미리 꺼내 둔다.
+#
+# 낡으면 조용히 틀리므로 **검사가 지킨다** —
+# `test_the_app_table_list_matches_the_models` 가 `Base.metadata` ·
+# `LEGACY_TABLE_NAMES` 와 한 글자라도 다르면 빨갛다. 다시 만드는 법:
+#
+#   cd backend && .venv/bin/python -m app.db.table_names > ../.devcontainer/app-tables.txt
+alembic_version
+bom_components
+bom_requirements
+code_groups
+common_codes
+daily_productions
+finished_goods_lots
+items
+material_lots
+materials
+non_working_periods
+nonconformity_attributes
+nonconformity_stage_rules
+orders
+partners
+process_inspection_standards
+products
+purchase_close_attributes
+purchase_receipts
+quality_inspections
+risk_statuses
+shift_patterns
+supplier_items
+txn_type_attributes
