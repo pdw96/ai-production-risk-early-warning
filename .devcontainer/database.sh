@@ -166,6 +166,21 @@ fi
 # `test_a_failing_role_probe_does_not_kill_the_script` 가 그것을 지킨다.
 server_version="$($PSQL -d postgres -qtAc "SHOW server_version_num" 2> /dev/null \
   | tr -d '[:space:]' || true)"
+
+# **못 물었으면 관리자로 다시 묻는다.** 위의 물음은 지금 이 역할로 간다. 그런데
+# 이 자리는 아직 역할을 만들기 **전**이다 — 첫 준비에서는 운영체제 사용자와 같은
+# 이름의 역할이 없어 peer 접속이 그 자리에서 거부되고, 답은 빈 값으로 온다.
+# 그러면 위의 「모르면 버리지 않는다」가 그대로 통과시키고, 곧이어 관리자 계정으로
+# 역할을 만든 뒤 **판이 다른 서버를 골라 준비까지 마친다.** 판을 견주려고 둔 검사가
+# 정작 첫 준비에서만 비어 있는 셈이다.
+#
+# 그래서 같은 물음을 관리자로 한 번 더 한다 — `probe_as_postgres` 가 이미 쓰는
+# 길이다. 그것마저 안 되면 그때는 정말 「판을 모른다」이고, 모른다는 이유로
+# 버리지는 않는다.
+if [ -z "$server_version" ]; then
+  server_version="$(run_as postgres "$PSQL -d postgres -qtAc 'SHOW server_version_num'" 2> /dev/null \
+    | tr -d '[:space:]' || true)"
+fi
 case "$server_version" in
   [0-9][0-9][0-9][0-9][0-9] | [0-9][0-9][0-9][0-9][0-9][0-9])
     server_major="${server_version%????}"

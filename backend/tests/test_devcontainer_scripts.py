@@ -1905,3 +1905,183 @@ def test_an_older_server_on_the_port_is_not_used(tmp_path: Path) -> None:
     assert "판입니다" not in unknown.stderr, (
         f"판을 못 읽었는데 판이 다르다고 말한다: {unknown.stderr!r}"
     )
+
+
+def test_the_hook_keeps_a_manually_chosen_url(tmp_path: Path) -> None:
+    """훅은 **사람이 고른 주소를 덮지 않는다.**
+
+    두 갈래가 어긋나 있었다. 지우는 쪽은 「우리가 고른 것인가」를 물었는데
+    **적는 쪽은 묻지 않고 덮었다.** 그래서 사람이 `export DATABASE_URL=...` 로
+    다른 데이터베이스를 골라 둔 셸에서 저장소 안으로 들어가 새 셸을 열면, 훅이
+    말없이 우리 주소로 되돌려 놓는다 — 표식이 아직 옛 값을 가리켜도 마찬가지다.
+
+    세 자리를 함께 본다. 아무것도 없으면 우리 것을 내주고, 사람이 고른 것이 있으면
+    그대로 두고, 우리가 지난번에 내준 것이면 새 값으로 바꾼다.
+    """
+    repository = tmp_path / "repo"
+    (repository / ".devcontainer").mkdir(parents=True, exist_ok=True)
+    (repository / ".devcontainer" / "database.env").write_text(
+        "export DATABASE_URL=chosen\n"
+        "export PRODUCTION_RISK_DATABASE_AUTOSELECTED=chosen\n",
+        encoding="utf-8",
+    )
+    (repository / ".devcontainer" / "database-usable.sh").write_text(
+        "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+    )
+    # 훅은 「우리가 고른 것인가」의 정의를 이 파일에서 읽는다 — 진짜 것을 둔다.
+    # 베껴 쓰면 정의가 둘이 되고, 그 둘이 갈라지는 것이 바로 이 검사가 막으려는 것이다.
+    (repository / ".devcontainer" / "autoselected.sh").write_text(
+        AUTOSELECTED_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _install_hook(tmp_path, POSTGRESQL_URL)
+
+    def shell_sees(exported: dict[str, str]) -> str:
+        runner = tmp_path / "run.sh"
+        runner.write_text(
+            "".join(f"export {name}={value}\n" for name, value in exported.items())
+            + f". {tmp_path / 'home' / '.bashrc'}\n"
+            + 'printf \'%s\\n\' "${DATABASE_URL:-<none>}"\n',
+            encoding="utf-8",
+        )
+        done = subprocess.run(
+            ["bash", str(runner)],
+            capture_output=True,
+            text=True,
+            cwd=repository,
+            env=_environment_without_a_url({"HOME": str(tmp_path / "home")}),
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    assert shell_sees({}) == "chosen", "아무것도 없을 때 우리 것을 내주지 않는다"
+    assert shell_sees({"DATABASE_URL": "theirs"}) == "theirs", (
+        "사람이 고른 주소를 훅이 덮었다"
+    )
+    # 우리가 지난번에 내준 값이면 새 값으로 바꾸는 것이 맞다.
+    assert (
+        shell_sees(
+            {
+                "DATABASE_URL": "stale",
+                "PRODUCTION_RISK_DATABASE_AUTOSELECTED": "stale",
+            }
+        )
+        == "chosen"
+    ), "우리가 내준 낡은 주소를 그대로 뒀다"
+
+
+def test_the_version_is_checked_even_before_the_role_exists(tmp_path: Path) -> None:
+    """역할이 아직 없어도 **판은 확인한다.**
+
+    판 견주기는 지금 이 역할로 묻는데, 그 자리는 아직 역할을 만들기 **전**이다.
+    첫 준비에서는 운영체제 사용자와 같은 이름의 역할이 없어 peer 접속이 거부되고
+    답이 빈 값으로 온다. 그러면 「모르면 버리지 않는다」가 통과시키고, 곧이어
+    관리자로 역할을 만든 뒤 **판이 다른 서버를 골라 준비까지 마친다** — 판을
+    견주려고 둔 검사가 정작 첫 준비에서만 비어 있는 셈이다.
+
+    그래서 같은 물음을 관리자로 한 번 더 한다. 여기서는 역할이 없는 상태를
+    흉내 내고(현재 역할로는 실패), 관리자로는 한 판 뒤처진 답이 오게 한다.
+    """
+    version_file = REPOSITORY_ROOT / ".devcontainer" / "postgresql-version.sh"
+    major = re.search(
+        r"^PRODUCTION_RISK_POSTGRESQL_MAJOR=(\d+)$",
+        version_file.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert major
+    older = f"{int(major.group(1)) - 1}0013"
+
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            # 현재 역할로는 아무것도 못 한다 — 역할이 아직 없는 상태다.
+            "psql": 'echo "FATAL: role does not exist" >&2\nexit 2',
+            "createdb": "exit 1",
+            # 관리자로 가는 길만 열려 있고, 그쪽은 한 판 뒤처진 서버라고 답한다.
+            "su": f'case "$*" in *server_version_num*) echo {older};; *) exit 1;; esac',
+            "sudo": "exit 1",
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "", "한 판 뒤처진 서버의 주소를 내밀었다"
+    assert "판입니다" in result.stderr, (
+        f"역할이 없다는 이유로 판 견주기를 통째로 건너뛰었다: {result.stderr!r}"
+    )
+
+
+def test_the_reported_engine_comes_from_the_url(tmp_path: Path) -> None:
+    """무슨 엔진을 쓴다고 말할지는 **주소가 정한다.**
+
+    예전에는 「주소가 있으면 PostgreSQL」이었다. 그래서 사람이
+    `DATABASE_URL=sqlite:////tmp/dev.db` 를 준 경우에도 그렇게 말했다 —
+    실측(2026-09-09): `PostgreSQL 을 씁니다: sqlite:////tmp/dev.db`.
+
+    이 줄의 존재 이유가 「지금 어느 엔진 위에서 도는가」를 보이게 하는 것인데
+    그 자리에서 거짓말을 하면, 사람은 PostgreSQL 에서만 나는 것을 확인했다고
+    믿는다. 그 갈래를 파일에서 그대로 꺼내 돌려 본다.
+    """
+    region = _shell_region(SETUP_SCRIPT, 'case "${DATABASE_URL:-}" in', "esac")
+    script = tmp_path / "announce.sh"
+    script.write_text(
+        "set -uo pipefail\nredact_url() { printf %s \"$1\"; }\n" + region + "\n",
+        encoding="utf-8",
+    )
+
+    def announced(url: str) -> str:
+        done = subprocess.run(
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            env=_environment_without_a_url({"DATABASE_URL": url} if url else {}),
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    assert "SQLite" in announced("sqlite:////tmp/dev.db"), "SQLite 주소를 PostgreSQL 이라 말한다"
+    assert "PostgreSQL" not in announced("sqlite:////tmp/dev.db")
+    assert "PostgreSQL" in announced("postgresql+psycopg:///x?host=/socket")
+    assert announced("") == "SQLite 파일로 진행합니다."
+    # 모르는 방식에 아는 이름을 붙이지 않는다 — 그것이 방금 고친 결함이다.
+    unknown = announced("mysql://h/x")
+    assert "PostgreSQL" not in unknown and "SQLite" not in unknown, unknown
+
+
+def test_the_readme_describes_postgresql_in_codespaces() -> None:
+    """Codespaces 절이 **지금 실제로 벌어지는 일**을 적는다.
+
+    준비는 PostgreSQL 을 놓고 이 체크아웃 전용 데이터베이스를 만들어 시드하는데,
+    README 는 「합성 SQLite 데이터가 준비된다」·「SQLite 파일은 Codespace 마다 다시
+    생성된다」고 적고 있었다. 그 글을 따라 초기화하려는 사람은 없는 파일을 지우고,
+    앱은 그대로 남아 있는 PostgreSQL 데이터를 계속 쓴다.
+
+    산문이 기계보다 뒤처지는 것을 막을 길은 기계가 산문을 읽는 것뿐이다.
+    """
+    codespaces = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    # 제목을 **줄 통째로** 잡는다. `## GitHub Codespaces` 로 찾으면 Docker 절의
+    # `### GitHub Codespaces` 가 먼저 걸린다 — `###` 안에 `##` 가 들어 있다.
+    heading = "\n## GitHub Codespaces에서 실행\n"
+    start = codespaces.index(heading)
+    section = codespaces[start : codespaces.index("\n## ", start + len(heading))]
+
+    # 틀린 주장을 **이름으로 금지한다.** 「PostgreSQL 이 어딘가 적혀 있다」로는
+    # 물지 않는다 — 옛 문장과 새 문장이 나란히 있어도 통과하기 때문이다.
+    wrong = (
+        "합성 SQLite 데이터",          # 준비가 놓는 것은 PostgreSQL 이다
+        "SQLite 파일은 Git에 포함되지 않으며",  # 지울 파일이 있다는 안내
+    )
+    for claim in wrong:
+        assert claim not in section, f"Codespaces 절에 낡은 주장이 남아 있다: {claim}"
+
+    assert "PostgreSQL" in section, "Codespaces 절이 PostgreSQL 을 말하지 않는다"
+    # SQLite 를 언급하는 것은 좋다 — 다만 **물러나는 자리**로만이어야 한다.
+    for line in section.splitlines():
+        if "SQLite" not in line:
+            continue
+        assert "물러" in line or "아니라" in line, (
+            f"SQLite 를 기본 경로처럼 적고 있다: {line.strip()}"
+        )

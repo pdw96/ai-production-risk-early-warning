@@ -287,7 +287,7 @@ sudo iptables-legacy -I FORWARD -o br+ -j ACCEPT
 
 ## GitHub Codespaces에서 실행
 
-GitHub 저장소의 **Code → Codespaces → Create codespace**로 일시적인 개발 환경을 만들 수 있습니다. 컨테이너 생성 시 Python·Node 의존성과 합성 SQLite 데이터가 자동으로 준비됩니다. 준비가 끝나면 Codespace 터미널에서 다음 명령을 실행합니다.
+GitHub 저장소의 **Code → Codespaces → Create codespace**로 일시적인 개발 환경을 만들 수 있습니다. 컨테이너 생성 시 Python·Node 의존성과 함께 **PostgreSQL 이 놓이고**, 이 체크아웃 전용 데이터베이스가 만들어져 마이그레이션과 합성 데이터가 자동으로 준비됩니다 — 운영·CI 와 같은 엔진입니다. PostgreSQL 을 놓지 못하는 환경이면 예전처럼 SQLite 파일 하나로 물러나며, 그때는 준비 로그가 그렇게 알려 줍니다. 준비가 끝나면 Codespace 터미널에서 다음 명령을 실행합니다.
 
 ```bash
 bash .devcontainer/start.sh
@@ -295,7 +295,7 @@ bash .devcontainer/start.sh
 
 이 방식은 핫 리로드가 동작하는 개발 서버입니다. 컨테이너로 재현 가능한 실행을 확인하려면 위의 [Docker로 실행](#docker로-실행)에서 `compose.codespaces.yaml`을 사용하세요. 두 방식은 포트가 겹치므로 동시에 실행할 수 없습니다.
 
-포트 3000의 **AI 생산 리스크 대시보드**를 열면 브라우저에서 화면을 직접 검증할 수 있습니다. 프론트엔드는 같은 출처의 `/api` 요청을 Codespace 내부 FastAPI로 프록시하므로 별도의 공개 API URL이 필요하지 않습니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르고 Codespace를 중지하거나 삭제합니다. SQLite 파일은 Git에 포함되지 않으며 Codespace마다 합성 데이터로 다시 생성됩니다.
+포트 3000의 **AI 생산 리스크 대시보드**를 열면 브라우저에서 화면을 직접 검증할 수 있습니다. 프론트엔드는 같은 출처의 `/api` 요청을 Codespace 내부 FastAPI로 프록시하므로 별도의 공개 API URL이 필요하지 않습니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르고 Codespace를 중지하거나 삭제합니다. 데이터는 Git에 포함되지 않으며 Codespace마다 합성 데이터로 다시 만들어집니다 — **다만 그 자리는 SQLite 파일이 아니라 PostgreSQL 데이터베이스입니다.** 지우고 처음부터 다시 만들려면 파일을 지우는 대신 `bash .devcontainer/prepare-database.sh` 가 쓰는 데이터베이스를 지웁니다. 지금 어느 엔진에 붙어 있는지는 `echo "$DATABASE_URL"` 로 확인할 수 있고, 준비가 고른 값은 `.devcontainer/database.env` 에 적혀 있습니다.
 
 GitHub Actions의 `Cloud validation` 워크플로는 PostgreSQL 서비스 컨테이너를 띄워 운영과 같은 길(`preflight` → `alembic upgrade head` → `app.seed --if-empty`)을 밟은 뒤 백엔드 검사를 두 엔진에서 각각 돌리고, 타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 운영 현황(`dashboard.png`), 생산관리(`orders.png`), 재고현황(`materials.png`), 창고별 재고(`warehouse-raw.png`·`warehouse-production.png`·`warehouse-products.png`), 리스크 보드(`risks.png`), 기준정보관리(`master.png`), 구매관리(`purchases.png`), 품질관리(`quality.png`), 영업관리(`sales.png`) 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
 

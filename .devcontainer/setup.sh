@@ -293,9 +293,18 @@ SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
 # 그래서 실패했을 때 **지운다.** 다만 아무것이나 지우지 않는다 — 사람이 직접
 # `export DATABASE_URL` 로 고른 주소는 남겨야 한다. 「우리가 고른 것인가」의
 # 정의는 `autoselected.sh` 한 곳에 있으므로 그것을 그대로 쓴다.
+# **읽는 쪽도 사람의 주소를 존중한다.** 두 갈래가 어긋나 있었다 — 지우는 쪽은
+# 「우리가 고른 것인가」를 물었는데 **적는 쪽은 묻지 않고 덮었다.** 그래서 사람이
+# `export DATABASE_URL=...` 로 다른 데이터베이스를 골라 둔 셸에서 저장소 안으로
+# 들어가 새 셸을 열면, 그 훅이 말없이 우리 주소로 되돌려 놓는다. 표식이 아직 옛
+# 값을 가리키고 있어도 마찬가지다.
+#
+# 그래서 판정을 앞으로 뺀다 — 두 갈래가 **같은 물음**을 쓴다. 사람이 고른 주소가
+# 있으면 그것이 이기고, 없거나 우리가 고른 것이면 우리가 정한다.
 {
   printf '# %s 가 준비할 때마다 다시 씁니다. 손으로 고치지 마세요.\n' \
     ".devcontainer/setup.sh"
+  printf '. %q\n' "$REPOSITORY_ROOT/.devcontainer/autoselected.sh"
   printf 'if [ -f %q ]' "$DATABASE_ENVIRONMENT_FILE"
   if [ -n "$database_host" ] && [ -n "$database_port" ] &&
     [ -n "$database_name" ]; then
@@ -303,15 +312,19 @@ SHELL_HOOK_FILE="$REPOSITORY_ROOT/.devcontainer/shell-hook.sh"
       "$REPOSITORY_ROOT/.devcontainer/database-usable.sh" \
       "$database_host" "$database_port" "$database_name"
   fi
-  printf '\nthen\n  . %q\n' "$DATABASE_ENVIRONMENT_FILE"
+  printf '\nthen\n'
+  # 훅 파일에 **그대로 적히는 글자**다 — 여기서 펴지면 안 된다.
+  # shellcheck disable=SC2016
+  printf '  if [ -z "${DATABASE_URL:-}" ] || production_risk_url_is_inherited_ours; then\n'
+  printf '    . %q\n' "$DATABASE_ENVIRONMENT_FILE"
+  printf '  fi\n'
   printf 'else\n'
-  printf '  . %q\n' "$REPOSITORY_ROOT/.devcontainer/autoselected.sh"
   printf '  if production_risk_url_is_inherited_ours; then\n'
   printf '    unset DATABASE_URL PRODUCTION_RISK_DATABASE_AUTOSELECTED\n'
   printf '  fi\n'
-  # 남의 셸에 우리 함수를 두고 나오지 않는다.
-  printf '  unset -f production_risk_url_is_inherited_ours\n'
   printf 'fi\n'
+  # 남의 셸에 우리 함수를 두고 나오지 않는다.
+  printf 'unset -f production_risk_url_is_inherited_ours\n'
 } > "${SHELL_HOOK_FILE}.$$"
 # **한 순간에 갈아 끼운다.** 위의 리다이렉션은 파일을 먼저 자르고 `printf` 를
 # 여러 번 부르므로, 그 사이에 뜬 셸이 **반쯤 쓰인 파일**을 읽는다 — 문법 오류가
@@ -451,12 +464,22 @@ if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
   mv "${DATABASE_ENVIRONMENT_FILE}.$$" "$DATABASE_ENVIRONMENT_FILE"
 fi
 
-if [ -n "${DATABASE_URL:-}" ]; then
-  # 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은
-  # 로그로 남으므로, 사람이 준 주소에 비밀번호가 있으면 그것이 로그에 박힌다.
-  echo "PostgreSQL 을 씁니다: $(redact_url "$DATABASE_URL")"
-else
-  echo "SQLite 파일로 진행합니다."
-fi
+# 주소를 그대로 찍지 않는다. 이 스크립트는 세션 시작 훅이 부르고 그 출력은
+# 로그로 남으므로, 사람이 준 주소에 비밀번호가 있으면 그것이 로그에 박힌다.
+#
+# **엔진 이름은 주소의 방식에서 읽는다.** 예전에는 「주소가 있으면 PostgreSQL」
+# 이었는데, 사람이 `DATABASE_URL=sqlite:////tmp/dev.db` 를 준 경우에도 그렇게
+# 말했다(실측 2026-09-09: `PostgreSQL 을 씁니다: sqlite:////tmp/dev.db`). 이 줄의
+# 존재 이유가 「지금 어느 엔진 위에서 도는가」를 보이게 하는 것인데 그 자리에서
+# 거짓말을 하면, 사람은 PostgreSQL 에서만 나는 것을 확인했다고 믿는다.
+#
+# 아는 둘만 이름으로 부르고, 모르는 방식은 **그 방식을 그대로** 적는다 — 모르는
+# 것에 아는 이름을 붙이는 것이 방금 고친 그 결함이다.
+case "${DATABASE_URL:-}" in
+  "") echo "SQLite 파일로 진행합니다." ;;
+  sqlite*) echo "SQLite 를 씁니다: $(redact_url "$DATABASE_URL")" ;;
+  postgres*) echo "PostgreSQL 을 씁니다: $(redact_url "$DATABASE_URL")" ;;
+  *) echo "${DATABASE_URL%%:*} 을(를) 씁니다: $(redact_url "$DATABASE_URL")" ;;
+esac
 
 echo "준비 완료: bash .devcontainer/start.sh 를 실행하세요."
