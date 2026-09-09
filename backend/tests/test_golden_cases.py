@@ -20,10 +20,27 @@
 그대로 하루가 된다. 그래서 오더 골든은 **파이썬 3.12 기준**이며(CI 와
 `backend/Dockerfile` 의 런타임), 왜 판본이 날짜를 바꾸는지는 아래
 `ORDER_GOLDEN` 주석과 그 뒤 검사가 설명한다.
+
+## 이 골든이 잡지 못하는 것
+
+문턱이 무엇을 무는지 적어 두는 것이 이 저장소의 규칙이므로, 무엇을 **못** 무는지도
+적는다. 아래 둘은 실제로 코드를 망가뜨려 보고 확인한 것이다.
+
+- **입고와 폐기의 순서.** 하루의 단계는 입고 → 폐기 → 출고인데, 입고를 폐기 뒤로
+  옮겨도 이 파일은 전부 초록이다. 시드에 **입고와 폐기가 같은 날 부딪히는 자재가
+  없기 때문이다** — 폐기가 일어나는 자재는 RM-05 하나뿐이고(9/5), 그 입고는
+  9/14 라 만나지 않으며, 도착 당일 만료되는 로트도 기준일에 만료되는 로트도 없다.
+  이 순서를 무는 것은 손으로 만든 `test_material_risk.py` 쪽 넷이다.
+- **잔여수량의 음수 절단.** `max(planned - actual, 0)` 의 `max` 를 지워도 아무도
+  빨개지지 않는다. 시드에 실적이 계획을 넘는 오더가 없어 이 데이터에서는 죽은
+  코드다.
+
+시드가 그 모양을 만들게 되는 날 여기에 칸이 하나씩 늘어야 한다.
 """
 
 from __future__ import annotations
 
+import sys
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -46,6 +63,7 @@ from app.services.briefing import (
     _build_material_response,
     _finished_goods_lot_state,
     _planned_quantities_by_product_day,
+    list_orders,
 )
 from app.services.material_risk import Lot, MaterialRiskResult, calculate_material_risk
 from app.services.order_risk import calculate_order_risk
@@ -173,6 +191,13 @@ def _expansion_row(result: MaterialRiskResult) -> dict[str, object]:
 # 읽는 법 — 9/5 아침에 첫 로트가 통째로 폐기되고(341.89), 그날 처음 안전재고
 # 아래로 떨어진다. 9/7 에 소진되고, 못 채운 수요는 적자로 이월된다. 9/14 에
 # 예정 입고 275 가 도착해 그 적자를 갚고 2.29 가 남는다.
+#
+# **첫날 수요 143.1 은 옳다고 확인된 값이 아니다.** 기준일은 이미 생산이 끝난
+# 날인데(그날 실적이 있어야 `get_reference_date` 가 그날을 고르므로) 그날의 계획이
+# 미래 수요로 한 번 더 차감된다 — `_planned_quantities_by_product_day` 의 창이
+# 기준일을 포함하기 때문이다. 그래서 뒤의 열사흘이 매일 37.67 인데 첫날만 3.8배다.
+# 여기 박힌 숫자는 **지금 그렇게 나온다**는 뜻이지 그것이 맞다는 뜻이 아니며,
+# 창이 바뀌면 이 표가 통째로 움직이는 것이 정상이다(지적 — Codex P1).
 MATERIAL_GOLDEN_EXPANSION: dict[int, dict[str, object]] = {
     1: dict(
         stockout_date=None,
@@ -470,11 +495,38 @@ def test_the_order_risk_of_every_seeded_order_is_fixed(
             if (order.due_date - REFERENCE_DATE).days == WARNING_BUFFER_DAYS:
                 boundary_orders.add(order.order_number)
 
-    assert actual == ORDER_GOLDEN
+    assert actual == ORDER_GOLDEN, (
+        "완료예정일이 어긋난다면 실행 판본부터 보라 — 이 표는 파이썬 3.12 "
+        f"기준이고 지금 {sys.version_info.major}.{sys.version_info.minor} 로 돌고 있다. "
+        "3.11 에서는 001 · 004 · 025 가 하루씩 뒤로 밀린다."
+    )
     # 완충 기간 경계를 실제로 밟는 오더가 시드에 남아 있어야 위 표가 그 경계를
     # 지킨다. 시드가 바뀌어 경계 오더가 사라지면 여기서 먼저 드러난다.
     assert boundary_orders, "납기가 기준일 +WARNING_BUFFER_DAYS 인 오더가 없습니다."
     assert all(actual[number][0] == "주의" for number in boundary_orders)
+
+
+def test_the_order_list_agrees_with_the_golden(
+    seeded_session_factory: sessionmaker[Session],
+) -> None:
+    """화면이 쓰는 `list_orders` 가 같은 값을 내는지 본다.
+
+    위 검사는 계산 입력(그날까지의 실적 · 최근 7일 평균)을 직접 조립한다. 그
+    조립이 `_build_order_response` 와 어긋나면 엔진이 맞아도 화면이 틀리므로,
+    실제 목록으로 한 번 더 확인한다(지적 — CodeRabbit). 자재 쪽의
+    `test_the_material_response_agrees_with_the_golden_expansion` 과 같은 짝이다.
+    """
+    with seeded_session_factory() as session:
+        listed = {
+            order.order_number: (
+                order.severity,
+                order.estimated_completion_date,
+                order.remaining_quantity,
+            )
+            for order in list_orders(session)
+        }
+
+    assert listed == ORDER_GOLDEN
 
 
 # 아래 셋은 시드의 MO-20260901-025 에서 그대로 가져온 실제 값이다. 계획 600,
@@ -531,6 +583,31 @@ def test_a_float_residue_in_the_remaining_quantity_moves_the_completion_date() -
     # 이번 시드에서는 심각도까지 갈리지는 않았다 — 둘 다 납기 9/6 보다 늦다.
     # 납기가 그 사이에 있었다면 「위험」과 「주의」가 갈렸을 자리다.
     assert exact.severity == with_residue.severity == "위험"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="calculate_order_risk 가 잔여수량을 수량의 자리로 맞추지 않고 ceil 에 넣는다.",
+)
+def test_a_quantity_that_rounds_to_99_should_give_the_same_completion_date() -> None:
+    """수량으로 같은 값이면 완료예정일도 같아야 한다 — **지금은 아니다.**
+
+    위 검사가 「지금 이렇게 동작한다」를 적는다면 이 검사는 **「이렇게 동작해야
+    한다」**를 적는다. 둘을 갈라 둔 이유는, 결함을 재현하는 검사만 두면 그것이
+    요구사항으로 읽혀 고치는 쪽을 막기 때문이다(지적 — Codex P1).
+
+    `strict=True` 라 계산이 고쳐지는 날 이 검사가 **XPASS 로 빨개진다.** 그때
+    이 표시를 떼고 `ORDER_GOLDEN` 의 001 · 004 · 025 를 함께 옮기면 된다.
+    """
+    with_residue = calculate_order_risk(
+        planned_quantity=ORDER_025_PLANNED_QUANTITY,
+        actual_quantity=ORDER_025_ACTUAL_QUANTITY_ON_PYTHON_311,
+        average_daily_output=ORDER_025_AVERAGE_DAILY_OUTPUT,
+        due_date=date(2026, 9, 6),
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert with_residue.estimated_completion_date == date(2026, 9, 10)
 
 
 # 시드의 완제품 로트 150건을 상태별로 센 값. `(로트 수, 수량 합)` 이다.
