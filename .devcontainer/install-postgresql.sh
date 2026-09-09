@@ -108,27 +108,66 @@ if [ -z "$codename" ]; then
   exit 0
 fi
 
+# **`export` 로는 apt 에 닿지 않는다.** `run_as_root` 는 root 가 아닐 때
+# `sudo -n` 을 쓰고, sudoers 의 기본값은 `env_reset` 이라 우리 환경을 지운다.
+# 실측(2026-09-09, NOPASSWD sudo 를 가진 비root 계정):
+#
+#   우리 셸: [noninteractive]
+#   sudo 안: [<비어있음>]
+#
+# root 로 도는 길에서는 그대로 넘어가므로, 이 결함은 **개발 컨테이너의 보통
+# 사용자에게만** 나타난다 — 거기서 apt 는 사람에게 물을 수 있는 프런트엔드로
+# 돈다. 그래서 값을 환경에 두지 말고 **명령의 일부로** 넘긴다.
+apt_get() {
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+}
+
+# 우리가 apt 자리에 무엇을 더했는지 기억한다 — 실패하면 되돌리기 위해서다.
+# 이미 있던 것은 우리 것이 아니므로 건드리지 않는다.
+PGDG_LIST="/etc/apt/sources.list.d/pgdg.list"
+PGDG_KEYRING="/usr/share/keyrings/pgdg.gpg"
+pgdg_list_was_ours=0
+pgdg_keyring_was_ours=0
+
 install_postgresql() {
-  export DEBIAN_FRONTEND=noninteractive
-  run_as_root apt-get update -qq || return 1
-  run_as_root apt-get install -y -qq --no-install-recommends \
+  apt_get update -qq || return 1
+  apt_get install -y -qq --no-install-recommends \
     ca-certificates curl gnupg lsb-release || return 1
 
   # 열쇠는 **키링 파일**로 둔다. `apt-key` 는 폐기됐고, 그 방식은 이 열쇠를
   # 저장소 전체에 대해 믿게 만든다.
   run_as_root install -d -m 0755 /usr/share/keyrings || return 1
+  [ -e "$PGDG_KEYRING" ] || pgdg_keyring_was_ours=1
   curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    | run_as_root gpg --dearmor --yes -o /usr/share/keyrings/pgdg.gpg || return 1
-  printf 'deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-    "$codename" | run_as_root tee /etc/apt/sources.list.d/pgdg.list > /dev/null || return 1
+    | run_as_root gpg --dearmor --yes -o "$PGDG_KEYRING" || return 1
+  [ -e "$PGDG_LIST" ] || pgdg_list_was_ours=1
+  printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+    "$PGDG_KEYRING" "$codename" | run_as_root tee "$PGDG_LIST" > /dev/null || return 1
 
-  run_as_root apt-get update -qq || return 1
-  run_as_root apt-get install -y -qq --no-install-recommends \
+  apt_get update -qq || return 1
+  apt_get install -y -qq --no-install-recommends \
     "postgresql-${MAJOR_VERSION}" "postgresql-client-${MAJOR_VERSION}" || return 1
+}
+
+# **실패하면 우리가 더한 apt 자리를 되돌린다.**
+#
+# 남겨 두면 그 목록은 닿지 않는 저장소를 가리킨 채 남고, 그때부터 이 컨테이너에서
+# 도는 **모든** `apt-get update` 가 그것을 함께 긁는다. 실측(2026-09-09, 닿을 수는
+# 있는데 색인이 없는 저장소로): `apt-get update` 가 **종료코드 100** 이었다
+# (`E: Failed to fetch ...`). 우리 실패는 「SQLite 로 물러난다」로 끝나기로 되어
+# 있는데, 그 자국이 남으면 이 저장소와 무관한 도구까지 함께 넘어진다.
+#
+# 이미 있던 것은 지우지 않는다 — 남이 놓아 둔 PGDG 를 우리 실패로 걷어내는 것은
+# 고치려던 것보다 나쁘다.
+undo_our_apt_changes() {
+  [ "$pgdg_list_was_ours" = "1" ] && run_as_root rm -f "$PGDG_LIST" 2> /dev/null
+  [ "$pgdg_keyring_was_ours" = "1" ] && run_as_root rm -f "$PGDG_KEYRING" 2> /dev/null
+  return 0
 }
 
 log "PostgreSQL ${MAJOR_VERSION} 을 놓습니다 (처음 한 번, 몇 분 걸립니다)."
 if ! install_postgresql; then
+  undo_our_apt_changes
   log "PostgreSQL 을 놓지 못했습니다 — SQLite 로 진행합니다."
   exit 0
 fi

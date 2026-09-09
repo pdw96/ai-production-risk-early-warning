@@ -2687,7 +2687,9 @@ def test_the_host_lock_blocks_a_different_uid(tmp_path: Path) -> None:
     )
     attempt = (
         f". {lock_script}\n"
-        "PRODUCTION_RISK_LOCK_TIMEOUT=3\n"
+        # 호스트 범위는 **자기 대기 시간**을 본다 — 놓기가 몇 분짜리라 길게
+        # 잡혀 있다. 검사에서는 그 값을 줄인다.
+        "PRODUCTION_RISK_HOST_LOCK_TIMEOUT=3\n"
         "status=0\n"
         "open_production_risk_lock uid-test 9 host || status=$?\n"
         "echo $status\n"
@@ -2818,4 +2820,186 @@ def test_an_awkward_role_name_is_quoted_for_both_layers(tmp_path: Path) -> None:
     argv = [line for line in calls.splitlines() if line.startswith("ARGV:")]
     assert any("-v" in line and "role=" in line for line in argv), (
         f"이름을 psql 변수로 넘기지 않는다:\n{calls}"
+    )
+
+
+def test_the_lock_survives_a_host_without_a_lock_directory(tmp_path: Path) -> None:
+    """`/run/lock` 도 `/var/lock` 도 없으면 **1 을 돌려준다** — 죽지 않는다.
+
+    `lock.sh` 가 약속한 것은 「잠글 자리가 없으면 1」이다. 그런데 자리를 고르는
+    반복이 한 번도 대입하지 않으면 `directory` 는 선언만 되고 값이 없다. 그때
+    `[ -n "$directory" ]` 는 `set -u` 아래에서 **셸 오류**이지 명령 실패가 아니라,
+    부르는 쪽의 `|| status=$?` 가 잡지 못하고 준비가 통째로 내려간다.
+
+    실측(2026-09-09): `directory: unbound variable` 뒤의 줄은 아예 돌지 않았다.
+    """
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
+    # `/run/lock` 을 실제로 지울 수는 없다. 그리고
+    # `production_risk_directory_is_trusted` 를 막는 것으로는 이 갈래에 닿지
+    # 못한다 — 그쪽은 `directory` 에 빈 값을 **대입한다.** 그래서 자리를 고르는
+    # 반복이 아무것도 잡지 못하는 모양을 함수 본문에서 직접 만들어 돌린다.
+    region = _shell_region(
+        lock_script, "open_production_risk_lock() {", "}"
+    ).replace("for base in /run/lock /var/lock; do", "for base in /nonexistent-a /nonexistent-b; do")
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        f". {lock_script}\n"
+        f"{region}\n"
+        "status=0\n"
+        "open_production_risk_lock provision-test 9 host || status=$?\n"
+        'echo "살아서 돌아왔다 status=$status"\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=environment,
+    )
+    assert "unbound variable" not in done.stderr, done.stderr
+    assert "살아서 돌아왔다" in done.stdout, (
+        f"자리가 없을 때 셸이 죽었다: {done.stdout!r} {done.stderr!r}"
+    )
+
+
+def test_provisioning_waits_longer_than_the_install_it_guards() -> None:
+    """놓기 잠금은 **그것이 지키는 구간보다 오래** 기다린다.
+
+    `install-postgresql.sh` 는 스스로 「처음 한 번, 몇 분 걸립니다」라고 적는다.
+    그 구간에 5분을 걸어 두면, 앞사람의 놓기가 정상으로 되고 있는 중에 뒷사람이
+    시간 초과로 끝난다 — 그리고 시간 초과는 `exit 1` 이라 세션 준비가 통째로
+    실패한다. 아무것도 고장나지 않았는데 나는 실패다.
+    """
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+    body = [
+        line
+        for line in lock_script.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+    def value(name: str) -> int:
+        line = next(one for one in body if one.startswith(f"{name}="))
+        return int(line.split("=", 1)[1])
+
+    plain = value("PRODUCTION_RISK_LOCK_TIMEOUT")
+    host = value("PRODUCTION_RISK_HOST_LOCK_TIMEOUT")
+    assert host > plain, (
+        f"호스트 범위가 더 오래 기다리지 않는다: {host} vs {plain}"
+    )
+    # 그리고 그 값을 실제로 **쓰는지** 본다 — 상수만 있고 쓰지 않으면 소용없다.
+    region = _shell_region(
+        lock_script, "open_production_risk_lock() {", "}"
+    )
+    assert "PRODUCTION_RISK_HOST_LOCK_TIMEOUT" in region, (
+        "호스트 대기 시간을 정의만 하고 쓰지 않는다"
+    )
+
+
+def test_a_failed_install_leaves_no_apt_source_behind(tmp_path: Path) -> None:
+    """놓기가 실패하면 **우리가 더한 apt 자리를 되돌린다.**
+
+    남겨 두면 그 목록은 닿지 않는 저장소를 가리킨 채 남고, 그때부터 이 컨테이너의
+    **모든** `apt-get update` 가 그것을 함께 긁는다. 실측(2026-09-09, 닿을 수는
+    있는데 색인이 없는 저장소로): `apt-get update` 가 종료코드 **100** 이었다.
+    이 파일의 실패는 「SQLite 로 물러난다」로 끝나기로 되어 있는데, 그 자국이
+    남으면 이 저장소와 무관한 도구까지 함께 넘어진다.
+
+    그리고 **이미 있던 것은 지우지 않는다** — 남이 놓아 둔 PGDG 를 우리 실패로
+    걷어내는 것은 고치려던 것보다 나쁘다.
+    """
+    install_script = REPOSITORY_ROOT / ".devcontainer" / "install-postgresql.sh"
+    root = tmp_path / "fakeroot"
+    (root / "etc/apt/sources.list.d").mkdir(parents=True)
+    (root / "usr/share/keyrings").mkdir(parents=True)
+
+    # `run_as_root` 를 가로채 가짜 뿌리 안에서만 움직이게 하고, 마지막 설치를
+    # 실패시킨다. 나머지는 그대로 진짜 스크립트가 돈다.
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -uo pipefail\n"
+        f'PGDG_LIST="{root}/etc/apt/sources.list.d/pgdg.list"\n'
+        f'PGDG_KEYRING="{root}/usr/share/keyrings/pgdg.gpg"\n'
+        "pgdg_list_was_ours=0\n"
+        "pgdg_keyring_was_ours=0\n"
+        'run_as_root() { "$@"; }\n'
+        # 앞 단계는 되고 **마지막 설치만** 실패시킨다. 첫 줄에서 실패시키면
+        # 자국이 아예 생기지 않아 검사가 조용히 통과한다.
+        'apt_get() { case "$*" in *postgresql-*) return 1;; *) return 0;; esac; }\n'
+        "curl() { printf 'key\\n'; }\n"
+        # 실제 부름은 `gpg --dearmor --yes -o <자리>` 이므로 자리는 네 번째다.
+        'gpg() { cat > "$4"; }\n'
+        'tee() { cat > "$1"; }\n'
+        'install() { command install "$@"; }\n'
+        'codename=bookworm\nMAJOR_VERSION=16\n'
+        + _shell_region(install_script, "install_postgresql() {", "}")
+        + "\n"
+        + _shell_region(install_script, "undo_our_apt_changes() {", "}")
+        + "\n"
+        "install_postgresql || undo_our_apt_changes\n",
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    left = sorted(
+        str(one.relative_to(root))
+        for one in root.rglob("*")
+        if one.is_file()
+    )
+    assert left == [], f"실패한 놓기가 apt 자리에 자국을 남겼다: {left}"
+
+    # 그리고 **이미 있던 것은 그대로 둔다.** 남이 놓아 둔 PGDG 를 우리 실패로
+    # 걷어내면 고치려던 것보다 나쁘다.
+    mine = root / "etc/apt/sources.list.d/pgdg.list"
+    mine.write_text("남이 놓아 둔 것\n", encoding="utf-8")
+    keyring = root / "usr/share/keyrings/pgdg.gpg"
+    keyring.write_text("남의 열쇠\n", encoding="utf-8")
+    done = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    assert mine.exists() and keyring.exists(), (
+        "이미 있던 apt 자리를 우리 실패가 걷어냈다"
+    )
+
+
+def test_the_published_url_never_becomes_committable(tmp_path: Path) -> None:
+    """고른 주소를 담은 **임시 파일이 커밋 가능해지지 않는다.**
+
+    준비는 환경 파일을 `${DATABASE_ENVIRONMENT_FILE}.$$` 로 먼저 쓰고 `mv` 한다.
+    중간에 끊기면 그 이름이 남는데, `.gitignore` 는 `.new` 하나만 적어 두었다 —
+    그 이름은 아무도 쓰지 않는다. 실측(2026-09-09): `database.env.12345` 는
+    `git status` 에 `??` 로 떴고, 짝인 `shell-hook.sh.*` 는 제대로 무시됐다.
+    """
+    ignore = (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    setup = SETUP_SCRIPT.read_text(encoding="utf-8")
+    # 준비가 실제로 쓰는 임시 이름을 그대로 꺼낸다 — 베끼지 않는다.
+    assert '"${DATABASE_ENVIRONMENT_FILE}.$$"' in setup, setup[:0]
+
+    # `safe.directory` 를 열어 둔다 — 검사를 저장소 주인이 아닌 손으로 돌리면
+    # git 이 소유권을 이유로 거부한다(실측: 종료코드 128). 그것은 이 검사가 묻는
+    # 것이 아니다.
+    done = subprocess.run(
+        [
+            "git", "-c", f"safe.directory={REPOSITORY_ROOT}",
+            "check-ignore", "-q", ".devcontainer/database.env.12345",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    # `check-ignore` 는 무시되면 0, 아니면 1, **그리고 오류면 128** 이다. 셋을
+    # 뭉뚱그리면 git 이 못 돈 것이 「무시되지 않는다」로 읽힌다.
+    assert done.returncode in (0, 1), f"git 이 돌지 못했다: {done.stderr}"
+    assert done.returncode == 0, (
+        "준비가 쓰는 임시 환경 파일이 무시되지 않는다 — 고른 주소가 커밋될 수 있다. "
+        f".gitignore 의 관련 줄: {[one for one in ignore if 'database.env' in one]}"
     )

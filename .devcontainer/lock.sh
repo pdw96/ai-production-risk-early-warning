@@ -20,6 +20,16 @@
 
 PRODUCTION_RISK_LOCK_TIMEOUT=300
 
+# 호스트 범위는 **더 오래 기다린다.** 그것이 지키는 구간은 의존성 설치가 아니라
+# 꾸러미 놓기다 — `install-postgresql.sh` 스스로 「처음 한 번, 몇 분 걸립니다」라고
+# 적는다. 5분을 그 구간에 걸어 두면, 앞사람의 놓기가 **정상으로 잘 되고 있는
+# 중에** 뒷사람이 시간 초과로 끝나고, 시간 초과는 `exit 1` 이라 세션 준비가
+# 통째로 실패한다. 아무것도 고장나지 않았는데 나는 실패다.
+#
+# 그래서 지키는 것의 크기에 맞춘다. 여전히 무한정은 아니다 — 20분을 넘겼다면
+# 기다려서 될 일이 아니라는 판단은 그대로다.
+PRODUCTION_RISK_HOST_LOCK_TIMEOUT=1200
+
 # 대기 초과를 나타내는 값. `flock` 의 다른 실패와 **구분되어야** 한다 —
 # 둘을 뭉뚱그리면 「앞 사람이 오래 걸린다」와 「이 환경에 잠금이 안 선다」가
 # 같은 문장으로 나오고, 사람이 무엇을 고쳐야 하는지 알 수 없다.
@@ -124,7 +134,13 @@ production_risk_directory_is_trusted() {
 # 다 막히면 1 이 나가고 부르는 쪽은 「잠글 자리가 없다」로 다룬다 — 잠그지
 # 못하는 것이지 남의 파일을 여는 것이 아니다.
 open_production_risk_lock() {
-  local key="$1" descriptor="$2" scope="${3:-user}" base directory candidate status
+  # `directory` 를 **비워서 시작한다.** 아래 반복은 `[ -d "$base" ]` 가 모두
+  # 거짓이면 한 번도 대입하지 않는다(둘 다 없는 최소 컨테이너). 그때
+  # `[ -n "$directory" ]` 는 `set -u` 아래에서 **셸을 죽인다** — 명령 실패가
+  # 아니라 셸 오류라 `|| status=$?` 가 잡지 못한다. 실측(2026-09-09):
+  # `directory: unbound variable` 뒤의 줄은 아예 돌지 않았고 종료코드는 1 이었다.
+  # 이 파일이 약속한 것은 「잠글 자리가 없으면 1 을 돌려준다」이지 죽는 것이 아니다.
+  local key="$1" descriptor="$2" scope="${3:-user}" base directory="" candidate status
   command -v flock > /dev/null 2>&1 || return 1
   candidate=""
   if [ "$scope" = "host" ]; then
@@ -174,7 +190,13 @@ open_production_risk_lock() {
   # 번호는 부르는 쪽이 글자로 적은 값이라 `eval` 이 밖에서 오는 값을 받지 않는다.
   eval "exec ${descriptor}>> \"\$candidate\"" 2> /dev/null || return 1
   status=0
-  flock -w "$PRODUCTION_RISK_LOCK_TIMEOUT" -E "$PRODUCTION_RISK_LOCK_BUSY" \
+  # `[ ... ] && var=...` 로 적지 않는다. 지금은 뒤에 명령이 더 있어 `set -e` 가
+  # 물지 않지만(실측), 그것은 **문장 순서에 기댄 안전**이다.
+  local wait_seconds="$PRODUCTION_RISK_LOCK_TIMEOUT"
+  if [ "$scope" = "host" ]; then
+    wait_seconds="$PRODUCTION_RISK_HOST_LOCK_TIMEOUT"
+  fi
+  flock -w "$wait_seconds" -E "$PRODUCTION_RISK_LOCK_BUSY" \
     "$descriptor" 2> /dev/null || status=$?
   case "$status" in
     0) return 0 ;;
