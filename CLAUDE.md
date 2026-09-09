@@ -75,14 +75,19 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 
 그 장치는 `tests/engines.py` 에 있고 `tests/conftest.py` 가 픽스처로 낸다 —
 `throwaway_engine`(설정된 엔진 위의 일회용)과 `bound_engine`(그것을 `db_base` 에
-갈아 끼운 것)이다. `test_live_engine.py` · `test_golden_cases.py` · `test_seed.py`
-가 쓴다.
+갈아 끼운 것)이다. `test_live_engine.py` · `test_golden_cases.py` · `test_seed.py` ·
+`test_master_data.py` 가 쓴다.
 
 **나머지 검사는 아직 스스로 SQLite 엔진을 만든다.** 그것은 설정을 무시하지만
 동시에 위와 같은 안전장치이므로, 옮길 때는 **걷어내는 것이 아니라 위 픽스처로
-바꿔 다는 것**이다. 남은 파일은 `test_master_data.py` · `test_models.py` ·
-`test_api.py` 이며, 한 PR 에 하나씩 옮긴다. `test_api.py` 는 `TestClient` 라
-스레드·세션 경계가 걸리므로 마지막에 둔다.
+바꿔 다는 것**이다. 남은 파일은 `test_models.py` · `test_api.py` 이며, 한 PR 에
+하나씩 옮긴다. `test_api.py` 는 `TestClient` 라 스레드·세션 경계가 걸리므로
+마지막에 둔다.
+
+**공용 엔진을 쓰는 픽스처는 검사마다 표를 지웠다 다시 만들어야 한다.**
+일회용 데이터베이스는 **모듈마다 하나**여서 검사끼리 이어지기 때문이다 — 예전의
+검사별 인메모리 엔진은 저절로 비어 있었지만 이제는 아니다. 기준정보를 넣는
+픽스처가 이것을 빠뜨리면 두 번째 검사부터 데이터가 두 벌이 된다.
 
 **엔진을 묻지 않는 검사는 옮기지 않는다.** `test_seed.py` 에는 `sqlite_master` 를
 직접 읽거나 `DATABASE_PATH` 로 떨어지는 경로를 보거나 컨테이너 기동을 하위
