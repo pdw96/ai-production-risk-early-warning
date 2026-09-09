@@ -52,6 +52,7 @@ def test_claude_md_states_the_release_that_ci_and_the_image_use(
     assert f"파이썬은 {python_release} 다" in guide, (
         f"CI 와 이미지는 파이썬 {python_release} 로 도는데 CLAUDE.md 가 그렇게 적고 있지 않다"
     )
+    _assert_stated_once(guide, python_release, "CLAUDE.md")
 
 
 def test_the_readme_prerequisite_names_the_same_release(python_release: str) -> None:
@@ -70,4 +71,22 @@ def test_the_readme_prerequisite_names_the_same_release(python_release: str) -> 
     )
     assert "이상" not in stated.group(2), (
         f"README 가 파이썬 판을 범위로 적고 있다: {stated.group(0)!r}"
+    )
+    _assert_stated_once(readme, python_release, "README.md")
+
+
+def _assert_stated_once(document: str, python_release: str, name: str) -> None:
+    """지금 쓰는 판은 문서마다 **한 번만** 적힌다.
+
+    두 곳에 적으면 판이 오를 때 한쪽만 고쳐진다 — 그리고 남은 한쪽은 틀린 채로
+    다음 사람의 전제가 된다. 표제를 고쳐 이 검사를 통과시키고 바로 아래 문장은
+    옛 판을 말하는 상태가 정확히 그 사고이므로, 개수까지 본다.
+
+    지나간 판을 이름으로 부르는 것(「3.11 에서는 깨진다」)은 막지 않는다. 그것은
+    지금 쓰는 판에 대한 주장이 아니라 사실의 기록이라 판이 올라도 낡지 않는다.
+    """
+    seen = document.count(python_release)
+    assert seen == 1, (
+        f"{name} 이 지금 쓰는 판({python_release})을 {seen} 번 적고 있다 — "
+        "한 곳만 남기고 나머지는 그곳을 가리키게 한다"
     )

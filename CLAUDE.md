@@ -36,8 +36,12 @@ FastAPI → 서비스 계층 순수 함수 → SQLAlchemy(PostgreSQL, 로컬 기
 
 ## 파이썬은 3.12 다
 
-CI 와 `backend/Dockerfile` 이 3.12 로 돈다. `backend/.venv` 가 3.11 이면
-`test_golden_cases.py` 의 오더 완료예정일이 **하루 어긋나 빨갛게 뜬다** —
+CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표제 한 곳에만
+적는다.** 두 곳에 적으면 판이 오를 때 한쪽만 고쳐지고, 남은 한쪽이 낡은 채로
+다음 사람의 전제가 된다(`test_claude_md.py` 가 이 하나뿐임을 본다).
+
+`backend/.venv` 가 다른 판이면 `test_golden_cases.py` 의 오더 완료예정일이
+**하루 어긋나 빨갛게 뜬다** —
 `sum()` 의 보정 덧셈이 판본마다 달라 `ceil` 의 끝자리를 밀기 때문이다. 코드가
 깨진 게 아니다. 로컬이 빨간데 CI 가 초록이면 이것부터 의심한다.
 
