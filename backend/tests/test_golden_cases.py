@@ -5,6 +5,11 @@
 「DB를 띄우지 않고 경계 조건을 직접 만든다」고 적어 두었다. 그래서 **시드
 데이터를 통과한 실제 값이 맞는지는 아무도 보지 않는다** — 이 파일이 그 자리다.
 
+이 파일은 `DATABASE_URL` 이 가리키는 엔진에서 돈다(`conftest.py` 의
+`bound_session_factory`). 그래서 CI 가 두 엔진에서 각각 돌릴 때 아래 골든 값은
+**두 엔진 모두에서** 물어진다 — 시드와 서비스 계층의 질의가 PostgreSQL 을 실제로
+밟는 자리가 여기다. 붙는 데이터베이스는 이번 실행만의 일회용이다.
+
 값 하나(예: 소진일)만 비교하면 중간 판단이 그대로 통과하므로 **전개를 통째로**
 비교한다. 자재는 `horizon_days=1..14` 의 날짜별 전개를, 오더는 시드의 30건
 전부를, 완제품 로트는 상태별 집계를 고정한다.
@@ -45,9 +50,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.core.config import (
     PRODUCT_WAREHOUSE,
@@ -55,7 +59,6 @@ from app.core.config import (
     RAW_MATERIAL_WAREHOUSE,
     WARNING_BUFFER_DAYS,
 )
-from app.db import base as db_base
 from app.db.models import FinishedGoodsLot, Item, Order
 from app.seed import reset_database
 from app.services.briefing import (
@@ -79,24 +82,26 @@ GOLDEN_MATERIAL_CODE = "RM-05"
 
 @pytest.fixture
 def seeded_session_factory(
-    monkeypatch: pytest.MonkeyPatch,
+    bound_session_factory: sessionmaker[Session],
 ) -> sessionmaker[Session]:
-    """고정 기준일로 시드한 인메모리 DB. 파일도 서버도 남기지 않는다.
+    """고정 기준일로 시드한 **`DATABASE_URL` 의 엔진** 위 일회용 데이터베이스.
 
-    `DATABASE_URL` 이 무엇이든 SQLite 인메모리로 돈다 — `test_api.py` ·
-    `test_seed.py` 와 같은 방식이다. 이 파일이 묻는 것은 엔진 이식성이 아니라
-    같은 입력에서 나오는 값이다.
+    예전에는 여기서 `sqlite://` 인메모리 엔진을 만들어 `db_base` 에 물렸다.
+    그러면 `DATABASE_URL` 을 무엇으로 주든 SQLite 로 돌아, CI 가 두 엔진에서
+    각각 돌려도 이 파일은 **같은 엔진을 두 번** 볼 뿐이었다.
+
+    바꾼 것은 붙는 곳이지 안전장치가 아니다. `db_base` 를 갈아 끼우는 것은
+    그대로이며(`conftest.py` 의 `bound_engine`), 갈아 끼우는 대상만 설정된 엔진
+    위의 **일회용 데이터베이스**가 되었다 — 이 파일은 검사마다 표를 지우고 다시
+    만들므로, 설정이 가리키는 곳에 그대로 붙으면 로컬에서 한 번 돌리는 것만으로
+    개발자의 데이터가 사라진다.
+
+    이 파일이 묻는 것은 여전히 「같은 입력에서 나오는 값」이다. 달라진 것은 그
+    값을 **두 엔진 모두에서** 묻게 되었다는 것이고, 시드와 서비스 계층의 질의가
+    PostgreSQL 을 실제로 밟는 자리가 여기서 생긴다.
     """
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    session_factory = sessionmaker(bind=engine)
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", session_factory)
     reset_database(REFERENCE_DATE)
-    return session_factory
+    return bound_session_factory
 
 
 def _load_material(session: Session, code: str) -> Item:

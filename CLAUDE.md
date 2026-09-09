@@ -69,9 +69,18 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 | 시드(`app/seed.py`)·판정 규칙 | `test_golden_cases.py` | 시드를 통과한 실제 값 전개를 통째로 |
 | 마이그레이션·제약 | `test_migrations.py`·`test_live_engine.py` | 앞은 방언별 SQL 문자열, 뒤는 **실제 엔진에서 무는지** |
 
-`test_live_engine.py` 는 `DATABASE_URL` 의 엔진에 붙되 **일회용 데이터베이스를
-따로 만들어** 표를 지웠다 다시 만든다. 설정이 가리키는 곳을 그대로 쓰면 로컬에서
-한 번 돌리는 것만으로 데이터가 사라지기 때문이다.
+`DATABASE_URL` 의 엔진에 붙는 검사는 **일회용 데이터베이스를 따로 만들어** 표를
+지웠다 다시 만든다. 설정이 가리키는 곳을 그대로 쓰면 로컬에서 한 번 돌리는
+것만으로 데이터가 사라지기 때문이다.
+
+그 장치는 `tests/engines.py` 에 있고 `tests/conftest.py` 가 픽스처로 낸다 —
+`throwaway_engine`(설정된 엔진 위의 일회용)과 `bound_engine`(그것을 `db_base` 에
+갈아 끼운 것)이다. `test_live_engine.py` 와 `test_golden_cases.py` 가 쓴다.
+
+**나머지 검사는 아직 스스로 SQLite 엔진을 만든다.** 그것은 설정을 무시하지만
+동시에 위와 같은 안전장치이므로, 옮길 때는 **걷어내는 것이 아니라 위 픽스처로
+바꿔 다는 것**이다. 남은 파일은 `test_api.py` · `test_models.py` ·
+`test_master_data.py` · `test_seed.py` 이며, 한 PR 에 하나씩 옮긴다.
 
 `test_golden_cases.py` 는 `reset_database(reference_date)` 로 기준일을 고정해야
 성립한다. 안 넘기면 오늘 날짜로 흔들려 박아 둔 숫자가 전부 무의미해진다.
