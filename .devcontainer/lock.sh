@@ -12,6 +12,12 @@
 # 구간이 몇 초에서 몇 분짜리이므로 5분은 넉넉하고, 넘겼다면 기다려서 될 일이
 # 아니다 — 답할 사람이 없는 자리에서 매달리지 않는다는 이 저장소의 판단 그대로다.
 
+# 권한을 올리는 규칙은 `privilege.sh` 한 곳에 있다 — 호스트 공용 잠금 자리를
+# **root 로** 만들어야 하기 때문이다(아래). 자리를 찾는 데 바깥 명령을 쓰지
+# 않는다: 좁은 PATH 에서 `dirname` 이 없으면 소스가 실패한다.
+# shellcheck source=.devcontainer/privilege.sh
+. "${BASH_SOURCE[0]%/*}/privilege.sh" 2> /dev/null || true
+
 PRODUCTION_RISK_LOCK_TIMEOUT=300
 
 # 대기 초과를 나타내는 값. `flock` 의 다른 실패와 **구분되어야** 한다 —
@@ -30,7 +36,12 @@ production_risk_directory_is_trusted() {
   local directory="$1" owner mode
   [ -L "$directory" ] && return 1
   if [ ! -d "$directory" ]; then
-    mkdir -m 0755 "$directory" 2> /dev/null || return 1
+    # **root 로 만든다.** 우리 손으로 만들면 그 디렉터리는 우리 것이 되고, 다음
+    # 사람은 아래 소유자 검사에서 「남의 것」이라 물러나 **다른 자리**를 잡는다.
+    # 그러면 둘 다 잠갔다고 믿으면서 서로 다른 파일을 잠근다 — 호스트 범위가
+    # 이름만 호스트 범위다.
+    run_as_root install -d -m 0755 -o root -g root "$directory" 2> /dev/null \
+      || return 1
   fi
   command -v stat > /dev/null 2>&1 || return 1
   owner="$(stat -c %u "$directory" 2> /dev/null)" || return 1
@@ -90,29 +101,69 @@ production_risk_directory_is_trusted() {
 #      **경로가 링크이면 매달렸든 아니든 그 자리에서 실패한다.** 그리고 열기
 #      직전에 링크인지 한 번 더 본다.
 #
-# 셋 다 막히면 1 이 나가고 부르는 쪽은 「잠글 자리가 없다」로 다룬다 — 잠그지
+# **그리고 디렉터리는 root 가 만들어야 한다.** 위의 1번은 「남의 것이면 물러난다」
+# 인데, 물러나서 **다른 자리를 잡으면** 잠금이 갈라진다. 앞사람이 root 가 아닌
+# 보통 사용자면 `/run/lock/production-risk` 는 그 사람 것이 되고, 뒷사람은 1번에
+# 걸려 다음 후보로 내려간다. 실측(2026-09-09, 실제 OS 계정 `devA`·`devB` 로):
+#
+#   devA  status=0   /run/lock/production-risk  (devA 소유)
+#   devB  status=0   /tmp/production-risk       (devB 소유)
+#
+# **둘 다 0 이다** — 둘 다 잠갔다고 믿는데 서로 다른 파일을 잠갔다. 경고도 없다.
+# 사람마다 갈라지는 것을 고치려고 만든 범위가 이름만 호스트 범위였다.
+#
+# 그래서 자리를 만드는 것은 `run_as_root` 다. 그러면 소유자가 늘 root 라 모두가
+# 1번을 통과하고 **같은 파일**을 본다. 파일은 root 가 0666 으로 만들어 두므로
+# 권한 없는 사용자도 열어서 겨룰 수 있다.
+#
+# 후보에서 **`/tmp` 를 뺐다.** 거기는 `/run/lock` 이 없는 환경을 위한 마지막
+# 자리였는데, 위의 갈라짐이 실제로 나온 자리가 바로 거기다. 앞의 둘이 모두
+# 막히면 잠그지 않는 편이 낫다 — 그때는 1 이 나가고 부르는 쪽이 그것을 소리 내어
+# 말한다.
+#
+# 다 막히면 1 이 나가고 부르는 쪽은 「잠글 자리가 없다」로 다룬다 — 잠그지
 # 못하는 것이지 남의 파일을 여는 것이 아니다.
 open_production_risk_lock() {
   local key="$1" descriptor="$2" scope="${3:-user}" base directory candidate status
   command -v flock > /dev/null 2>&1 || return 1
+  candidate=""
   if [ "$scope" = "host" ]; then
-    for base in /run/lock /var/lock /tmp; do
+    for base in /run/lock /var/lock; do
       [ -d "$base" ] || continue
       directory="$base/production-risk"
       production_risk_directory_is_trusted "$directory" || { directory=""; continue; }
       break
     done
-    [ -n "$directory" ] || return 1
-    candidate="$directory/${key}.lock"
-    # 파일은 **모두가 열 수 있어야** 겨룰 수 있다. `set -C` 는 `O_CREAT|O_EXCL`
-    # 이라 이 이름이 링크이면 매달렸든 아니든 그 자리에서 실패한다.
-    if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
-      (set -C; umask 0000; : > "$candidate") 2> /dev/null || true
+    if [ -n "$directory" ]; then
+      candidate="$directory/${key}.lock"
+      # 파일은 **모두가 열 수 있어야** 겨룰 수 있다. `set -C` 는 `O_CREAT|O_EXCL`
+      # 이라 이 이름이 링크이면 매달렸든 아니든 그 자리에서 실패한다.
+      if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+        # 디렉터리가 root 것이고 우리가 root 가 아니면 여기에 못 만든다. 그때는
+        # root 에게 만들게 한다 — 파일은 0666 이어야 누구든 열어서 겨룰 수 있다.
+        # SC2016 은 여기서 맞다 — `$1` 은 **안쪽 `sh`** 가 펴야 한다. 우리가 펴서
+        # 넣으면 경로가 그 셸의 문법을 다시 지나간다.
+        # shellcheck disable=SC2016
+        (set -C; umask 0000; : > "$candidate") 2> /dev/null \
+          || run_as_root sh -c 'set -C; umask 0000; : > "$1"' sh "$candidate" \
+               2> /dev/null || true
+      fi
+      # 열기 직전에 다시 본다 — 만들지 않고 지나온 길도 있다.
+      if [ -L "$candidate" ] || [ ! -f "$candidate" ]; then
+        candidate=""
+      fi
     fi
-    # 열기 직전에 다시 본다 — 만들지 않고 지나온 길도 있다.
-    [ -L "$candidate" ] && return 1
-    [ -f "$candidate" ] || return 1
-  else
+    # **공용 자리를 못 세웠으면 우리 자리로 물러난다.** 여기서 그냥 1 을 내면
+    # sudo 가 없는 1인 컨테이너는 잠금을 통째로 잃는다 — 사람끼리 갈라지는 것을
+    # 고치려다 **한 사람의 준비와 훅이 겹치는 것**까지 못 막게 된다. 그것이 이
+    # 파일이 애초에 세워진 이유다.
+    #
+    # 물러나는 자리는 남이 만든 자리가 아니라 **우리 캐시**다. 공용처럼 보이는
+    # 자리에 우리 것을 만들어 두 사람이 서로 다른 파일을 잠그는 것 — 그것이 이
+    # 회차에 고치는 결함이므로, 그 모양으로는 물러나지 않는다.
+    [ -n "$candidate" ] || scope="user"
+  fi
+  if [ -z "$candidate" ]; then
     directory="${XDG_CACHE_HOME:-$HOME/.cache}/production-risk"
     mkdir -p "$directory" 2> /dev/null || return 1
     candidate="$directory/${key}.lock"

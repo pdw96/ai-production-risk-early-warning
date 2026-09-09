@@ -927,7 +927,14 @@ def test_losing_a_role_creation_race_does_not_discard_postgresql(
         {
             "pg_isready": "exit 0",
             "psql": (
+                # 역할을 만드는 문장은 **표준입력**으로 온다 — 이름을 psql 이
+                # 인용하게 하려면 `-c` 가 아니라 `-f -` 여야 하기 때문이다.
+                # 인자만 보면 그 부름이 보이지 않는다.
+                'sql="$*"\n'
                 'case "$*" in\n'
+                '  *"-f -"*) sql="$sql $(cat)";;\n'
+                "esac\n"
+                'case "$sql" in\n'
                 # 역할 조회는 이긴 쪽이 만들었는지에 따라 답이 달라진다.
                 "  *rolcreatedb*)\n"
                 f'    [ -e {created} ] && echo t\n'
@@ -2528,4 +2535,287 @@ def test_a_foreign_owned_sequence_is_not_advertised(tmp_path: Path) -> None:
     )
     assert result.returncode != 0, (
         "표가 기대는 시퀀스를 묻지 않는다 — 시드가 첫 insert 에서 죽는다"
+    )
+
+
+def test_a_query_value_does_not_hide_the_password(tmp_path: Path) -> None:
+    """질의 문자열에 `:` 와 `@` 가 있어도 **비밀번호가 가려진다.**
+
+    옛 사용자 이름 묶음은 `.*` 였다. 그것은 `/` 도 `?` 도 넘으므로 탐욕적으로
+    **질의 문자열 안까지** 짚어 간다. 실측(2026-09-09):
+
+        ://u:secret@host/db?application_name=a:b@c
+          → ://u:secret@host/db?application_name=a:***@c
+
+    진짜 비밀번호가 로그에 통째로 박히고 질의값이 대신 가려졌다. `make_url` 은
+    그 주소의 비밀번호를 `secret` 으로 읽으므로 동작하는 주소다.
+
+    파서(SQLAlchemy 2.0.52)의 문법은 사용자 이름이 `[^:/]*`, 비밀번호가 `[^@]*`
+    다. 여기도 그 둘이어야 한다 — 넓지도 좁지도 않게.
+    """
+    region = _shell_region(SETUP_SCRIPT, "redact_url() {", "}")
+    keys = next(
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("SAFE_QUERY_KEYS=")
+    )
+    script = tmp_path / "redact.sh"
+    script.write_text(f"{keys}\n{region}\nredact_url \"$1\"\n", encoding="utf-8")
+
+    def redacted(url: str) -> str:
+        done = subprocess.run(
+            ["bash", str(script), url], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    leaky = "postgresql+psycopg://u:secret@host/db?application_name=a:b@c"
+    assert "secret" not in redacted(leaky), redacted(leaky)
+    # 질의가 있어도 없어도, 경로가 있어도 없어도 같아야 한다.
+    assert "secret" not in redacted("postgresql+psycopg://u:secret@host?x=a:b@c")
+    assert "secret" not in redacted(
+        "postgresql+psycopg://u:secret@[::1]:5432/db?application_name=x:y@z"
+    )
+    # 앞선 회차에 고친 것들이 그대로여야 한다.
+    assert "secret" not in redacted("postgresql+psycopg://a@b:secret@host/db")
+    assert "a@b" in redacted("postgresql+psycopg://a@b:secret@host/db")
+    assert "sec/ret" not in redacted("postgresql+psycopg://u:sec/ret@h/db")
+    assert "5432/db" not in redacted("postgresql+psycopg://h:5432/db?options=@x")
+    plain = "postgresql+psycopg:///production_risk?host=/var/run/postgresql&port=5432"
+    assert redacted(plain).strip() == plain
+
+
+def test_the_shared_lock_directory_is_made_by_root(tmp_path: Path) -> None:
+    """공용 잠금 자리는 **root 가** 만든다. 우리가 만들면 잠금이 갈라진다.
+
+    소유자 검사는 「남의 것이면 물러난다」인데, 물러나서 **다른 자리를 잡으면**
+    두 사람이 서로 다른 파일을 잠근다. 실측(2026-09-09, 실제 OS 계정 둘로):
+
+        devA  status=0  /run/lock/production-risk  (devA 소유)
+        devB  status=0  /tmp/production-risk       (devB 소유)
+
+    둘 다 0 이다 — 둘 다 잠갔다고 믿는데 서로를 막지 못하고, 경고도 없다.
+
+    그래서 자리를 만드는 것은 `run_as_root` 여야 한다. 그리고 그것이 안 되면
+    공용처럼 보이는 자리에 우리 것을 만들지 말고 **우리 캐시로 물러나야** 한다 —
+    한 사람의 준비와 훅이 겹치는 것은 여전히 막아야 하기 때문이다.
+    """
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+    target = tmp_path / "production-risk"
+    asked = tmp_path / "asked-root"
+
+    runner = tmp_path / "trusted.sh"
+    runner.write_text(
+        f". {lock_script}\n"
+        f'run_as_root() {{ printf "%s\\n" "$*" >> {shlex.quote(str(asked))}; return 1; }}\n'
+        f'if production_risk_directory_is_trusted {shlex.quote(str(target))}; then\n'
+        "  echo TRUSTED\n"
+        "else\n"
+        "  echo REFUSED\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        ["bash", str(runner)], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert "REFUSED" in done.stdout, done.stdout
+    assert not target.exists(), (
+        f"root 로 못 만들었는데 우리 손으로 만들었다: {target}"
+    )
+    assert asked.exists(), "자리를 만들 때 root 를 거치지 않았다"
+    request = asked.read_text(encoding="utf-8")
+    assert "install -d" in request and "-o root" in request, request
+
+    # 그리고 공용 자리를 못 세우면 **우리 캐시로** 물러난다 — 잠금을 잃지 않는다.
+    home = tmp_path / "home"
+    home.mkdir()
+    fallback = tmp_path / "fallback.sh"
+    fallback.write_text(
+        f". {lock_script}\n"
+        "production_risk_directory_is_trusted() { return 1; }\n"
+        "open_production_risk_lock provision-test 9 host || exit 1\n"
+        "readlink -f /proc/self/fd/9\n"
+        "close_production_risk_lock 9\n",
+        encoding="utf-8",
+    )
+    environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
+    done = subprocess.run(
+        ["bash", str(fallback)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=environment,
+    )
+    assert done.returncode == 0, done.stderr
+    where = done.stdout.strip()
+    assert where.startswith(str(home)), f"공용 자리를 못 세웠는데 집이 아니다: {where}"
+
+    # `/tmp` 는 후보가 아니다 — 위의 갈라짐이 실제로 나온 자리다.
+    body = [
+        line
+        for line in lock_script.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    bases = next(line for line in body if "for base in" in line)
+    assert "/tmp" not in bases, f"`/tmp` 가 아직 공용 잠금 후보다: {bases.strip()}"
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="다른 UID 로 열어 보려면 root 여야 한다")
+def test_the_host_lock_blocks_a_different_uid(tmp_path: Path) -> None:
+    """호스트 잠금은 **UID 가 달라도** 서로를 막는다.
+
+    앞의 검사는 `$HOME` 만 바꾸었다 — 같은 UID 로는 소유자 검사가 갈라지지 않아
+    이 결함이 지나갔다. 그래서 여기서는 프로세스의 UID 자체를 바꾼다.
+
+    이것이 묻는 것은 **끝 상태**다: 두 UID 가 같은 파일을 보고 서로를 막는가.
+    자리를 누가 만드느냐를 지키는 것은 위의
+    `test_the_shared_lock_directory_is_made_by_root` 이고, 되돌렸을 때 빨간 것도
+    그쪽이다 — 이미 root 소유 자리가 서 있는 기계에서는 이 검사가 그 되돌림을
+    보지 못한다.
+    """
+    if shutil.which("setpriv") is None:
+        pytest.skip("setpriv 가 없다")
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+
+    hold = (
+        f". {lock_script}\n"
+        "open_production_risk_lock uid-test 9 host || exit 1\n"
+        "echo held\n"
+        "sleep 12\n"
+    )
+    attempt = (
+        f". {lock_script}\n"
+        "PRODUCTION_RISK_LOCK_TIMEOUT=3\n"
+        "status=0\n"
+        "open_production_risk_lock uid-test 9 host || status=$?\n"
+        "echo $status\n"
+    )
+
+    def as_uid(uid: int, body: str, home: Path):  # type: ignore[no-untyped-def]
+        # 검사 디렉터리는 root 의 0700 이라 다른 UID 가 읽지 못한다. 그래서 본문을
+        # 파일이 아니라 인자로 넘긴다.
+        home.mkdir(parents=True, exist_ok=True)
+        os.chown(home, uid, uid)
+        environment = _environment_without_a_url({"HOME": str(home)})
+        environment.pop("XDG_CACHE_HOME", None)
+        return subprocess.Popen(
+            [
+                "setpriv", f"--reuid={uid}", f"--regid={uid}", "--clear-groups",
+                "bash", "-c", body,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+
+    # 자리는 root 가 세운다 — 실제 순서도 그렇다(준비가 root 나 sudo 로 돈다).
+    subprocess.run(
+        ["bash", "-c", f". {lock_script}\nopen_production_risk_lock uid-test 8 host"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    holder = as_uid(4243, hold, tmp_path / "home-a")
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held", "앞사람이 잠그지 못했다"
+        other = as_uid(4244, attempt, tmp_path / "home-b")
+        out, err = other.communicate(timeout=60)
+        assert out.strip() == "2", (
+            f"다른 UID 가 막히지 않았다(status={out.strip()!r}) — 같은 파일이 아니다. {err}"
+        )
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+
+
+def test_an_awkward_role_name_is_quoted_for_both_layers(tmp_path: Path) -> None:
+    """운영체제 이름이 SQL 도 셸도 **깨뜨리지 못한다.**
+
+    `id -un` 은 SQL 을 모른다. NSS 로 오는 디렉터리 계정에는 `'` 가 든 이름이 있고,
+    그것을 리터럴에 그대로 끼우면 거기서 문장이 닫힌다. 실측(2026-09-09,
+    PostgreSQL 16.13, `/etc/passwd` 에 `o'brien` 을 흉내 내어):
+
+        SELECT ... WHERE rolname = 'o'brien'
+          → ERROR: syntax error at or near "brien"
+
+    그 실패는 `2>/dev/null || true` 가 **빈 값**으로 삼킨다. 빈 값은 「역할이
+    없다」는 뜻이라 만들러 가고, 만든 뒤 다시 묻는 것도 같은 질의라 또 빈 값이며,
+    결국 멀쩡한 역할을 두고 SQLite 로 물러난다.
+
+    그리고 같은 이름이 `run_as` 가 만드는 **셸 문자열**에도 들어간다. 실측: 이름을
+    `x$(id -un > /tmp/pwned)y` 로 두고 옛 모양을 돌리니 `-rw-rw-r-- postgres
+    postgres /tmp/pwned` 가 생겼다 — `postgres` 로 도는 셸에서 실행된 것이다.
+
+    그래서 두 겹을 각각 맞는 도구가 인용한다. 셸은 `printf '%q'`(이 파일이
+    데이터베이스 이름에 이미 쓰는 방식), SQL 은 psql 의 `-v` 와 `:"role"`.
+    """
+    canary = tmp_path / "canary"
+    record = tmp_path / "psql-calls"
+    role = "o'brien$(touch " + str(canary) + ")"
+
+    stub = _stub_directory(
+        tmp_path,
+        {
+            # 이 이름으로 도는 사람인 척한다. `-u` 는 0 이라 `run_as` 가 `su` 를 쓴다.
+            "id": (
+                'case "$1" in\n'
+                f"  -un) printf '%s\\n' {shlex.quote(role)};;\n"
+                "  -u) echo 0;;\n"
+                "  *) echo 0;;\n"
+                "esac"
+            ),
+            # `su <상대> -c <문자열>` — 문자열을 **셸이 다시 읽는** 자리를 그대로 둔다.
+            "su": 'shift 2\nexec sh -c "$1"',
+            "sudo": "exit 1",
+            "pg_isready": "exit 0",
+            "createdb": "exit 1",
+            "psql": (
+                "{\n"
+                "  printf 'ARGV:'\n"
+                '  for argument in "$@"; do printf " [%s]" "$argument"; done\n'
+                "  printf '\\n'\n"
+                '  case "$*" in\n'
+                "    *'-f -'*) printf 'STDIN:'; cat; printf '\\n';;\n"
+                "  esac\n"
+                f"}} >> {shlex.quote(str(record))}\n"
+                'case "$*" in\n'
+                "  *has_schema_privilege*) echo t;;\n"
+                "  *rolcreatedb*) ;;\n"
+                "  *) echo 1;;\n"
+                "esac"
+            ),
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    # 1. 셸 겹 — 이름 안의 명령이 돌지 않았다.
+    assert not canary.exists(), (
+        "역할 이름이 `postgres` 로 도는 셸에서 실행됐다 — 셸 인용이 없다"
+    )
+    assert record.exists(), "psql 이 한 번도 불리지 않았다 — 검사가 갈래에 닿지 못했다"
+    calls = record.read_text(encoding="utf-8")
+
+    # 2. 조회 겹 — 이름을 질의에 끼우지 않는다. 묻는 말은 `current_user` 다.
+    probes = [line for line in calls.splitlines() if "rolcreatedb" in line]
+    assert probes, calls
+    for probe in probes:
+        assert "current_user" in probe, probe
+        assert "o'brien" not in probe, f"역할 이름이 질의에 박혀 있다: {probe}"
+
+    # 3. SQL 겹 — 이름은 psql 이 변수로 받아 **psql 이** 인용한다.
+    writes = [line for line in calls.splitlines() if "ROLE" in line]
+    assert writes, f"역할을 만들거나 고치는 문장이 없다:\n{calls}"
+    for write in writes:
+        assert ':"role"' in write, f"식별자를 psql 이 인용하지 않는다: {write}"
+        assert "o'brien" not in write, f"역할 이름이 SQL 에 박혀 있다: {write}"
+    argv = [line for line in calls.splitlines() if line.startswith("ARGV:")]
+    assert any("-v" in line and "role=" in line for line in argv), (
+        f"이름을 psql 변수로 넘기지 않는다:\n{calls}"
     )

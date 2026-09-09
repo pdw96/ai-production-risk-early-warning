@@ -81,17 +81,15 @@ if [ -x "/usr/lib/postgresql/${MAJOR_VERSION}/bin/postgres" ] \
   exit 0
 fi
 
-# 권한을 올리는 방법은 `database.sh` 와 같은 규칙을 쓴다 — root 면 그대로,
-# 아니면 비대화형 sudo. 둘 다 안 되면 여기서 조용히 끝난다.
-run_as_root() {
-  if [ "$(id -u)" = "0" ]; then
-    "$@"
-  elif command -v sudo > /dev/null 2>&1 && sudo -n true 2> /dev/null; then
-    sudo -n "$@"
-  else
-    return 1
-  fi
-}
+# 권한을 올리는 규칙은 `privilege.sh` 한 곳에 있다. 자리를 찾는 데 바깥 명령을
+# 쓰지 않는 것은 위와 같은 이유다. 못 읽으면 아래 `run_as_root` 가 없어 이 파일이
+# 죽으므로, 그때는 조용히 끝난다 — 이 파일은 무슨 일이 있어도 0 으로 끝난다.
+# shellcheck source=.devcontainer/privilege.sh
+. "${BASH_SOURCE[0]%/*}/privilege.sh" 2> /dev/null || true
+if ! command -v run_as_root > /dev/null 2>&1; then
+  log "권한을 올리는 방법을 읽지 못했습니다 — SQLite 로 진행합니다."
+  exit 0
+fi
 
 if ! command -v apt-get > /dev/null 2>&1; then
   log "PostgreSQL 을 놓을 방법을 모르는 환경입니다 — SQLite 로 진행합니다."

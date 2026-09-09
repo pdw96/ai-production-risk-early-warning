@@ -77,30 +77,10 @@ fall_back_to_sqlite() {
   exit 0
 }
 
-# 권한을 올리는 **단 한 곳**. root 면 그대로 쓰고, 아니면 비대화형 sudo 를 쓴다.
-#
-# `su` 는 비root 에게 비밀번호를 묻는다 — 스크립트에는 그것을 줄 사람이 없어
-# `Authentication failure` 로 끝난다. 그 실패를 그대로 두면 역할 조회가 「역할이
-# 없다」로 읽히고, 이어지는 생성이 `set -e` 아래에서 setup 을 통째로 죽인다.
-run_as() {
-  local target="$1"
-  shift
-  if [ "$(id -u)" = "0" ]; then
-    if [ "$target" = "root" ]; then
-      sh -c "$*"
-    else
-      su "$target" -c "$*"
-    fi
-  elif command -v sudo > /dev/null 2>&1 && sudo -n true 2> /dev/null; then
-    if [ "$target" = "root" ]; then
-      sudo -n sh -c "$*"
-    else
-      sudo -n -u "$target" sh -c "$*"
-    fi
-  else
-    return 1
-  fi
-}
+# 권한을 올리는 규칙은 `privilege.sh` 한 곳에 있다 — `install-postgresql.sh` 도
+# `lock.sh` 도 같은 것을 본다.
+# shellcheck source=.devcontainer/privilege.sh
+. "$DEVCONTAINER_DIRECTORY/privilege.sh"
 
 # 이미 정해 준 주소가 있으면 그것이 이긴다. 세션을 다른 데이터베이스에 붙이는
 # 유일한 길이다.
@@ -272,8 +252,18 @@ probe_role_privilege() {
   if [ -z "$database" ]; then
     return 0
   fi
+  # **이름을 질의에 끼워 넣지 않는다.** `id -un` 은 SQL 을 모른다 — 이름에 `'` 가
+  # 하나 들면 리터럴이 거기서 닫힌다. 실측(2026-09-09, `/etc/passwd` 에 NSS 계정을
+  # 흉내 낸 `o'brien`): 이 질의는 `syntax error at or near "brien"` 로 죽었고,
+  # `2>/dev/null || true` 가 그것을 **빈 값**으로 삼켰다. 빈 값은 「역할이 없다」는
+  # 뜻이라 아래는 역할을 만들러 가고, 만든 뒤 다시 묻는 것도 같은 질의라 또 빈
+  # 값이며, 결국 SQLite 로 물러난다 — 역할은 멀쩡히 서 있는데.
+  #
+  # 물을 것은 「**지금 붙은 이 역할**이 만들 수 있는가」이고, 그것을 이름 없이
+  # 묻는 말이 `current_user` 다. `database-usable.sh` 가 이미 그렇게 묻는다 —
+  # 같은 질문에 두 파일이 다른 방식으로 답할 이유가 없다.
   $PSQL -d "$database" -qtAc \
-    "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = '${role}'" \
+    "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user" \
     2>/dev/null | tr -d '[:space:]' || true
 }
 
@@ -291,10 +281,29 @@ if [ "$role_can_create" = "f" ] || [ -z "$role_can_create" ]; then
   fi
 fi
 
+# 여기서부터 이름이 **두 겹**을 지난다 — `run_as` 가 만드는 셸 문자열과, 그 안의
+# SQL 식별자. 두 겹 다 인용해야 하고, 둘은 서로 다른 도구가 한다.
+#
+#   셸 겹 : `printf '%q'` — 이 파일이 데이터베이스 이름에 이미 쓰는 방식이다.
+#   SQL 겹: psql 의 `-v` 와 `:"role"` — 인용을 psql 이 한다. 짐작하지 않는다.
+#
+# 인용하지 않으면 이름이 `postgres` 로 도는 셸에 그대로 들어간다. 실측
+# (2026-09-09): `role` 을 `x$(id -un > /tmp/pwned)y` 로 두고 옛 모양을 돌리니
+# **`-rw-rw-r-- postgres postgres /tmp/pwned`** 가 생겼다. `printf '%q'` 를 씌우자
+# 생기지 않았다.
+#
+# **`-c` 가 아니라 `-f -` 인 이유.** psql 은 `-c` 로 준 문자열을 자기 렉서에
+# 통과시키지 않고 서버로 그대로 보낸다 — 변수가 전개되지 않는다. 실측
+# (2026-09-09, psql 16): `-c "... rolname = :'role'"` 는
+# `syntax error at or near ":"` 였고, 같은 문장을 표준입력으로 주니 `t` 였다.
+# 그래서 문장은 표준입력으로 준다. 구분자를 `<<'...'` 로 따옴표에 넣어 두었으므로
+# 안쪽 셸은 이 SQL 을 건드리지 않는다.
 if [ "$role_can_create" = "f" ]; then
   log "역할 ${role} 에 데이터베이스 생성 권한이 없습니다. 권한을 더합니다."
   if ! run_as postgres \
-    "$PSQL -d $(printf '%q' "$administrative_database") -qc \"ALTER ROLE \\\"${role}\\\" CREATEDB\"" \
+    "$PSQL -d $(printf '%q' "$administrative_database") -v role=$(printf '%q' "$role") -q -f - <<'PRODUCTION_RISK_SQL'
+ALTER ROLE :\"role\" CREATEDB;
+PRODUCTION_RISK_SQL" \
     > /dev/null 2>&1 && [ "$(probe_role_privilege)" != "t" ]; then
     fall_back_to_sqlite "역할 ${role} 에 CREATEDB 를 줄 권한을 얻지 못했습니다."
   fi
@@ -318,7 +327,9 @@ elif [ -z "$role_can_create" ]; then
   # 진 쪽이 그것을 「권한을 얻지 못했다」로 읽으면 SQLite 로 물러나고, 그러면
   # 이긴 쪽이 고른 PostgreSQL 을 **지운다.** 그래서 한 번 더 묻는다.
   if ! run_as postgres \
-    "$PSQL -d $(printf '%q' "$administrative_database") -qc \"CREATE ROLE \\\"${role}\\\" LOGIN CREATEDB\"" \
+    "$PSQL -d $(printf '%q' "$administrative_database") -v role=$(printf '%q' "$role") -q -f - <<'PRODUCTION_RISK_SQL'
+CREATE ROLE :\"role\" LOGIN CREATEDB;
+PRODUCTION_RISK_SQL" \
     > /dev/null 2>&1 && [ "$(probe_role_privilege)" != "t" ]; then
     fall_back_to_sqlite "역할 ${role} 을 만들 권한을 얻지 못했습니다."
   fi
