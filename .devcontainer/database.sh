@@ -45,6 +45,10 @@ REPOSITORY_ROOT="$(cd "$DEVCONTAINER_DIRECTORY/.." && pwd)"
 # `NAMEDATALEN-1`(63) 안에 넉넉히 든다.
 DATABASE_NAME="production_risk_$(printf '%s' "$REPOSITORY_ROOT" | sha256sum | cut -d' ' -f1 | cut -c1-16)"
 
+# 관례대로 늘 있는 데이터베이스들. **한 곳에만 적는다** — 붙을 자리를 고르는 쪽과
+# 판을 묻는 쪽이 다른 목록을 보면, 붙기는 되는데 판은 못 묻는 틈이 생긴다.
+MAINTENANCE_DATABASES="postgres template1"
+
 # 목적지를 **못 박는다.** 환경에 내보내져 있던 libpq 변수를 지우고(목록은
 # `libpq.sh` 한 곳에 있다) 우리가 약속하는 자리만 다시 세운다. 여기 없는
 # 클러스터라면 아래 검사가 실패하고 SQLite 로 물러난다 — 그것이 맞다. 엉뚱한
@@ -164,8 +168,17 @@ fi
 # 대입이 곧 종료가 된다 — 역할이 없어 `psql` 이 거부당하는 것은 흔한 상태이고,
 # 그때 이 파일은 SQLite 로 물러나야지 죽으면 안 된다. 같은 결함을 5차에 고쳤고
 # `test_a_failing_role_probe_does_not_kill_the_script` 가 그것을 지킨다.
-server_version="$($PSQL -d postgres -qtAc "SHOW server_version_num" 2> /dev/null \
-  | tr -d '[:space:]' || true)"
+# **한 이름이 아니라 정비 데이터베이스 후보들에게 묻는다.** 관례대로 있는
+# `postgres` 가 지워진 호스트가 있고, 그러면 이 물음만 빈 값으로 돌아온다 —
+# 그런데 아래의 관리자 갈래는 `template1` 로 붙어 역할과 데이터베이스를 만들어
+# 낸다. 즉 붙을 수는 있는데 판만 못 물어보고 지나가는 자리가 생긴다. 나중에
+# 붙는 그 후보들에게 지금 묻는다.
+server_version=""
+for maintenance in $MAINTENANCE_DATABASES; do
+  [ -n "$server_version" ] && break
+  server_version="$($PSQL -d "$maintenance" -qtAc "SHOW server_version_num" 2> /dev/null \
+    | tr -d '[:space:]' || true)"
+done
 
 # **못 물었으면 관리자로 다시 묻는다.** 위의 물음은 지금 이 역할로 간다. 그런데
 # 이 자리는 아직 역할을 만들기 **전**이다 — 첫 준비에서는 운영체제 사용자와 같은
@@ -177,10 +190,11 @@ server_version="$($PSQL -d postgres -qtAc "SHOW server_version_num" 2> /dev/null
 # 그래서 같은 물음을 관리자로 한 번 더 한다 — `probe_as_postgres` 가 이미 쓰는
 # 길이다. 그것마저 안 되면 그때는 정말 「판을 모른다」이고, 모른다는 이유로
 # 버리지는 않는다.
-if [ -z "$server_version" ]; then
-  server_version="$(run_as postgres "$PSQL -d postgres -qtAc 'SHOW server_version_num'" 2> /dev/null \
+for maintenance in $MAINTENANCE_DATABASES; do
+  [ -n "$server_version" ] && break
+  server_version="$(run_as postgres "$PSQL -d $(printf '%q' "$maintenance") -qtAc 'SHOW server_version_num'" 2> /dev/null \
     | tr -d '[:space:]' || true)"
-fi
+done
 case "$server_version" in
   [0-9][0-9][0-9][0-9][0-9] | [0-9][0-9][0-9][0-9][0-9][0-9])
     server_major="${server_version%????}"
@@ -236,7 +250,7 @@ probe_as_postgres() {
 select_database_with() {
   local probe="$1"
   local candidate
-  for candidate in "$DATABASE_NAME" postgres template1; do
+  for candidate in "$DATABASE_NAME" $MAINTENANCE_DATABASES; do
     if "$probe" "$candidate"; then
       echo "$candidate"
       return 0

@@ -14,7 +14,16 @@ fi
 PROJECT_DIRECTORY="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$PROJECT_DIRECTORY"
 
-bash .devcontainer/setup.sh
+# **실패를 값으로 받는다 — 정리는 그래도 해야 한다.**
+#
+# 준비가 실패하면 그것은 `database.env` 를 지우고 0 아닌 값으로 끝난다. 그런데
+# 여기서 `set -e` 가 그 자리에서 훅을 끊으면, 아래의 `unset` 을 적는 갈래에
+# 닿지 못한다 — 물려받은 주소를 들고 다시 뜬 세션이 **준비가 방금 거부한 그
+# 데이터베이스를 계속 쓴다.** 준비가 「이 주소는 못 쓴다」고 말한 바로 그 순간에.
+#
+# 그래서 상태를 들고 있다가, 정리를 마친 뒤에 그대로 내보낸다.
+setup_status=0
+bash .devcontainer/setup.sh || setup_status=$?
 
 # 준비가 정한 엔진을 세션의 모든 명령이 이어받게 한다. 여기서 다시 판단하지
 # 않는다 — 두 곳이 각자 판단하면 준비는 PostgreSQL 로 해 놓고 pytest 는 SQLite 로
@@ -40,3 +49,6 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
       >> "$CLAUDE_ENV_FILE"
   fi
 fi
+
+# 준비의 판정은 여기서 나간다.
+exit "$setup_status"

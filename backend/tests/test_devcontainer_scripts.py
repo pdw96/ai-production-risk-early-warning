@@ -2098,3 +2098,234 @@ def test_the_readme_describes_postgresql_in_codespaces() -> None:
         assert "물러" in line or "아니라" in line, (
             f"SQLite 를 기본 경로처럼 적고 있다: {line.strip()}"
         )
+
+
+def test_a_password_with_a_slash_is_redacted(tmp_path: Path) -> None:
+    """날 `/` 가 든 비밀번호도 **가려진다.**
+
+    옛 글자 묶음은 비밀번호에서 `/` 를 뺐고, 그 근거로 「URI 에서 사용자 정보는
+    `/` 앞에서 끝나므로 날 `/` 가 올 수 없다」고 적혀 있었다. **우리가 실제로
+    쓰는 파서는 그렇게 읽지 않는다.**
+
+    실측(2026-09-09, SQLAlchemy 2.0.52):
+
+        make_url("postgresql+psycopg://u:sec/ret@h/db")
+          → username='u' password='sec/ret' host='h' database='db'
+
+    그래서 그 주소는 동작하는 주소이고, 그때의 가림은 입력을 **그대로** 내보냈다 —
+    비밀번호가 세션 시작 로그에 통째로 박힌다.
+
+    근거로 삼았던 반례도 반대였다. `://h:5432/db?options=@x` 를 같은 파서에 넣으면
+    username='h' password='5432/db?options=' host='x' 다 — 파서가 이미 비밀번호로
+    읽고 있었으므로 가리는 것이 맞다.
+
+    글자를 베끼지 않고 **그 함수를 파일에서 꺼내 돌린다.**
+    """
+    region = _shell_region(SETUP_SCRIPT, "redact_url() {", "}")
+    # 한 줄짜리는 `_shell_region` 의 두 앵커에 맞지 않는다 — 그 줄을 그대로 꺼낸다.
+    keys = next(
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("SAFE_QUERY_KEYS=")
+    )
+    script = tmp_path / "redact.sh"
+    script.write_text(
+        f"{keys}\n{region}\nredact_url \"$1\"\n", encoding="utf-8"
+    )
+
+    def redacted(url: str) -> str:
+        done = subprocess.run(
+            ["bash", str(script), url], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    leaky = "postgresql+psycopg://u:sec/ret@h/db"
+    assert "sec/ret" not in redacted(leaky), "날 `/` 가 든 비밀번호가 그대로 나갔다"
+    assert "***" in redacted(leaky)
+
+    # 사용자 정보 안의 `?` 도 마찬가지다 — 질의로 자르기 전에 가려야 한다.
+    tricky = "postgresql+psycopg://h:5432/db?options=@x"
+    assert "5432/db" not in redacted(tricky), redacted(tricky)
+
+    # 그러면서 가릴 것이 없는 주소는 그대로 읽혀야 한다.
+    plain = "postgresql+psycopg:///production_risk?host=/var/run/postgresql&port=5432"
+    assert redacted(plain).strip() == plain
+    # 질의 쪽 자격증명은 이미 가리고 있었다 — 함께 지킨다.
+    assert "s3cr3t" not in redacted("postgresql+psycopg://h/db?pass%77ord=s3cr3t")
+
+
+def test_the_provisioning_lock_is_shared_across_users(tmp_path: Path) -> None:
+    """놓기 잠금은 **집이 아니라 호스트**에 있다.
+
+    사람마다 다른 파일을 잠그면 잠근 것이 아니다. 한 호스트를 두 사람이 쓰면 둘 다
+    자기 캐시의 자기 파일을 잠그고 나란히 apt 를 돌린다 — 진 쪽의 설치는 「놓기
+    실패」로 삼켜져 SQLite 를 고르고 이긴 쪽은 PostgreSQL 을 고른다.
+
+    그리고 **누구나 쓸 수 있는 디렉터리에 두어서도 안 된다.** 실측(2026-09-09,
+    이 컨테이너는 `fs.protected_symlinks = 0`): `/run/lock` 은 `drwxrwxrwt` 라
+    다른 사용자가 잠금 이름으로 `/etc/shadow` 를 가리키는 링크를 걸 수 있었고,
+    root 로 그 이름에 붙으니 그대로 따라갔다. 고치려던 것보다 나쁜 것을 만드는
+    자리다 — 디렉터리는 0755, 파일만 0666 이어야 한다.
+
+    집을 바꿔 가며 **실제로 열어** 같은 자리가 나오는지 본다.
+    """
+    lock_script = REPOSITORY_ROOT / ".devcontainer" / "lock.sh"
+
+    def where(home: Path, scope: str) -> str:
+        home.mkdir(parents=True, exist_ok=True)
+        runner = tmp_path / f"open-{home.name}-{scope}.sh"
+        runner.write_text(
+            f". {lock_script}\n"
+            f'open_production_risk_lock provision-test 9 {scope} || exit 1\n'
+            'readlink -f /proc/self/fd/9\n'
+            "close_production_risk_lock 9\n",
+            encoding="utf-8",
+        )
+        environment = _environment_without_a_url({"HOME": str(home)})
+        environment.pop("XDG_CACHE_HOME", None)
+        done = subprocess.run(
+            ["bash", str(runner)], capture_output=True, text=True, timeout=120
+        , env=environment)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    host_a = where(tmp_path / "home-a", "host")
+    host_b = where(tmp_path / "home-b", "host")
+    assert host_a == host_b, f"집마다 다른 잠금 파일을 쓴다: {host_a} vs {host_b}"
+    assert str(tmp_path) not in host_a, f"호스트 잠금이 집 안에 있다: {host_a}"
+
+    # 그 자리는 남이 링크를 심을 수 없어야 한다.
+    directory = Path(host_a).parent
+    assert not (directory.stat().st_mode & 0o002), (
+        f"잠금 디렉터리가 누구나 쓸 수 있다 — 링크를 심을 수 있다: {directory}"
+    )
+
+    # 반대로 사람마다 따로 잠가야 하는 것은 여전히 따로다.
+    user_a = where(tmp_path / "home-a", "user")
+    user_b = where(tmp_path / "home-b", "user")
+    assert user_a != user_b, "집마다 따로 잠가야 할 것이 함께 잠긴다"
+
+    # **그리고 준비가 실제로 그 범위를 쓴다.** 위까지는 `lock.sh` 가 그런 범위를
+    # 줄 수 있다는 것뿐이고, 부르는 쪽이 쓰지 않으면 아무 소용이 없다.
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    provision = next(
+        line
+        for line in lines
+        if "open_production_risk_lock" in line and '"provision"' in line
+    )
+    assert provision.split()[-1].rstrip("|") == "host" or " host " in provision, (
+        f"놓기 잠금이 호스트 범위를 쓰지 않는다: {provision.strip()}"
+    )
+
+
+def test_the_session_hook_cleans_up_even_when_setup_fails(tmp_path: Path) -> None:
+    """준비가 실패해도 **환경 정리는 한다.**
+
+    준비가 실패하면 그것은 `database.env` 를 지우고 0 아닌 값으로 끝난다. 그런데
+    `set -e` 가 그 자리에서 훅을 끊으면 아래의 `unset` 을 적는 갈래에 닿지 못하고,
+    물려받은 주소를 들고 다시 뜬 세션이 **준비가 방금 거부한 그 데이터베이스를
+    계속 쓴다** — 준비가 「이 주소는 못 쓴다」고 말한 바로 그 순간에.
+
+    가짜 `setup.sh` 로 실패를 만들어 놓고 두 가지를 함께 본다: 정리가 적혔는가,
+    그리고 실패가 그대로 나갔는가.
+    """
+    project = tmp_path / "project"
+    (project / ".devcontainer").mkdir(parents=True)
+    (project / ".claude" / "hooks").mkdir(parents=True)
+    (project / ".claude" / "hooks" / "session-start.sh").write_text(
+        (REPOSITORY_ROOT / ".claude" / "hooks" / "session-start.sh").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    (project / ".devcontainer" / "autoselected.sh").write_text(
+        AUTOSELECTED_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # 준비는 실패한다 — 그리고 실패한 준비는 `database.env` 를 남기지 않는다.
+    (project / ".devcontainer" / "setup.sh").write_text(
+        "#!/usr/bin/env bash\nexit 1\n", encoding="utf-8"
+    )
+
+    environment_file = tmp_path / "session.env"
+    environment_file.write_text("", encoding="utf-8")
+    chosen = "postgresql+psycopg:///x?host=/socket"
+    done = subprocess.run(
+        ["bash", str(project / ".claude" / "hooks" / "session-start.sh")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            **_environment_without_a_url({}),
+            "CLAUDE_CODE_REMOTE": "true",
+            "CLAUDE_PROJECT_DIR": str(project),
+            "CLAUDE_ENV_FILE": str(environment_file),
+            "DATABASE_URL": chosen,
+            "PRODUCTION_RISK_DATABASE_AUTOSELECTED": chosen,
+        },
+    )
+
+    written = environment_file.read_text(encoding="utf-8")
+    assert "unset DATABASE_URL" in written, (
+        "준비가 실패했는데 물려받은 주소를 그대로 뒀다"
+    )
+    assert done.returncode != 0, "준비의 실패가 훅 밖으로 나가지 않는다"
+
+
+def test_the_version_is_probed_through_a_reachable_maintenance_database(
+    tmp_path: Path,
+) -> None:
+    """판은 **붙을 수 있는 정비 데이터베이스**에게 묻는다.
+
+    관례대로 있는 `postgres` 가 지워진 호스트가 있다. 그때 그 이름으로만 물으면
+    답이 빈 값이고 「모르면 버리지 않는다」가 통과시키는데, 정작 아래의 관리자
+    갈래는 `template1` 로 붙어 역할과 데이터베이스를 만들어 낸다 — 붙을 수는
+    있는데 판만 못 물어보고 지나가는 자리다.
+
+    `postgres` 는 없고 `template1` 만 있는 서버를 만들어 본다.
+    """
+    version_file = REPOSITORY_ROOT / ".devcontainer" / "postgresql-version.sh"
+    major = re.search(
+        r"^PRODUCTION_RISK_POSTGRESQL_MAJOR=(\d+)$",
+        version_file.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert major
+    older = f"{int(major.group(1)) - 1}0013"
+
+    answer = (
+        'case "$*" in\n'
+        '  *"-d postgres"*) echo "FATAL: database \\"postgres\\" does not exist" >&2; exit 2;;\n'
+        f'  *server_version_num*) echo {older};;\n'
+        "  *) exit 2;;\n"
+        "esac"
+    )
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "pg_isready": "exit 0",
+            "psql": answer,
+            "createdb": "exit 1",
+            "su": f'case "$*" in *"-d postgres"*) exit 2;; *server_version_num*) echo {older};; *) exit 1;; esac',
+            "sudo": (
+                'case "$*" in\n'
+                '  *"-d postgres"*) exit 2;;\n'
+                f"  *server_version_num*) echo {older};;\n"
+                "  *true*) exit 0;;\n"
+                "  *) exit 1;;\n"
+                "esac"
+            ),
+        },
+    )
+
+    result = _run_database_script(stub)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "", "한 판 뒤처진 서버의 주소를 내밀었다"
+    assert "판입니다" in result.stderr, (
+        f"`postgres` 가 없다는 이유로 판 견주기를 건너뛰었다: {result.stderr!r}"
+    )

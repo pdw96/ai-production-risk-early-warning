@@ -39,6 +39,49 @@ SAFE_QUERY_KEYS="host port dbname sslmode application_name connect_timeout"
 
 redact_url() {
   local url="$1" base query pair key redacted=""
+  # **사용자 정보를 먼저 가린다 — 질의로 자르기 전에.**
+  #
+  # 자르기부터 하면 비밀번호에 든 `?` 뒤가 질의 쪽으로 넘어가고, 앞 조각은 주소
+  # 몸통에 그대로 남는다. SQLAlchemy 는 `?` 를 사용자 정보의 끝으로 보지 않으므로
+  # 그런 비밀번호는 실재한다 — 실측(2026-09-09): `://h:5432/db?options=@x` 를
+  # `make_url` 에 넣으니 username='h' password='5432/db?options=' host='x' 였다.
+  # 사용자 이름은 **없을 수도 있다.** `postgresql+psycopg://:s3cr3t@h/db` 는
+  # 동작하는 주소이고, SQLAlchemy 는 그것을 사용자 이름 `''` · 비밀번호
+  # `s3cr3t` 로 읽어 psycopg 에 넘긴다(실측 2026-09-08, SQLAlchemy 2.0.52).
+  # 한 글자 이상을 요구하면 바로 그 형태만 가려지지 않는다.
+  #
+  # **비밀번호 쪽에서 `/` 를 뺐던 것은 틀렸다.** 「URI 에서 사용자 정보는 `/`
+  # 앞에서 끝나므로 날 `/` 가 올 수 없다」고 적어 두었는데, 우리가 실제로 쓰는
+  # 파서는 그렇게 읽지 않는다. 실측(2026-09-09, SQLAlchemy 2.0.52):
+  #
+  #   make_url("postgresql+psycopg://u:sec/ret@h/db")
+  #     → username='u' password='sec/ret' host='h' database='db'
+  #
+  # 그래서 그 주소는 **동작하는 주소**이고, 옛 글자 묶음은 그것을 가리지 못해
+  # 비밀번호가 세션 시작 로그에 통째로 박혔다(실측: 입력과 출력이 같았다).
+  # 근거로 삼았던 반례도 반대였다 — 위의 `://h:5432/db?options=@x` 는 「포트를
+  # 비밀번호로 잘못 읽는다」가 아니라 **파서가 이미 비밀번호로 읽고 있었다.**
+  #
+  # `[^@]*` 는 첫 `@` 앞에서 멈추므로 질의의 `@` 까지 삼키지 않는다.
+  # 한 글자 이상을 요구하면 바로 그 형태만 가려지지 않는다.
+  #
+  # **비밀번호 쪽에서 `/` 를 뺐던 것은 틀렸다.** 「URI 에서 사용자 정보는 `/`
+  # 앞에서 끝나므로 날 `/` 가 올 수 없다」고 적어 두었는데, 우리가 실제로 쓰는
+  # 파서는 그렇게 읽지 않는다. 실측(2026-09-09, SQLAlchemy 2.0.52):
+  #
+  #   make_url("postgresql+psycopg://u:sec/ret@h/db")
+  #     → username='u' password='sec/ret' host='h' database='db'
+  #
+  # 그래서 그 주소는 **동작하는 주소**이고, 옛 글자 묶음은 그것을 가리지 못해
+  # 비밀번호가 세션 시작 로그에 통째로 박혔다(실측: 입력과 출력이 같았다).
+  #
+  # 근거로 삼았던 반례도 반대였다. `://h:5432/db?options=@x` 를 같은 파서에
+  # 넣으니 username='h' password='5432/db?options=' host='x' 였다 — 「포트를
+  # 비밀번호로 잘못 읽는다」가 아니라 **파서가 이미 비밀번호로 읽고 있었다.**
+  # 가리는 것이 맞다.
+  #
+  # `[^@]*` 는 첫 `@` 앞에서 멈추므로 질의의 `@` 까지 삼키지 않는다.
+  url="$(printf '%s' "$url" | sed -E 's#://([^:/@]*):[^@]*@#://\1:***@#')"
   case "$url" in
     *\?*)
       base="${url%%\?*}"
@@ -49,15 +92,6 @@ redact_url() {
       query=""
       ;;
   esac
-  # 사용자 이름은 **없을 수도 있다.** `postgresql+psycopg://:s3cr3t@h/db` 는
-  # 동작하는 주소이고, SQLAlchemy 는 그것을 사용자 이름 `''` · 비밀번호
-  # `s3cr3t` 로 읽어 psycopg 에 넘긴다(실측 2026-09-08, SQLAlchemy 2.0.52).
-  # 한 글자 이상을 요구하면 바로 그 형태만 가려지지 않는다.
-  #
-  # 비밀번호 쪽에서 `/` 를 뺀 이유는 따로 있다. URI 에서 사용자 정보는 `/` 앞에서
-  # 끝나므로 비밀번호에 날 `/` 가 올 수 없고(온다면 `%2F` 로 온다), 허용해 두면
-  # `://h:5432/db?options=@x` 같은 주소에서 **포트를 비밀번호로 잘못 읽는다.**
-  base="$(printf '%s' "$base" | sed -E 's#://([^:/@]*):[^@/]*@#://\1:***@#')"
   if [ -z "$query" ]; then
     printf '%s' "$base"
     return
@@ -161,7 +195,7 @@ if [ -z "${DATABASE_URL:-}" ]; then
   # 역할과 데이터베이스를 만드는 자리이기도 하고, 무엇보다 **본 것과 고른 것이
   # 갈라지지 않아야** 하기 때문이다.
   provision_lock_status=0
-  open_production_risk_lock "provision" 6 || provision_lock_status=$?
+  open_production_risk_lock "provision" 6 host || provision_lock_status=$?
   production_risk_lock_permits "$provision_lock_status" "PostgreSQL 놓기와 엔진 고르기" || exit 1
 
   # **고르기 전에 놓는다.** `database.sh` 는 「있으면 세우고 없으면 물러난다」인데,

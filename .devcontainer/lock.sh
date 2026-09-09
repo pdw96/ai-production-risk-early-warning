@@ -19,20 +19,71 @@ PRODUCTION_RISK_LOCK_TIMEOUT=300
 # 같은 문장으로 나오고, 사람이 무엇을 고쳐야 하는지 알 수 없다.
 PRODUCTION_RISK_LOCK_BUSY=77
 
-# open_production_risk_lock <열쇠> <파일서술자>
+# open_production_risk_lock <열쇠> <파일서술자> [범위]
 #   0 잠갔다 · 1 잠글 자리가 없다 · 2 기다리다 지쳤다 · 3 잠금 자체가 실패했다
 #
 # 파일서술자는 부르는 쪽이 정한다 — 한 프로세스가 잠금을 둘 들 수 있어야 하고,
 # 그러려면 서로 다른 번호를 써야 한다.
+#
+# **범위가 둘인 이유.** 기본값 `user` 는 잠금 파일을 그 사람의 캐시에 둔다. 의존성
+# 설치(`backend/.venv` · `frontend/node_modules`)와 프로파일 고쳐 쓰기는 그 사람의
+# 것만 건드리므로 그것이 맞다 — 남의 설치를 기다릴 이유가 없다.
+#
+# 그런데 **PostgreSQL 을 놓고 고르는 일은 호스트 전체를 건드린다** — apt 저장소와
+# 키링, 꾸러미 데이터베이스, 클러스터와 그 안의 역할. 그것을 사람마다 다른 파일로
+# 잠그면 잠근 것이 아니다. 한 호스트를 두 사람이 쓰면 둘 다 자기 집에 있는 자기
+# 파일을 잠그고 나란히 apt 를 돌린다. 그러면 진 쪽의 설치는 「놓기 실패」로
+# 삼켜져(그 파일은 실패해도 0 으로 끝나기로 되어 있다) SQLite 를 고르고, 이긴
+# 쪽은 PostgreSQL 을 고른다 — 같은 호스트의 두 세션이 다른 엔진 위에서 돈다.
+#
+# 그래서 `host` 범위는 **모두가 같은 파일**을 보게 한다. 자리는
+# `/run/lock/production-risk` — FHS 가 잠금 파일에 정해 둔 곳 아래다.
+#
+# **누구나 쓸 수 있는 디렉터리에 두면 안 된다.** `/run/lock` 자체는
+# `drwxrwxrwt` 라 아무나 파일을 만들 수 있는데, 그러면 이름이 뻔한 잠금 파일
+# 자리에 남이 **심볼릭 링크를 미리 걸어 둘 수 있다.** 실측(2026-09-09, 이
+# 컨테이너는 `fs.protected_symlinks = 0`): 다른 사용자가 그 이름으로
+# `/etc/shadow` 를 가리키는 링크를 걸었고, root 로 그 이름에 append 하니 **그대로
+# 따라갔다.** 사람끼리 잠금이 갈라지는 것을 고치려다 root 가 남이 고른 파일을
+# 여는 길을 내는 셈이 된다 — 병보다 약이 나쁘다.
+#
+# 그래서 **디렉터리는 0755 로 두고 파일만 0666 으로** 만든다. 디렉터리에 쓸 수
+# 있는 것은 그것을 만든 쪽(놓기를 할 수 있는, 즉 root 인 쪽)뿐이라 링크를 심을
+# 자리가 없고, 파일은 이미 있으므로 다른 사용자도 열어서 겨룰 수 있다.
+#
+# 처음 만드는 것이 root 가 아니면 여기서 1 이 나가고 부르는 쪽은 「잠글 자리가
+# 없다」로 다룬다. 그것으로 충분하다 — 이 잠금이 지키는 일(apt · 클러스터)은
+# 어차피 root 여야 할 수 있다.
 open_production_risk_lock() {
-  local key="$1" descriptor="$2" directory candidate status
-  directory="${XDG_CACHE_HOME:-$HOME/.cache}/production-risk"
+  local key="$1" descriptor="$2" scope="${3:-user}" directory candidate status
   command -v flock > /dev/null 2>&1 || return 1
-  mkdir -p "$directory" 2> /dev/null || return 1
-  candidate="$directory/${key}.lock"
-  : > "$candidate" 2> /dev/null || return 1
+  if [ "$scope" = "host" ]; then
+    for directory in /run/lock /var/lock /tmp; do
+      [ -d "$directory" ] || continue
+      directory="$directory/production-risk"
+      # 링크를 따라가지 않는다 — 위의 설명이 그 이유다.
+      if [ -L "$directory" ]; then
+        directory=""
+        continue
+      fi
+      [ -d "$directory" ] || mkdir -m 0755 "$directory" 2> /dev/null || directory=""
+      [ -n "$directory" ] && break
+    done
+    [ -n "$directory" ] || return 1
+    candidate="$directory/${key}.lock"
+    # 파일은 **모두가 열 수 있어야** 겨룰 수 있다. 디렉터리가 0755 라 이 자리에
+    # 링크를 심을 수 있는 것은 그것을 만든 쪽뿐이다.
+    [ -e "$candidate" ] || (umask 0000 && : > "$candidate") 2> /dev/null || return 1
+  else
+    directory="${XDG_CACHE_HOME:-$HOME/.cache}/production-risk"
+    mkdir -p "$directory" 2> /dev/null || return 1
+    candidate="$directory/${key}.lock"
+  fi
+  # 이미 있는 파일은 **자르지 않는다.** 남이 잠금을 쥔 채로 있을 수 있고, 자를
+  # 이유도 없다 — 이 파일의 내용은 아무도 읽지 않는다.
+  [ -e "$candidate" ] || : > "$candidate" 2> /dev/null || return 1
   # 번호는 부르는 쪽이 글자로 적은 값이라 `eval` 이 밖에서 오는 값을 받지 않는다.
-  eval "exec ${descriptor}> \"\$candidate\"" 2> /dev/null || return 1
+  eval "exec ${descriptor}>> \"\$candidate\"" 2> /dev/null || return 1
   status=0
   flock -w "$PRODUCTION_RISK_LOCK_TIMEOUT" -E "$PRODUCTION_RISK_LOCK_BUSY" \
     "$descriptor" 2> /dev/null || status=$?
