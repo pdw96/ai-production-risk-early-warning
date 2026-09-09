@@ -1,6 +1,5 @@
 # 일반 Docker 호스트(로컬 PC, 서버)용 구성. bridge 네트워크를 사용한다.
 #   docker compose up --build
-# Codespaces에서는 컨테이너 간 bridge 통신이 막히므로 compose.codespaces.yaml을 쓴다.
 name: ai-production-risk
 
 services:
