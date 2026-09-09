@@ -59,9 +59,7 @@ def seeded_session_factory(
     시드를 넣는 것은 이 픽스처가 아니라 **검사 쪽**이다. 기준일을 검사마다
     달리 주기 때문이며, 그래서 이름과 달리 여기서는 아직 비어 있다.
 
-    아래에 이 픽스처를 쓰지 않고 스스로 엔진을 만드는 검사들이 있다. 무엇을
-    옮기고 무엇을 두는지의 기준은 `CLAUDE.md` 에 한 번만 적혀 있다 — 여기서
-    한 번 더 말하면 두 곳이 갈린다.
+    무엇을 이 픽스처로 옮기고 무엇을 두는지의 기준은 `CLAUDE.md` 에 있다.
     """
     return bound_session_factory
 
@@ -873,7 +871,9 @@ def test_preflight_ignores_tables_this_app_does_not_own(
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
-def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) -> None:
+def test_the_container_startup_path_seeds_a_migrated_database(
+    empty_bound_engine: Engine,
+) -> None:
     """컨테이너 기동이 오는 길을 **프로세스째** 밟는다.
 
     `docker-entrypoint.sh` 는 `alembic upgrade head` 로 표를 맞춘 뒤
@@ -888,11 +888,21 @@ def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) ->
     등록해 두기 때문이다 — 메타데이터는 프로세스 하나에 하나다. 그래서 프로세스를
     따로 띄운다.
 
-    엔진은 SQLite 로 고정한다. 이것은 방언 문제가 아니라 **길** 의 문제이고,
-    설정이 가리키는 데이터베이스를 그대로 쓰면 옆에서 돌던 시드와 부딪힌다.
+    **프로세스 경계와 설정된 엔진은 함께 설 수 있다.** 자식에게 일회용
+    데이터베이스의 주소를 `DATABASE_URL` 로 넘기면 된다 — 부모가 아무것도
+    불러 두지 않은 새 프로세스라는 성질은 그대로이고, 밟는 길이 운영 엔진에서도
+    밟히게 된다. 이 길에는 방언이 다른 것이 실제로 있다: 마이그레이션이 세우는
+    표와 시드의 첫 flush 다.
+
+    비어 있는 데이터베이스여야 뜻이 선다. 앞 검사가 세워 둔 표 위에서는
+    `upgrade head` 가 할 일을 찾지 못하고 `--if-empty` 가 곧바로 건너뛰므로,
+    아무것도 하지 않고 초록이 된다.
     """
-    environment = {**os.environ, "DATABASE_PATH": str(tmp_path / "startup.db")}
-    environment.pop("DATABASE_URL", None)
+    url = empty_bound_engine.url.render_as_string(hide_password=False)
+    environment = {**os.environ, "DATABASE_URL": url}
+    # 주소가 있으면 설정은 이 값을 쓰지만, 남겨 두면 다음에 읽는 사람이 둘 중
+    # 어느 것이 이겼는지를 다시 확인해야 한다.
+    environment.pop("DATABASE_PATH", None)
 
     def run(*arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -914,7 +924,5 @@ def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) ->
     assert again.returncode == 0, again.stderr
     assert "건너뜁니다" in again.stdout
 
-    engine = create_engine(f"sqlite:///{(tmp_path / 'startup.db').as_posix()}")
-    with Session(engine) as session:
+    with Session(empty_bound_engine) as session:
         assert session.scalar(select(func.count()).select_from(Item)) == 20
-    engine.dispose()
