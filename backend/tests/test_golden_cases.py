@@ -15,6 +15,11 @@
 
 숫자는 소수 둘째 자리로 맞춰 비교한다. 수량의 뜻이 거기까지이고 API 도 그
 자리로 내보내므로, 그 아래 부동소수 꼬리를 골든 값에 박아 둘 이유가 없다.
+
+날짜는 그렇게 맞출 수 없다 — 완료예정일은 `ceil` 로 나오므로 끝자리 하나가
+그대로 하루가 된다. 그래서 오더 골든은 **파이썬 3.12 기준**이며(CI 와
+`backend/Dockerfile` 의 런타임), 왜 판본이 날짜를 바꾸는지는 아래
+`ORDER_GOLDEN` 주석과 그 뒤 검사가 설명한다.
 """
 
 from __future__ import annotations
@@ -369,11 +374,20 @@ def test_the_material_response_agrees_with_the_golden_expansion(
 # 납기가 기준일 +1 인 오더(002·005·008 …)가 `WARNING_BUFFER_DAYS` 경계를 실제로
 # 밟는다 — 완료예정일이 납기와 같아 「위험」은 아니지만 완충 기간 안이라
 # 「주의」다. 경계를 하루라도 밀면 이 열 건이 「정상」으로 떨어진다.
+#
+# **완료예정일은 파이썬 3.12 기준이다.** 이 저장소의 런타임이 3.12 이고(CI 의
+# `setup-python` · `backend/Dockerfile` 의 `python:3.12-slim`) 3.12 부터
+# `sum()` 이 부동소수를 보정합(Neumaier)해 더하기 때문이다. 3.11 에서는 같은
+# 시드로 001 · 004 · 025 의 완료예정일이 **하루씩 뒤로 밀린다** — 값이 아니라
+# 마지막 비트가 다른 것이며, 그 한 비트가 날짜를 바꾼다는 것 자체가
+# `calculate_order_risk` 의 문제다. 무엇이 그렇게 만드는지는
+# `test_a_float_residue_in_the_remaining_quantity_moves_the_completion_date`
+# 가 판본과 무관한 숫자로 못박는다.
 ORDER_GOLDEN: dict[str, tuple[str, date | None, float]] = {
-    "MO-20260901-001": ("위험", date(2026, 9, 10), 64.0),
+    "MO-20260901-001": ("위험", date(2026, 9, 9), 64.0),
     "MO-20260901-002": ("주의", date(2026, 9, 2), 12.0),
     "MO-20260901-003": ("정상", date(2026, 9, 3), 20.0),
-    "MO-20260901-004": ("위험", date(2026, 9, 11), 72.0),
+    "MO-20260901-004": ("위험", date(2026, 9, 10), 72.0),
     "MO-20260901-005": ("주의", date(2026, 9, 2), 9.0),
     "MO-20260901-006": ("정상", date(2026, 9, 3), 24.0),
     "MO-20260901-007": ("위험", date(2026, 9, 10), 108.0),
@@ -394,7 +408,7 @@ ORDER_GOLDEN: dict[str, tuple[str, date | None, float]] = {
     "MO-20260901-022": ("위험", date(2026, 9, 10), 108.0),
     "MO-20260901-023": ("주의", date(2026, 9, 2), 8.0),
     "MO-20260901-024": ("정상", date(2026, 9, 3), 20.0),
-    "MO-20260901-025": ("위험", date(2026, 9, 11), 99.0),
+    "MO-20260901-025": ("위험", date(2026, 9, 10), 99.0),
     "MO-20260901-026": ("주의", date(2026, 9, 2), 8.0),
     "MO-20260901-027": ("정상", date(2026, 9, 3), 24.0),
     "MO-20260901-028": ("위험", date(2026, 9, 11), 150.0),
@@ -450,6 +464,62 @@ def test_the_order_risk_of_every_seeded_order_is_fixed(
     # 지킨다. 시드가 바뀌어 경계 오더가 사라지면 여기서 먼저 드러난다.
     assert boundary_orders, "납기가 기준일 +WARNING_BUFFER_DAYS 인 오더가 없습니다."
     assert all(actual[number][0] == "주의" for number in boundary_orders)
+
+
+# 아래 셋은 시드의 MO-20260901-025 에서 그대로 가져온 실제 값이다. 계획 600,
+# 기준일까지의 실적 501, 최근 7일 평균 11 — 99를 하루 11씩 만들면 정확히 9일이고
+# 완료예정일은 9/10 이다.
+ORDER_025_PLANNED_QUANTITY = 600.0
+ORDER_025_ACTUAL_QUANTITY = 501.0
+ORDER_025_AVERAGE_DAILY_OUTPUT = 11.0
+# 실적 501 은 일별 실적 서른 개를 더해 나온 값이다. 파이썬 3.11 의 `sum()` 은
+# 같은 서른 개에서 이 값을 낸다 — 3.12 는 보정해 더해(Neumaier) 501.0 을 낸다.
+ORDER_025_ACTUAL_QUANTITY_ON_PYTHON_311 = 500.99999999999994
+
+
+def test_a_float_residue_in_the_remaining_quantity_moves_the_completion_date() -> None:
+    """잔여수량 끝자리의 6e-14 이 완료예정일을 하루 민다.
+
+    **이것은 「이렇게 동작해야 한다」가 아니라 「지금 이렇게 동작한다」를 못박는
+    검사다.** `calculate_order_risk` 는 잔여수량을 수량의 자리(소수 둘째)로
+    맞추지 않고 그대로 `ceil` 에 넣는다. 그래서 큰 두 합의 차로 만들어진
+    잔여수량의 마지막 비트가 화면의 날짜를 정한다.
+
+    이 자리가 실제로 물린 것은 CI 였다 — 위 `ORDER_GOLDEN` 을 파이썬 3.11 에서
+    재고 3.12 에서 돌리니 오더 셋의 완료예정일이 하루씩 갈렸다. 판본이 아니라
+    반올림이 원인이므로, 여기서는 판본과 무관한 숫자로 그 원인을 못박는다.
+
+    고치는 것은 별도 PR 이다. 고치면 이 검사가 빨개지고, 그때 `ORDER_GOLDEN` 의
+    001 · 004 · 025 도 함께 움직여야 한다.
+    """
+    exact = calculate_order_risk(
+        planned_quantity=ORDER_025_PLANNED_QUANTITY,
+        actual_quantity=ORDER_025_ACTUAL_QUANTITY,
+        average_daily_output=ORDER_025_AVERAGE_DAILY_OUTPUT,
+        due_date=date(2026, 9, 6),
+        reference_date=REFERENCE_DATE,
+    )
+    with_residue = calculate_order_risk(
+        planned_quantity=ORDER_025_PLANNED_QUANTITY,
+        actual_quantity=ORDER_025_ACTUAL_QUANTITY_ON_PYTHON_311,
+        average_daily_output=ORDER_025_AVERAGE_DAILY_OUTPUT,
+        due_date=date(2026, 9, 6),
+        reference_date=REFERENCE_DATE,
+    )
+
+    # 남은 것은 어느 쪽이나 99 다 — 수량의 자리(소수 둘째)에서는 같은 값이다.
+    assert round(exact.remaining_quantity, 2) == 99.0
+    assert round(with_residue.remaining_quantity, 2) == 99.0
+    # 그런데 끝자리가 다르고, 그 차이는 수량으로는 없는 것이나 마찬가지다.
+    assert exact.remaining_quantity == 99.0
+    assert 0 < with_residue.remaining_quantity - 99.0 < 1e-9
+
+    # 그 없는 것이나 마찬가지인 차이가 완료예정일을 하루 민다.
+    assert exact.estimated_completion_date == date(2026, 9, 10)
+    assert with_residue.estimated_completion_date == date(2026, 9, 11)
+    # 이번 시드에서는 심각도까지 갈리지는 않았다 — 둘 다 납기 9/6 보다 늦다.
+    # 납기가 그 사이에 있었다면 「위험」과 「주의」가 갈렸을 자리다.
+    assert exact.severity == with_residue.severity == "위험"
 
 
 # 시드의 완제품 로트 150건을 상태별로 센 값. `(로트 수, 수량 합)` 이다.
