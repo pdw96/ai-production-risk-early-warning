@@ -75,6 +75,11 @@ def test_upgrading_from_empty_reproduces_the_model_schema(
     """마이그레이션을 끝까지 돌린 표와 모델이 만든 표가 같아야 한다.
 
     둘이 갈리면 개발자는 모델을 보고 코드를 쓰는데 실제 표는 다른 모양이 된다.
+
+    이 검사가 스스로 엔진을 만드는 것은 **두 스키마를 나란히 놓아야 하기**
+    때문이다 — 마이그레이션이 세운 것과 모델이 세운 것을 견주려면 데이터베이스가
+    둘 필요한데, 공용 일회용 픽스처는 하나를 준다. 견주는 것이 스키마 자체라
+    어느 엔진에서 세웠는지는 답을 바꾸지 않는다.
     """
     migrated_path = tmp_path / "migrated.db"
     monkeypatch.setenv("DATABASE_PATH", str(migrated_path))
