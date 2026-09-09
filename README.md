@@ -209,14 +209,9 @@ npm run dev
 
 ## Docker로 실행
 
-`compose.yaml`(일반 Docker 호스트)과 `compose.codespaces.yaml`(GitHub Codespaces) 두 구성을 제공합니다. 두 파일은 **`API_INTERNAL_BASE_URL` 빌드 인자 값이 다르기 때문에** 분리되어 있습니다. 각 파일이 자기 환경에 맞는 값을 명시적으로 담고 있으므로, 사용하는 파일만 고르면 됩니다.
+`compose.yaml` 하나로 돕니다. 프런트엔드는 빌드 시점에 `API_INTERNAL_BASE_URL`(`http://backend:8000`)로 프록시 대상을 굽고, 서비스는 bridge 네트워크로 붙습니다.
 
-| 구성 | 파일 | 네트워크 | `API_INTERNAL_BASE_URL` |
-| --- | --- | --- | --- |
-| 로컬 PC·서버 | `compose.yaml` | bridge | `http://backend:8000` |
-| GitHub Codespaces | `compose.codespaces.yaml` | host | `http://127.0.0.1:8000` |
-
-두 경우 모두 **먼저 데이터베이스 비밀번호를 정합니다.** 저장소에 적어 두지 않으므로 값이 없으면 기동이 거기서 멈춥니다 — 기본값을 두면 그 기본값이 곧 저장소에 적힌 비밀번호이기 때문입니다. Codespaces 구성은 `network_mode: host` 라 이 포트가 밖으로 열릴 수 있어 더 그렇습니다.
+**먼저 데이터베이스 비밀번호를 정합니다.** 저장소에 적어 두지 않으므로 값이 없으면 기동이 거기서 멈춥니다 — 기본값을 두면 그 기본값이 곧 저장소에 적힌 비밀번호이기 때문입니다.
 
 ```bash
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env   # compose 가 자동으로 읽는다
@@ -224,23 +219,14 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env   # compose 가 자동�
 
 이 값은 접속 주소에 그대로 끼워 넣으므로 **URL 에 안전한 문자만** 써야 합니다 — `/` `#` `?` `@` `%` 가 들어가면 주소가 깨져 마이그레이션이 접속하지 못합니다. 위 `openssl rand -hex` 는 16진수만 내므로 이 조건을 만족합니다. 그 밖의 문자를 꼭 써야 하면 `DATABASE_URL` 을 직접 정하면 되고, 그때는 그 값이 우선합니다.
 
-### 로컬 PC·서버
-
 ```bash
 docker compose up --build
 ```
 
-### GitHub Codespaces
+`http://localhost:3000`에서 대시보드를, `http://localhost:8000`에서 FastAPI를 엽니다.
 
 ```bash
-docker compose -f compose.codespaces.yaml up --build
-```
-
-두 경우 모두 `http://localhost:3000`에서 대시보드를, `http://localhost:8000`에서 FastAPI를 엽니다. 종료와 정리는 사용한 파일을 그대로 지정해 실행합니다.
-
-```bash
-docker compose down                                # 로컬
-docker compose -f compose.codespaces.yaml down     # Codespaces
+docker compose down
 # 합성 데이터 볼륨까지 지우려면 -v 를 덧붙입니다.
 ```
 
@@ -252,52 +238,9 @@ docker compose -f compose.codespaces.yaml down     # Codespaces
 
 `DATABASE_URL`을 주지 않으면 SQLite 파일로 떨어지며 경로는 `DATABASE_PATH`로 바꿉니다. **두 엔진 모두 배포되므로 CI 는 둘 다 돌립니다** — 어느 한쪽만 돌리면 다른 쪽에서만 나는 결함이 그대로 나갑니다. 그 결함은 대칭이 아닙니다: 불리언 칸의 정수처럼 PostgreSQL 만 거부하는 것이 있고, `LIKE` 의 대소문자처럼 SQLite 만 통과시켜 **개발에서만 되는** 행을 만드는 것이 있습니다. 무엇을 어떻게 돌리는지는 산문이 아니라 `.github/workflows/cloud-validation.yml` 과 그것을 읽는 `backend/tests/test_ci_workflow.py` 에 있습니다.
 
-### 기존 devcontainer 방식과의 차이 · 포트 충돌 주의
+### 알아두면 좋은 함정
 
-`.devcontainer/start.sh`(개발 서버, `npm run dev` + `uvicorn --reload`)와 Docker 구성은 **모두 호스트의 3000·8000 포트를 사용하므로 동시에 실행할 수 없습니다.** 하나를 먼저 종료한 뒤 다른 하나를 실행하세요. 특히 `compose.codespaces.yaml`은 `network_mode: host`라서 `ports:` 매핑 없이 호스트 포트를 직접 점유합니다.
-
-| 방식 | 용도 | 코드 변경 반영 |
-| --- | --- | --- |
-| `.devcontainer/start.sh` | 개발 | 즉시(핫 리로드) |
-| Docker compose | 재현 가능한 실행·배포 확인 | 재빌드 필요 |
-
-### 알아두면 좋은 함정 두 가지
-
-1. **`API_INTERNAL_BASE_URL`은 런타임 환경변수가 아니라 빌드 시점 값입니다.** `next.config.ts`의 `rewrites()`는 빌드할 때 `.next/routes-manifest.json`으로 구워지므로, 이미 빌드된 컨테이너에 환경변수를 주입해도 프록시 대상은 바뀌지 않습니다. 값을 바꾸려면 `--build`로 다시 빌드해야 합니다.
-2. **Codespaces에서는 기본 상태로 컨테이너 간 bridge 통신이 막힙니다.** 서비스 이름 DNS는 정상 해석되지만(`backend` → `172.18.0.2`) TCP 연결이 타임아웃됩니다. 원인은 아래 [Codespaces에서 bridge 구성 쓰기](#codespaces에서-bridge-구성-쓰기)에 정리했습니다. `compose.codespaces.yaml`은 이 문제를 아예 우회하므로 별도 설정 없이 바로 동작합니다.
-
-
-### Codespaces에서 bridge 구성 쓰기
-
-`compose.codespaces.yaml`은 아무 설정 없이 동작하므로 보통은 그쪽을 쓰면 됩니다. Codespaces에서 굳이 `compose.yaml`(bridge)을 그대로 검증하고 싶다면, 호스트 방화벽 규칙을 한 번 손보면 됩니다.
-
-원인은 **iptables 백엔드가 둘로 갈라져 있는 것**입니다. Docker는 nft 테이블에 규칙을 심지만(`FORWARD` 정책 `ACCEPT`, 브리지 허용 규칙 정상), Codespaces 이미지에는 legacy 테이블도 함께 남아 있고 그쪽은 **정책이 `DROP`인데 `docker0`만 참조**합니다. compose가 만드는 `br-*` 브리지는 legacy 쪽 어느 규칙에도 매칭되지 않아 정책 `DROP`으로 떨어지고, 그 결과 SYN이 조용히 사라집니다.
-
-```bash
-# nft 쪽은 ACCEPT인데 legacy 쪽 정책이 DROP인지 확인 (드롭 카운터가 증거)
-sudo iptables-nft    -t filter -S FORWARD | head -1   # -P FORWARD ACCEPT
-sudo iptables-legacy -t filter -L FORWARD -n | head -1  # policy DROP N packets
-
-# legacy 테이블에서 docker 사용자 정의 브리지를 허용
-sudo iptables-legacy -I FORWARD -i br+ -j ACCEPT
-sudo iptables-legacy -I FORWARD -o br+ -j ACCEPT
-```
-
-적용하면 `docker compose up --build`(bridge)가 그대로 동작합니다. 이 규칙은 호스트 방화벽 설정이라 **저장소가 아니라 환경에 적용되며, Codespace를 다시 만들거나 재시작하면 사라집니다.** 되돌리려면 `-I`를 `-D`로 바꿔 같은 명령을 실행합니다.
-
-## GitHub Codespaces에서 실행
-
-GitHub 저장소의 **Code → Codespaces → Create codespace**로 일시적인 개발 환경을 만들 수 있습니다. 컨테이너 생성 시 Python·Node 의존성과 합성 SQLite 데이터가 자동으로 준비됩니다. 준비가 끝나면 Codespace 터미널에서 다음 명령을 실행합니다.
-
-```bash
-bash .devcontainer/start.sh
-```
-
-이 방식은 핫 리로드가 동작하는 개발 서버입니다. 컨테이너로 재현 가능한 실행을 확인하려면 위의 [Docker로 실행](#docker로-실행)에서 `compose.codespaces.yaml`을 사용하세요. 두 방식은 포트가 겹치므로 동시에 실행할 수 없습니다.
-
-포트 3000의 **AI 생산 리스크 대시보드**를 열면 브라우저에서 화면을 직접 검증할 수 있습니다. 프론트엔드는 같은 출처의 `/api` 요청을 Codespace 내부 FastAPI로 프록시하므로 별도의 공개 API URL이 필요하지 않습니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르고 Codespace를 중지하거나 삭제합니다. SQLite 파일은 Git에 포함되지 않으며 Codespace마다 합성 데이터로 다시 생성됩니다.
-
-GitHub Actions의 `Cloud validation` 워크플로는 PostgreSQL 서비스 컨테이너를 띄워 운영과 같은 길(`preflight` → `alembic upgrade head` → `app.seed --if-empty`)을 밟은 뒤 백엔드 검사를 두 엔진에서 각각 돌리고, 타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 운영 현황(`dashboard.png`), 생산관리(`orders.png`), 재고현황(`materials.png`), 창고별 재고(`warehouse-raw.png`·`warehouse-production.png`·`warehouse-products.png`), 리스크 보드(`risks.png`), 기준정보관리(`master.png`), 구매관리(`purchases.png`), 품질관리(`quality.png`), 영업관리(`sales.png`) 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
+**`API_INTERNAL_BASE_URL`은 런타임 환경변수가 아니라 빌드 시점 값입니다.** `next.config.ts`의 `rewrites()`는 빌드할 때 `.next/routes-manifest.json`으로 구워지므로, 이미 빌드된 컨테이너에 환경변수를 주입해도 프록시 대상은 바뀌지 않습니다. 값을 바꾸려면 `--build`로 다시 빌드해야 합니다.
 
 ## 화면 안내
 
@@ -342,6 +285,8 @@ npm run build
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/dashboard
 ```
+
+GitHub Actions의 `Cloud validation` 워크플로는 PostgreSQL 서비스 컨테이너를 띄워 운영과 같은 길(`preflight` → `alembic upgrade head` → `app.seed --if-empty`)을 밟은 뒤 백엔드 검사를 두 엔진에서 각각 돌리고, 타입 검사·빌드를 수행하고 FastAPI와 Next.js를 일시적으로 실행합니다. 완료된 실행의 **Artifacts → production-risk-screenshots**에서 운영 현황(`dashboard.png`), 생산관리(`orders.png`), 재고현황(`materials.png`), 창고별 재고(`warehouse-raw.png`·`warehouse-production.png`·`warehouse-products.png`), 리스크 보드(`risks.png`), 기준정보관리(`master.png`), 구매관리(`purchases.png`), 품질관리(`quality.png`), 영업관리(`sales.png`) 화면 PNG를 내려받을 수 있습니다. `workflow_dispatch`가 설정되어 있으므로 Actions 화면에서 수동으로도 실행할 수 있습니다.
 
 ## 합성 데이터 기반 데모의 한계
 
