@@ -1999,8 +1999,21 @@ def test_the_version_is_checked_even_before_the_role_exists(tmp_path: Path) -> N
             "psql": 'echo "FATAL: role does not exist" >&2\nexit 2',
             "createdb": "exit 1",
             # 관리자로 가는 길만 열려 있고, 그쪽은 한 판 뒤처진 서버라고 답한다.
+            #
+            # **두 길을 다 연다.** `run_as` 는 root 면 `su`, 아니면 비대화형 `sudo`
+            # 를 쓴다. 한쪽만 열어 두면 검사가 **돌리는 사람에 따라 다른 것을 본다** —
+            # 실측(2026-09-09): `su` 만 열어 두었더니 root 인 손에서는 초록이고
+            # `ubuntu-latest`(비root + 비밀번호 없는 sudo)에서는 이 검사만 빨갰다.
+            # 7차에 같은 자리에서 배운 것을 한 번 더 밟았다.
             "su": f'case "$*" in *server_version_num*) echo {older};; *) exit 1;; esac',
-            "sudo": "exit 1",
+            "sudo": (
+                'case "$*" in\n'
+                f"  *server_version_num*) echo {older};;\n"
+                # `run_as` 는 먼저 `sudo -n true` 로 쓸 수 있는지 본다.
+                "  *true*) exit 0;;\n"
+                "  *) exit 1;;\n"
+                "esac"
+            ),
         },
     )
 
