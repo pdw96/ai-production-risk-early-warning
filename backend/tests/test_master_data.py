@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -45,21 +45,38 @@ from app.db.models import Item
 
 
 @pytest.fixture
-def session() -> Session:
+def session(bound_engine: Engine) -> Session:
+    """기준정보를 넣은 세션. 붙는 곳은 `DATABASE_URL` 의 엔진 위 **일회용**이다.
+
+    예전에는 여기서 `sqlite:///:memory:` 엔진을 만들어 붙었다. 그러면
+    `DATABASE_URL` 을 무엇으로 주든 SQLite 로 돌아, CI 가 두 엔진에서 각각
+    돌려도 이 파일은 **같은 엔진을 두 번** 볼 뿐이었다. 기준정보가 두 엔진에서
+    같은 뜻인지를 묻는 파일이 정작 한 엔진만 보고 있었다.
+
+    안전장치는 옮긴 것이지 걷어낸 것이 아니다(`conftest.py` 의 `bound_engine`) —
+    이 픽스처는 표를 지웠다 다시 만드므로, 설정이 가리키는 곳에 그대로 붙으면
+    로컬에서 한 번 돌리는 것만으로 개발자의 데이터가 사라진다.
+
+    **외래키 PRAGMA 를 여기서 걸지 않는다.** 예전에는 이 픽스처가 자기 엔진에
+    직접 걸었지만, `db_base` 가 이미 **엔진 클래스**에 같은 것을 걸어 두었고
+    (`_enable_sqlite_foreign_keys`) 그 리스너는 SQLite 연결일 때만 실행된다.
+    공용 엔진에도 그대로 적용되므로 여기 있던 것은 같은 일을 두 번 하는
+    중복이었다 — 지운 것은 강제이지 그 사실이 아니다. 실측(2026-09-09):
+    공용 엔진에서 `PRAGMA foreign_keys` 가 SQLite 에서 `1` 로 나온다.
+    PostgreSQL 은 외래키를 늘 강제하므로 걸 것이 없다.
+    """
     # 기준정보 표는 거래 표를 참조한다(supplier_items → items). 모델을 전부
     # 등록하지 않으면 이 파일만 따로 돌릴 때 외래키가 대상을 못 찾는다.
     register_models()
-    engine = create_engine("sqlite:///:memory:")
 
-    # SQLite 는 외래키를 **기본적으로 강제하지 않는다.** 켜지 않으면 복합
-    # 외래키를 걸어 두고도 없는 코드를 가리키는 줄이 조용히 들어가, 테스트가
-    # PostgreSQL 과 다른 것을 검사하게 된다.
-    @event.listens_for(engine, "connect")
-    def _enforce_foreign_keys(connection, _record) -> None:
-        connection.execute("PRAGMA foreign_keys=ON")
+    # 일회용 데이터베이스는 **모듈마다 하나**여서 검사끼리 이어진다. 예전에는
+    # 검사마다 새 인메모리 엔진이라 저절로 비어 있었지만 이제는 아니다 —
+    # 지웠다 다시 만들지 않으면 두 번째 검사부터 기준정보가 두 벌이 되어,
+    # 개수를 세는 검사가 전부 거짓으로 통과하거나 유일성 제약에서 터진다.
+    Base.metadata.drop_all(bound_engine)
+    Base.metadata.create_all(bound_engine)
 
-    Base.metadata.create_all(engine)
-    session_factory = sessionmaker(bind=engine)
+    session_factory = sessionmaker(bind=bound_engine)
     with session_factory() as database_session:
         load_master_data(database_session)
         database_session.commit()
