@@ -1,10 +1,13 @@
-"""`CLAUDE.md` 가 저장소와 어긋나지 않는지 본다.
+"""진입 문서 둘이 파이썬 판을 두고 갈리지 않는지 본다.
 
-`CLAUDE.md` 는 세션을 새로 열 때 제일 먼저 읽는 파일이라, 여기 적힌 값이
-틀리면 **틀린 채로 다음 작업의 전제가 된다** — 대화 맥락은 비워도 이 파일은
-남기 때문이다. 그래서 다른 파일과 짝을 이루는 값만은 산문에 맡기지 않는다.
+저장소에 들어오는 사람이 처음 읽는 문서는 둘이다 — 사람은 `README.md` 의
+사전 요구사항을, 에이전트는 `CLAUDE.md` 를 읽는다. 여기 적힌 판이 CI·컨테이너와
+다르면 **틀린 채로 다음 작업의 전제가 된다**: 3.11 환경을 만든 사람은
+`test_golden_cases.py` 의 완료예정일이 하루 어긋나는 것을 보고 코드를 의심하게
+되고, 그것이 판본 문제라고 알려 줄 수 있는 것은 이 두 문서뿐이다.
 
-`test_ci_workflow.py` 와 같은 취지이며, 보는 짝만 다르다.
+그래서 네 곳(워크플로 · 이미지 · `CLAUDE.md` · `README.md`)의 짝을 산문에
+맡기지 않는다. `test_ci_workflow.py` 와 같은 취지이며, 보는 짝만 다르다.
 """
 
 from __future__ import annotations
@@ -19,20 +22,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
-def claude_md() -> str:
-    return (REPOSITORY_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-
-
-def test_claude_md_states_the_python_release_that_ci_and_the_image_use(
-    claude_md: str,
-) -> None:
-    """판본이 세 곳에 적혀 있다 — 워크플로, 이미지, 그리고 이 안내.
-
-    셋이 갈리면 로컬만 다른 판으로 돌게 되고, 그때 `test_golden_cases.py` 의
-    완료예정일이 하루 어긋나 빨갛게 뜬다. 코드가 아니라 판본 문제인데 그것을
-    알려 주는 것이 `CLAUDE.md` 뿐이므로, 이 파일이 낡으면 그 하루를 아무도
-    설명하지 못한다.
-    """
+def python_release() -> str:
+    """CI 가 검증하고 이미지가 배포하는 파이썬 판. 둘이 다르면 그 자리에서 멈춘다."""
     workflow = yaml.safe_load(
         (REPOSITORY_ROOT / ".github/workflows/cloud-validation.yml").read_text(
             encoding="utf-8"
@@ -51,7 +42,32 @@ def test_claude_md_states_the_python_release_that_ci_and_the_image_use(
     assert image_releases == {ci_release}, (
         f"이미지({image_releases})와 CI({ci_release}) 의 파이썬 판이 다르다"
     )
+    return ci_release
 
-    assert f"파이썬은 {ci_release} 다" in claude_md, (
-        f"CI 와 이미지는 파이썬 {ci_release} 로 도는데 CLAUDE.md 가 그렇게 적고 있지 않다"
+
+def test_claude_md_states_the_release_that_ci_and_the_image_use(
+    python_release: str,
+) -> None:
+    guide = (REPOSITORY_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert f"파이썬은 {python_release} 다" in guide, (
+        f"CI 와 이미지는 파이썬 {python_release} 로 도는데 CLAUDE.md 가 그렇게 적고 있지 않다"
+    )
+
+
+def test_the_readme_prerequisite_names_the_same_release(python_release: str) -> None:
+    """README 는 「이상」으로 열어 두지 않는다.
+
+    범위로 적으면 그 범위의 아무 판이나 골라도 된다는 뜻이 되는데, 실제로는
+    아래 판에서 골든 케이스가 깨진다. 열어 둘 수 없는 것을 열어 둔 것처럼
+    적지 않는다.
+    """
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    stated = re.search(r"^- Python (\d+\.\d+)(.*)$", readme, re.M)
+    assert stated, "README 의 사전 요구사항에서 Python 줄을 찾지 못했다"
+
+    assert stated.group(1) == python_release, (
+        f"README 는 파이썬 {stated.group(1)}, CI 와 이미지는 {python_release} 다"
+    )
+    assert "이상" not in stated.group(2), (
+        f"README 가 파이썬 판을 범위로 적고 있다: {stated.group(0)!r}"
     )

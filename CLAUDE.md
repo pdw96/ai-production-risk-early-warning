@@ -6,16 +6,31 @@ FastAPI → 서비스 계층 순수 함수 → SQLAlchemy(PostgreSQL, 로컬 기
 
 ## 명령
 
+줄마다 괄호로 감싼 것은 셸의 현재 위치를 바꾸지 않기 위해서다. 위에서 아래로
+붙여 넣어도 그대로 돈다.
+
 ```bash
 # 백엔드 — 두 엔진에서 다 돌아야 한다. 한쪽만 통과한 것은 통과가 아니다.
-cd backend && python -m pytest tests -v                    # DATABASE_URL 이 가리키는 엔진
-cd backend && DATABASE_URL="" python -m pytest tests -v    # 비우면 SQLite 파일
+
+# ① 운영 엔진(PostgreSQL). 주소를 주지 않으면 설정이 SQLite 로 **조용히**
+#    떨어져 ②와 같은 엔진을 두 번 도는 것으로 끝난다 — `:?` 가 그것을 막는다.
+(cd backend && DATABASE_URL="${DATABASE_URL:?postgresql+psycopg:// 주소를 주십시오}" \
+   python -m pytest tests -v)
+
+# ② SQLite. 비우면 설정이 backend/production_risk.db 로 떨어진다.
+(cd backend && DATABASE_URL="" python -m pytest tests -v)
 
 # 프런트엔드
-cd frontend && npm test        # vitest run
-cd frontend && npm run lint    # tsc --noEmit (린터가 아니라 타입 검사다)
-cd frontend && npm run build
+(cd frontend && npm test)        # vitest run
+(cd frontend && npm run lint)    # tsc --noEmit (린터가 아니라 타입 검사다)
+(cd frontend && npm run build)
 ```
+
+①에 줄 PostgreSQL 은 따로 띄워야 한다. `compose.yaml` 의 `database` 는 호스트로
+포트를 열지 않으므로 그대로는 붙지 않는다 — CI 가 하는 것처럼 포트를 연
+`postgres:16-alpine` 하나를 띄우고 그 주소를 준다(`.github/workflows/cloud-validation.yml`
+의 `services` 블록이 사용자·데이터베이스 이름까지 그대로 보여 준다). 비밀번호는
+그 자리에서 만들어 쓰고 저장소에 적지 않는다.
 
 린터·포매터는 아직 없다. 스타일은 주변 코드를 보고 맞춘다.
 

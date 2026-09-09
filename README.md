@@ -177,7 +177,7 @@ python -m alembic revision --autogenerate -m "설명"   # 모델을 고친 뒤
 ## 사전 요구사항
 
 - Windows PowerShell
-- Python 3.11 이상
+- Python 3.12 — CI와 컨테이너 이미지가 쓰는 판입니다. 3.11에서는 골든 케이스의 완료예정일이 하루 어긋납니다.
 - Node.js 20 이상 및 npm
 - Docker로 실행할 경우: Docker Engine과 Compose v2 이상 (위 Python·Node 설치는 불필요)
 
