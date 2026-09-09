@@ -42,13 +42,31 @@ from app.services.order_risk import calculate_order_risk
 
 @pytest.fixture
 def seeded_session_factory(
-    monkeypatch: pytest.MonkeyPatch,
+    bound_session_factory: sessionmaker[Session],
 ) -> sessionmaker[Session]:
-    engine = create_engine("sqlite:///:memory:")
-    session_factory = sessionmaker(bind=engine)
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", session_factory)
-    return session_factory
+    """`DATABASE_URL` 의 엔진 위 일회용 데이터베이스에 붙는 세션 공장.
+
+    예전에는 여기서 `sqlite:///:memory:` 엔진을 만들어 `db_base` 에 물렸다.
+    그러면 `DATABASE_URL` 을 무엇으로 주든 SQLite 로 돌아, CI 가 두 엔진에서
+    각각 돌려도 이 파일의 검사들은 **같은 엔진을 두 번** 볼 뿐이었다.
+
+    바꾼 것은 붙는 곳이지 안전장치가 아니다. `db_base` 를 갈아 끼우는 것은
+    그대로이며(`conftest.py` 의 `bound_engine`), 갈아 끼우는 대상만 설정된 엔진
+    위의 **일회용 데이터베이스**가 되었다 — 이 파일의 검사들은 `reset_database()`
+    로 표를 지웠다 다시 만들므로, 설정이 가리키는 곳에 그대로 붙으면 로컬에서
+    한 번 돌리는 것만으로 개발자의 데이터가 사라진다.
+
+    시드를 넣는 것은 이 픽스처가 아니라 **검사 쪽**이다. 기준일을 검사마다
+    달리 주기 때문이며, 그래서 이름과 달리 여기서는 아직 비어 있다.
+
+    아래에 이 픽스처를 쓰지 않고 **스스로 SQLite 파일 엔진을 만드는 검사들**이
+    남아 있다. 그것들은 옮기지 않았다 — 옮길 수 없어서가 아니라 **묻는 것이
+    엔진이 아니기 때문**이다: `sqlite_master` 를 직접 읽거나, `DATABASE_PATH` 로
+    떨어지는 경로를 보거나, 컨테이너 기동을 하위 프로세스로 돌린다. 그 검사들을
+    설정된 엔진으로 옮기려면 묻는 내용 자체를 바꿔야 하고, 그것은 이 PR 이 하는
+    일이 아니다.
+    """
+    return bound_session_factory
 
 
 def test_reset_database_creates_required_synthetic_operational_records(
@@ -702,12 +720,15 @@ def test_the_reset_path_stamps_the_engine_it_actually_used(
 ) -> None:
     """버전은 **표를 만든 그 데이터베이스**에 찍혀야 한다.
 
-    이 픽스처는 `db_base.engine` 만 메모리 엔진으로 갈아 끼운다. 찍는 쪽이
-    설정의 접속 주소로 따로 접속하면, 표는 메모리에 서고 `alembic_version` 은
-    개발자의 진짜 파일에 남는다 — 표가 하나도 없는데 head 로 보이는 파일이
-    생기고, 옛 스키마가 든 파일이었다면 「최신」으로 굳어 마이그레이션이
-    건너뛰어진다. 그래서 여기서 묻는 것은 「찍혔는가」가 아니라 **어디에
-    찍혔는가**다.
+    이 픽스처는 `db_base` 를 **일회용 데이터베이스**로 갈아 끼운다. 찍는 쪽이
+    설정의 접속 주소로 따로 접속하면, 표는 그 일회용에 서고 `alembic_version` 은
+    설정이 가리키는 진짜 데이터베이스에 남는다 — 표가 하나도 없는데 head 로
+    보이는 데이터베이스가 생기고, 옛 스키마가 들어 있었다면 「최신」으로 굳어
+    마이그레이션이 건너뛰어진다. 그래서 여기서 묻는 것은 「찍혔는가」가 아니라
+    **어디에 찍혔는가**다.
+
+    갈아 끼우는 대상이 설정된 엔진 위의 일회용이 되면서 이 검사는 두 엔진 모두에서
+    같은 것을 묻게 되었다 — 엇나간 접속이 PostgreSQL 에서도 잡힌다.
     """
     reset_database()
 

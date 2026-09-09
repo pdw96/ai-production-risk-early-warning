@@ -75,12 +75,19 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 
 그 장치는 `tests/engines.py` 에 있고 `tests/conftest.py` 가 픽스처로 낸다 —
 `throwaway_engine`(설정된 엔진 위의 일회용)과 `bound_engine`(그것을 `db_base` 에
-갈아 끼운 것)이다. `test_live_engine.py` 와 `test_golden_cases.py` 가 쓴다.
+갈아 끼운 것)이다. `test_live_engine.py` · `test_golden_cases.py` · `test_seed.py`
+가 쓴다.
 
 **나머지 검사는 아직 스스로 SQLite 엔진을 만든다.** 그것은 설정을 무시하지만
 동시에 위와 같은 안전장치이므로, 옮길 때는 **걷어내는 것이 아니라 위 픽스처로
-바꿔 다는 것**이다. 남은 파일은 `test_api.py` · `test_models.py` ·
-`test_master_data.py` · `test_seed.py` 이며, 한 PR 에 하나씩 옮긴다.
+바꿔 다는 것**이다. 남은 파일은 `test_master_data.py` · `test_models.py` ·
+`test_api.py` 이며, 한 PR 에 하나씩 옮긴다. `test_api.py` 는 `TestClient` 라
+스레드·세션 경계가 걸리므로 마지막에 둔다.
+
+**엔진을 묻지 않는 검사는 옮기지 않는다.** `test_seed.py` 에는 `sqlite_master` 를
+직접 읽거나 `DATABASE_PATH` 로 떨어지는 경로를 보거나 컨테이너 기동을 하위
+프로세스로 돌리는 검사가 남아 있다. 그것들을 설정된 엔진으로 옮기려면 **묻는
+내용 자체**를 바꿔야 하므로 그대로 둔다 — 옮기지 않은 것과 못 옮긴 것은 다르다.
 
 `test_golden_cases.py` 는 `reset_database(reference_date)` 로 기준일을 고정해야
 성립한다. 안 넘기면 오늘 날짜로 흔들려 박아 둔 숫자가 전부 무의미해진다.
