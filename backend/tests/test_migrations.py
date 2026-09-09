@@ -75,6 +75,17 @@ def test_upgrading_from_empty_reproduces_the_model_schema(
     """마이그레이션을 끝까지 돌린 표와 모델이 만든 표가 같아야 한다.
 
     둘이 갈리면 개발자는 모델을 보고 코드를 쓰는데 실제 표는 다른 모양이 된다.
+
+    이 검사가 스스로 엔진을 만드는 것은 **두 스키마를 나란히 놓아야 하기**
+    때문이다 — 마이그레이션이 세운 것과 모델이 세운 것을 견주려면 데이터베이스가
+    둘 필요한데, 공용 일회용 픽스처는 하나를 준다.
+
+    **그래서 이 대조는 아직 SQLite 에서만 선다 — 여기가 없는 눈이다.** 이
+    마이그레이션은 방언마다 다르게 렌더된다(`_BlankTrimmed` 에 SQLite 용과
+    PostgreSQL 용 컴파일러가 따로 있다). PostgreSQL 쪽 렌더가 모델과 어긋나도
+    이 자리는 두 CI 런에서 모두 SQLite 를 견주므로 초록이다. 메우려면 설정된
+    방언 위에 데이터베이스 둘이나 격리된 스키마 둘을 내주는 픽스처가 있어야
+    하고, 그것은 이 검사 하나의 사정을 넘는다.
     """
     migrated_path = tmp_path / "migrated.db"
     monkeypatch.setenv("DATABASE_PATH", str(migrated_path))

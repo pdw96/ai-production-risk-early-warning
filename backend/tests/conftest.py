@@ -116,3 +116,23 @@ def bound_engine(
 def bound_session_factory(bound_engine: sa.Engine) -> sessionmaker[Session]:
     """갈아 끼운 엔진에 붙는 세션 공장. 검사가 직접 읽을 때 쓴다."""
     return sessionmaker(bind=bound_engine)
+
+
+@pytest.fixture
+def empty_bound_engine(bound_engine: sa.Engine) -> sa.Engine:
+    """갈아 끼운 엔진을 **표 하나 없는 상태**에서 넘긴다.
+
+    일회용 데이터베이스는 모듈마다 하나여서 검사끼리 이어진다. 「지금 무슨 표가
+    있는가」를 묻는 검사에게 그것은 조용한 거짓 초록이다 — 앞 검사가 남긴 표를
+    보고 「지워지지 않았다」·「남아 있다」를 맞다고 읽는다. 스스로 엔진을 만들던
+    시절에는 검사마다 새 파일이라 저절로 비어 있었고, 그 성질이 그 검사들의
+    전제였다.
+
+    이 앱의 표만 지우지 않는다. 남의 표가 남아 있으면 안 되는 것은 그것을 남긴
+    쪽이 이 검사가 아니라 앞 검사이기 때문이며, 여기서 지우는 대상은 이번 실행이
+    만든 일회용 데이터베이스뿐이다.
+    """
+    existing = sa.MetaData()
+    existing.reflect(bind=bound_engine)
+    existing.drop_all(bind=bound_engine)
+    return bound_engine

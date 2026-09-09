@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from sqlalchemy import func, select
@@ -59,12 +59,7 @@ def seeded_session_factory(
     시드를 넣는 것은 이 픽스처가 아니라 **검사 쪽**이다. 기준일을 검사마다
     달리 주기 때문이며, 그래서 이름과 달리 여기서는 아직 비어 있다.
 
-    아래에 이 픽스처를 쓰지 않고 **스스로 SQLite 파일 엔진을 만드는 검사들**이
-    남아 있다. 그것들은 옮기지 않았다 — 옮길 수 없어서가 아니라 **묻는 것이
-    엔진이 아니기 때문**이다: `sqlite_master` 를 직접 읽거나, `DATABASE_PATH` 로
-    떨어지는 경로를 보거나, 컨테이너 기동을 하위 프로세스로 돌린다. 그 검사들을
-    설정된 엔진으로 옮기려면 묻는 내용 자체를 바꿔야 하고, 그것은 이 PR 이 하는
-    일이 아니다.
+    무엇을 이 픽스처로 옮기고 무엇을 두는지의 기준은 `CLAUDE.md` 에 있다.
     """
     return bound_session_factory
 
@@ -688,29 +683,26 @@ def test_no_arguments_still_takes_the_reset_path(monkeypatch) -> None:
 
 
 def test_the_reset_path_leaves_the_database_under_alembic_control(
-    tmp_path, monkeypatch
+    bound_engine: Engine,
 ) -> None:
     """`create_all` 은 표만 만들고 `alembic_version` 을 남기지 않는다.
 
     그대로 두면 README 가 함께 안내하는 `alembic upgrade head` 가 초기
     마이그레이션을 처음부터 돌리려다 **이미 있는 표에서 터진다.** 두 길이 같은
     데이터베이스를 가리키는 이상 한쪽이 다른 쪽을 못 쓰게 만들면 안 된다.
-    """
-    database_path = tmp_path / "reset.db"
-    url = f"sqlite:///{database_path.as_posix()}"
-    engine = create_engine(url)
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
 
+    이 검사도 `reset_database()` 를 부르고, 그 안의 `drop_all` 은 엔진마다 다른
+    반사를 쓴다. 리비전을 찾는 쪽은 접속하지 않으므로(`ScriptDirectory` 는
+    `script_location` 만 본다) 주소를 설정에 따로 적을 일이 없다.
+    """
     seed_module.reset_database()
 
-    with engine.connect() as connection:
+    with bound_engine.connect() as connection:
         stamped = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
 
     config = Config(str(seed_module.BACKEND_DIRECTORY / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", url)
     head = ScriptDirectory.from_config(config).get_current_head()
     assert stamped == head
 
@@ -742,40 +734,35 @@ def test_the_reset_path_stamps_the_engine_it_actually_used(
 
 
 def test_the_reset_path_removes_tables_the_models_no_longer_know(
-    tmp_path, monkeypatch
+    empty_bound_engine: Engine,
 ) -> None:
     """이름이 바뀐 옛 표는 메타데이터가 모르므로 살아남는다.
 
     품목 통합 전의 `products` 를 가진 데이터베이스에서 시드를 돌리면 새 표가
     그 옆에 생기고, 시드가 현재 리비전을 찍어 두므로 **Alembic 도 영영 치우지
     못한다** — 옛 데이터를 든 표가 그대로 굳는다.
+
+    표 목록을 `sqlite_master` 대신 인스펙터로 읽는다. 묻는 것은 「reset 이 무엇을
+    지우는가」이지 그 목록을 어느 방언의 어느 표에서 읽는가가 아니므로, 수단만
+    바꾸면 묻는 내용을 그대로 둔 채 두 엔진에서 돌게 된다 — 그리고 지우는 쪽은
+    **엔진마다 다른 반사**를 쓴다.
     """
-    database_path = tmp_path / "legacy.db"
-    url = f"sqlite:///{database_path.as_posix()}"
-    engine = create_engine(url)
-    with engine.begin() as connection:
+    with empty_bound_engine.begin() as connection:
         connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE bom_requirements (id INTEGER PRIMARY KEY)"))
 
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
-
     seed_module.reset_database()
 
-    with engine.connect() as connection:
-        remaining = {
-            row[0]
-            for row in connection.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            )
-        }
+    remaining = set(inspect(empty_bound_engine).get_table_names())
 
     assert "products" not in remaining
     assert "bom_requirements" not in remaining
     assert "items" in remaining
 
 
-def test_preflight_stops_a_database_that_predates_alembic(tmp_path, monkeypatch) -> None:
+def test_preflight_stops_a_database_that_predates_alembic(
+    empty_bound_engine: Engine, monkeypatch
+) -> None:
     """표는 있는데 버전 표가 없으면 마이그레이션 앞에서 멈춰야 한다.
 
     이전 판은 Alembic 없이 `create_all` 로 표를 만들었다. Alembic 은 그런
@@ -783,12 +770,10 @@ def test_preflight_stops_a_database_that_predates_alembic(tmp_path, monkeypatch)
     표에서 죽는다. 진입점이 마이그레이션을 먼저 돌리므로 기동은 그 자리에서
     멈추고, 그 메시지로는 무엇을 해야 하는지 알 수 없다.
     """
-    database_path = tmp_path / "legacy.db"
-    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    with engine.begin() as connection:
+    with empty_bound_engine.begin() as connection:
         connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
 
-    monkeypatch.setattr(preflight, "engine", engine)
+    monkeypatch.setattr(preflight, "engine", empty_bound_engine)
 
     problem = preflight.check()
 
@@ -799,92 +784,85 @@ def test_preflight_stops_a_database_that_predates_alembic(tmp_path, monkeypatch)
     assert "alembic stamp head" in problem
 
 
-def test_preflight_lets_an_empty_or_managed_database_through(tmp_path, monkeypatch) -> None:
+def test_preflight_lets_an_empty_or_managed_database_through(
+    empty_bound_engine: Engine, monkeypatch
+) -> None:
     """빈 데이터베이스와 Alembic 이 아는 데이터베이스는 그냥 지나가야 한다."""
-    database_path = tmp_path / "fine.db"
-    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    monkeypatch.setattr(preflight, "engine", engine)
+    monkeypatch.setattr(preflight, "engine", empty_bound_engine)
 
-    with engine.connect():
-        pass
     assert preflight.check() is None
 
-    with engine.begin() as connection:
+    with empty_bound_engine.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num TEXT)"))
         connection.execute(text("CREATE TABLE items (id INTEGER PRIMARY KEY)"))
 
     assert preflight.check() is None
 
 
-def test_the_reset_path_leaves_tables_this_app_does_not_own(tmp_path, monkeypatch) -> None:
+def test_the_reset_path_leaves_tables_this_app_does_not_own(
+    empty_bound_engine: Engine,
+) -> None:
     """옆에 있는 남의 표는 살아남아야 한다.
 
     옛 표를 치우려고 데이터베이스를 읽어서 지우면, 스키마를 나눠 쓰는 곳에서는
     **보이는 표를 전부** 지운다. 개발용이라고 문서에 적는 것으로는 막지 못한다 —
     한 번 실행하면 되돌릴 수 없기 때문이다. 지울 것은 이름으로 정한다.
+
+    빈 데이터베이스에서 시작해야 뜻이 선다. 앞 검사가 남긴 `payroll_entries` 를
+    보고 「남았다」로 읽으면, 이 검사는 지우는 쪽이 남의 표까지 쓸어 가도 초록이다.
     """
-    database_path = tmp_path / "shared.db"
-    url = f"sqlite:///{database_path.as_posix()}"
-    engine = create_engine(url)
-    with engine.begin() as connection:
+    with empty_bound_engine.begin() as connection:
         # 옛 이름 하나와, 이 앱과 무관한 표 하나를 나란히 둔다.
         connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE payroll_entries (id INTEGER PRIMARY KEY)"))
 
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
-
     seed_module.reset_database()
 
-    with engine.connect() as connection:
-        remaining = {
-            row[0]
-            for row in connection.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            )
-        }
+    remaining = set(inspect(empty_bound_engine).get_table_names())
 
     assert "products" not in remaining
     assert "payroll_entries" in remaining
     assert "items" in remaining
 
 
-def test_the_reset_path_works_from_any_working_directory(tmp_path, monkeypatch) -> None:
+def test_the_reset_path_works_from_any_working_directory(
+    bound_engine: Engine, tmp_path, monkeypatch
+) -> None:
     """`alembic.ini` 의 리비전 폴더는 **현재 작업 디렉터리**를 기준으로 풀린다.
 
     그래서 `backend/` 밖에서 부르면 표를 지우고 다시 만든 **뒤에** 버전을 찍다가
     죽는다. 남는 것은 빈 표 스무 개에 버전도 데이터도 없는 데이터베이스이고,
     그 상태를 `preflight` 는 「옛 데이터베이스」로 잘못 읽어 기동을 막는다 —
     지우는 데까지는 성공했으므로 되돌릴 것도 없다.
+
+    작업 디렉터리를 옮기는 것과 설정된 엔진에 물리는 것은 서로 간섭하지 않는다.
+    일회용 데이터베이스의 주소는 이미 절대 경로이고, 여기서 옮기는 것은 **리비전
+    폴더가 풀리는 기준**뿐이다.
     """
-    database_path = tmp_path / "elsewhere.db"
-    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", sessionmaker(bind=engine))
     monkeypatch.chdir(tmp_path)
 
     seed_module.reset_database()
 
-    with engine.connect() as connection:
+    with bound_engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
         assert connection.execute(text("SELECT count(*) FROM items")).scalar_one() == 20
 
 
-def test_preflight_ignores_tables_this_app_does_not_own(tmp_path, monkeypatch) -> None:
+def test_preflight_ignores_tables_this_app_does_not_own(
+    empty_bound_engine: Engine, monkeypatch
+) -> None:
     """남의 표 하나가 첫 기동을 영영 막아서는 안 된다.
 
     스키마를 나눠 쓰는 곳에서 「아무 표나 있으면 멈춘다」로 두면, 이 앱이 아직
     한 줄도 만들지 않았는데도 마이그레이션이 시작되지 못한다. 그리고 그때
     알려 주는 두 길(리셋 · 스탬프)은 둘 다 그 상태에 대한 답이 아니다.
     """
-    database_path = tmp_path / "neighbour.db"
-    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    with engine.begin() as connection:
+    with empty_bound_engine.begin() as connection:
         connection.execute(text("CREATE TABLE payroll_entries (id INTEGER PRIMARY KEY)"))
 
-    monkeypatch.setattr(preflight, "engine", engine)
+    monkeypatch.setattr(preflight, "engine", empty_bound_engine)
 
     assert preflight.check() is None
 
@@ -892,7 +870,9 @@ def test_preflight_ignores_tables_this_app_does_not_own(tmp_path, monkeypatch) -
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
 
 
-def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) -> None:
+def test_the_container_startup_path_seeds_a_migrated_database(
+    empty_bound_engine: Engine,
+) -> None:
     """컨테이너 기동이 오는 길을 **프로세스째** 밟는다.
 
     `docker-entrypoint.sh` 는 `alembic upgrade head` 로 표를 맞춘 뒤
@@ -907,11 +887,21 @@ def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) ->
     등록해 두기 때문이다 — 메타데이터는 프로세스 하나에 하나다. 그래서 프로세스를
     따로 띄운다.
 
-    엔진은 SQLite 로 고정한다. 이것은 방언 문제가 아니라 **길** 의 문제이고,
-    설정이 가리키는 데이터베이스를 그대로 쓰면 옆에서 돌던 시드와 부딪힌다.
+    **프로세스 경계와 설정된 엔진은 함께 설 수 있다.** 자식에게 일회용
+    데이터베이스의 주소를 `DATABASE_URL` 로 넘기면 된다 — 부모가 아무것도
+    불러 두지 않은 새 프로세스라는 성질은 그대로이고, 밟는 길이 운영 엔진에서도
+    밟히게 된다. 이 길에는 방언이 다른 것이 실제로 있다: 마이그레이션이 세우는
+    표와 시드의 첫 flush 다.
+
+    비어 있는 데이터베이스여야 뜻이 선다. 앞 검사가 세워 둔 표 위에서는
+    `upgrade head` 가 할 일을 찾지 못하고 `--if-empty` 가 곧바로 건너뛰므로,
+    아무것도 하지 않고 초록이 된다.
     """
-    environment = {**os.environ, "DATABASE_PATH": str(tmp_path / "startup.db")}
-    environment.pop("DATABASE_URL", None)
+    url = empty_bound_engine.url.render_as_string(hide_password=False)
+    environment = {**os.environ, "DATABASE_URL": url}
+    # 주소가 있으면 설정은 이 값을 쓰지만, 남겨 두면 다음에 읽는 사람이 둘 중
+    # 어느 것이 이겼는지를 다시 확인해야 한다.
+    environment.pop("DATABASE_PATH", None)
 
     def run(*arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -933,7 +923,5 @@ def test_the_container_startup_path_seeds_a_migrated_database(tmp_path: Path) ->
     assert again.returncode == 0, again.stderr
     assert "건너뜁니다" in again.stdout
 
-    engine = create_engine(f"sqlite:///{(tmp_path / 'startup.db').as_posix()}")
-    with Session(engine) as session:
+    with Session(empty_bound_engine) as session:
         assert session.scalar(select(func.count()).select_from(Item)) == 20
-    engine.dispose()
