@@ -294,6 +294,51 @@ def test_the_master_data_files_load_into_this_engine(seeded_engine: sa.Engine) -
     assert items > 0
 
 
+def test_an_endpoint_reads_this_engine_through_the_application_query_path(
+    seeded_engine: sa.Engine,
+) -> None:
+    """엔드포인트 하나가 **이 엔진에** 실제로 질의한다.
+
+    이 파일의 나머지는 제약과 표현을 SQL 로 직접 견준다. 그런데 화면이 타는
+    길은 **라우터 → ORM** 이고, PR #10 에서 걸린 방언 결함 셋(`LIKE` 대소문자 ·
+    불리언 칸의 정수 · `trim`/`btrim`)은 전부 그 길에서 났다.
+
+    그 길이 PostgreSQL 에서 밟히지 않고 있었다. `test_api.py` 는 스스로
+    `sqlite://` 엔진을 만들어 `db_base` 에 물리므로 `DATABASE_URL` 을 무엇으로
+    주든 SQLite 로 돈다 — 두 엔진에서 각각 돌려도 그 51개는 **같은 엔진을 두 번**
+    본다. 여기서 **한 자리**를 밟아 둔다.
+
+    기준정보만 들어 있는 엔진이므로 기준정보를 읽는 엔드포인트를 고른다.
+    나머지 엔드포인트까지 두 엔진에서 돌리는 일은 픽스처를 한곳으로 모으는
+    별건이다 — 진단 「파이프라인 조기경보」의 `engine-pinned-tests` 항목이다.
+    """
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db import base as db_base
+    from app.main import app
+
+    session_factory = sessionmaker(bind=seeded_engine)
+
+    def override_session():
+        session = session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[db_base.get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/master-data")
+    finally:
+        app.dependency_overrides.pop(db_base.get_session, None)
+
+    assert response.status_code == 200, response.text
+    items = response.json()["data"]["items"]
+    assert items, "기준정보를 넣은 엔진인데 품목이 비어 있다"
+
+
 def test_a_boolean_column_holds_a_boolean_on_this_engine(
     seeded_engine: sa.Engine,
 ) -> None:
