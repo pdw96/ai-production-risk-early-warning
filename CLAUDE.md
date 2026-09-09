@@ -76,13 +76,17 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 그 장치는 `tests/engines.py` 에 있고 `tests/conftest.py` 가 픽스처로 낸다 —
 `throwaway_engine`(설정된 엔진 위의 일회용)과 `bound_engine`(그것을 `db_base` 에
 갈아 끼운 것)이다. `test_live_engine.py` · `test_golden_cases.py` · `test_seed.py` ·
-`test_master_data.py` 가 쓴다.
+`test_master_data.py` · `test_models.py` 가 쓴다.
 
-**나머지 검사는 아직 스스로 SQLite 엔진을 만든다.** 그것은 설정을 무시하지만
-동시에 위와 같은 안전장치이므로, 옮길 때는 **걷어내는 것이 아니라 위 픽스처로
-바꿔 다는 것**이다. 남은 파일은 `test_models.py` · `test_api.py` 이며, 한 PR 에
-하나씩 옮긴다. `test_api.py` 는 `TestClient` 라 스레드·세션 경계가 걸리므로
-마지막에 둔다.
+**아직 스스로 SQLite 엔진을 만드는 것은 `test_api.py` 하나 남았다.** 그것은
+설정을 무시하지만 동시에 위와 같은 안전장치이므로, 옮길 때는 **걷어내는 것이
+아니라 위 픽스처로 바꿔 다는 것**이다. `TestClient` 라 스레드·세션 경계가 걸린다.
+
+**한쪽 엔진에서만 뜻이 서는 검사는 `skipif` 로 건너뛴다고 적는다.** 두 엔진
+모두에서 통과하도록 무르게 고치지 않는다 — 그러면 그 검사가 무엇을 묻던
+것인지가 사라진다. 짝이 둘 있다: SQLite 의 `PRAGMA` 를 보는 것
+(`test_models.py`)은 PostgreSQL 을 건너뛰고, 불리언 칸의 정수를 거부하는지
+보는 것(`test_live_engine.py`)은 SQLite 를 건너뛴다.
 
 **공용 엔진을 쓰는 픽스처는 검사마다 표를 지웠다 다시 만들어야 한다.**
 일회용 데이터베이스는 **모듈마다 하나**여서 검사끼리 이어지기 때문이다 — 예전의

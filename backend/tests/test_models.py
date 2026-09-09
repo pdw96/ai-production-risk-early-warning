@@ -2,13 +2,13 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import base as db_base
 from app.db.base import Base
-from app.core.config import ITEM_CODE_PREFIXES
+from app.core.config import DATABASE_URL, ITEM_CODE_PREFIXES, is_sqlite
 from app.db.models import (
     BomComponent,
     DailyProduction,
@@ -30,10 +30,25 @@ from tests.factories import (
 
 
 @pytest.fixture
-def session() -> Session:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory = sessionmaker(bind=engine)
+def session(bound_engine: Engine) -> Session:
+    """모델을 시험할 세션. 붙는 곳은 `DATABASE_URL` 의 엔진 위 **일회용**이다.
+
+    예전에는 여기서 `sqlite:///:memory:` 엔진을 만들어 붙었다. 그러면
+    `DATABASE_URL` 을 무엇으로 주든 SQLite 로 돌아, CI 가 두 엔진에서 각각
+    돌려도 이 파일은 **같은 엔진을 두 번** 볼 뿐이었다. 제약이 무는지를 묻는
+    파일이 한 엔진에서만 물어 온 셈이다 — 그리고 두 엔진에서 다르게 무는 제약이
+    이 저장소에 실제로 있다(`test_live_engine.py` 의 `LIKE` 대소문자 건).
+
+    안전장치는 옮긴 것이지 걷어낸 것이 아니다(`conftest.py` 의 `bound_engine`).
+
+    표를 **검사마다 지웠다 다시 만든다.** 일회용 데이터베이스는 모듈마다
+    하나여서 검사끼리 이어지기 때문이다 — 예전의 검사별 인메모리 엔진은 저절로
+    비어 있었지만 이제는 아니다. 빠뜨리면 앞 검사가 넣은 품목이 남아 유일성
+    제약에서 터지거나, 개수를 세는 단언이 조용히 다른 것을 세게 된다.
+    """
+    Base.metadata.drop_all(bound_engine)
+    Base.metadata.create_all(bound_engine)
+    session_factory = sessionmaker(bind=bound_engine)
     with session_factory() as database_session:
         # 공정과 재고 단위는 공통코드를 가리킨다. 코드가 먼저 있어야 품목이
         # 들어간다 — 시드도 공통코드부터 넣는다.
@@ -65,18 +80,19 @@ def test_order_has_product_and_daily_productions(session: Session) -> None:
 
 
 def test_create_all_builds_every_table_from_both_model_modules(
-    monkeypatch: pytest.MonkeyPatch,
+    bound_engine: Engine,
 ) -> None:
-    engine = create_engine("sqlite:///:memory:")
-    session_factory = sessionmaker(bind=engine)
-    monkeypatch.setattr(db_base, "engine", engine)
-    monkeypatch.setattr(db_base, "SessionLocal", session_factory)
+    # **빈 데이터베이스에서 시작해야** 이 단언이 뜻을 갖는다. 일회용 엔진은
+    # 모듈마다 하나여서 앞 검사가 만든 표가 남아 있고, 그대로 두면 `create_all`
+    # 이 아무 표도 만들지 않아도 목록이 맞아떨어진다 — 묻는 것이 「create_all 이
+    # 표를 만드는가」이므로 그 통과는 거짓이다.
+    db_base.drop_all()
 
     db_base.create_all()
 
     # 기준정보와 거래 표가 다른 모듈에 있으므로, 하나만 불러오면 메타데이터가
     # 반쪽이 되고 외래키의 상대가 없어진다. 이 목록이 그것을 지킨다.
-    assert set(inspect(engine).get_table_names()) == {
+    assert set(inspect(bound_engine).get_table_names()) == {
         # 거래·재고
         "bom_components",
         "daily_productions",
@@ -320,6 +336,7 @@ def test_bom_levels_stop_at_two(session: Session) -> None:
 
 
 def test_get_session_yields_a_usable_session_and_closes_it(
+    bound_engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class TrackingSession(Session):
@@ -331,8 +348,9 @@ def test_get_session_yields_a_usable_session_and_closes_it(
             self.close_called = True
             super().close()
 
-    engine = create_engine("sqlite:///:memory:")
-    session_factory = sessionmaker(bind=engine, class_=TrackingSession)
+    # 세션 종류만 갈아 끼우고 붙는 곳은 공용 일회용 엔진 그대로다 —
+    # `get_session` 이 여는 접속이 두 엔진에서 다 서는지를 함께 보게 된다.
+    session_factory = sessionmaker(bind=bound_engine, class_=TrackingSession)
     monkeypatch.setattr(db_base, "SessionLocal", session_factory)
 
     session_generator = db_base.get_session()
@@ -666,9 +684,23 @@ def test_an_inspection_cannot_point_at_a_target_that_does_not_exist(
         )
 
 
+@pytest.mark.skipif(
+    not is_sqlite(DATABASE_URL),
+    reason="PRAGMA 는 SQLite 의 것이다 — PostgreSQL 은 외래키를 늘 강제한다",
+)
 def test_sqlite_foreign_key_enforcement_is_on_for_every_connection(
     session: Session,
 ) -> None:
+    """SQLite 연결마다 외래키 강제가 켜져 있어야 한다.
+
+    이 파일이 설정된 엔진에서 돌게 되면서 이 검사만은 **엔진을 가린다.**
+    `PRAGMA` 는 SQLite 의 문법이라 PostgreSQL 에서는 문장이 서지도 않고,
+    애초에 물을 것이 없다 — 그쪽은 외래키를 늘 강제한다.
+
+    반대 방향의 짝이 `test_live_engine.py` 에 있다(불리언 칸의 정수를 거부하는지
+    보는 검사는 SQLite 를 건너뛴다). 한쪽 엔진에서만 뜻이 서는 검사는 그렇게
+    **건너뛴다고 적어 두지, 두 엔진 모두에서 통과하도록 무르게 고치지 않는다.**
+    """
     assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
 
 
