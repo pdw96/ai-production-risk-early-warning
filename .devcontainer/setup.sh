@@ -141,14 +141,21 @@ unset PRODUCTION_RISK_DATABASE_AUTOSELECTED
 
 # 개발 세션도 운영과 같은 엔진을 본다. 세우지 못하는 환경이면 빈 값이 오고,
 # 그때는 예전처럼 SQLite 파일 하나로 돈다.
-# **고르기 전에 놓는다.** `database.sh` 는 「있으면 세우고 없으면 물러난다」인데,
-# 이 저장소의 devcontainer 이미지에는 PostgreSQL 이 **없었다** — 그래서 새로 만든
-# Codespace 에서는 늘 SQLite 로 물러났고, 이 PR 이 세우려던 「개발 세션도 운영과
-# 같은 엔진」이 정작 서지 않았다. 못 놓으면 예전 그대로 SQLite 다.
-bash "$REPOSITORY_ROOT/.devcontainer/install-postgresql.sh"
-
 database_url_is_ours=0
 if [ -z "${DATABASE_URL:-}" ]; then
+  # **고르기 전에 놓는다.** `database.sh` 는 「있으면 세우고 없으면 물러난다」인데,
+  # 이 저장소의 devcontainer 이미지에는 PostgreSQL 이 **없었다** — 그래서 새로 만든
+  # Codespace 에서는 늘 SQLite 로 물러났고, 이 PR 이 세우려던 「개발 세션도 운영과
+  # 같은 엔진」이 정작 서지 않았다. 못 놓으면 예전 그대로 SQLite 다.
+  #
+  # **그리고 여기 안에서만 놓는다.** 사람이 `DATABASE_URL` 을 손수 준 경우 —
+  # 바깥 PostgreSQL 서비스든 명시한 SQLite 파일이든 — 아래 갈래는 그 값을 그대로
+  # 지키므로, 여기서 깐 서버는 **한 번도 쓰이지 않는다.** 쓰이지도 않을 것을 위해
+  # PGDG 저장소를 더하고 apt 로 서버를 앉히는 것은 남의 컨테이너에 몇 분과
+  # 영구적인 시스템 변경을 남기는 일이다. 놓는 이유는 「우리가 고를 것이기
+  # 때문」이고, 고르지 않을 때는 이유가 없다.
+  bash "$REPOSITORY_ROOT/.devcontainer/install-postgresql.sh"
+
   DATABASE_URL="$(bash .devcontainer/database.sh)"
   export DATABASE_URL
   database_url_is_ours=1
@@ -321,16 +328,27 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     profile="$(readlink -f "$profile")" || continue
     [ -f "$profile" ] || continue
   fi
+  # **살아 있는 프로파일에는 한 번도 쓰지 않는다.** 옆에 완성한 뒤 `mv` 로 한
+  # 순간에 갈아 끼운다 — 표식이 있든 없든 **같은 길**이다.
+  #
+  # 예전에는 표식이 있을 때만 그랬고, 첫 설치는 `>> "$profile"` 로 살아 있는
+  # 파일에 곧장 붙였다. 실측(2026-09-09, strace): 그 토막은 **write 7번**으로
+  # 나갔고, 그 중간 상태 8가지 중 **4가지가 `syntax error: unexpected end of
+  # file`** 이었다 — `case` 는 열렸는데 `esac` 이 아직 안 온 자리다. 하필 그때
+  # 셸이 이 프로파일을 읽으면 그 오류를 내고 우리 토막을 싣지 못한다.
+  #
+  # 창은 좁다(실측: 살아 있는 읽기 2,139회 중 0회). 그럼에도 고치는 이유는 두
+  # 갈래가 **서로 다른 약속 위에 서 있던 것** 자체가 위험이기 때문이다 — 한쪽만
+  # 원자적이면, 다음에 이 토막을 파일 가운데로 옮기는 사람은 그 차이를 모른다.
+  scratch="${profile}.production-risk.$$"
+  # `cp -p` 로 먼저 권한과 소유를 그대로 가져온다(자르기는 모드와 소유를
+  # 건드리지 않는다). 그래야 `mv` 로 옮긴 뒤에도 그 집 사람의 파일 그대로다 —
+  # 준비 스크립트가 정할 것이 아니다. 이름에 **이 프로세스의 번호**를 넣는 것은
+  # 잠금이 서지 않는 환경에서도 둘이 같은 파일을 밟지 않게 하는 마지막 방어다.
+  cp -p "$profile" "$scratch"
   # 예전 형태로 적힌 것이 남아 있을 수 있다. 표식부터 그 토막의 `esac` 까지를
   # 걷어내고 새로 적는다 — 이 줄은 이제 늘 같으므로 결과는 안정된다.
   if grep -qF "$SHELL_HOOK_MARKER" "$profile"; then
-    # 임시 이름에 **이 프로세스의 번호**를 넣는다. 잠금이 서지 않는 환경에서도
-    # 둘이 같은 파일을 밟지 않게 하는 마지막 방어다.
-    scratch="${profile}.production-risk.$$"
-    # `cp -p` 로 먼저 권한과 소유를 그대로 가져오고, `>` 로 **내용만** 갈아
-    # 끼운다(자르기는 모드와 소유를 건드리지 않는다). 그래야 `mv` 로 옮긴 뒤에도
-    # 그 집 사람의 파일 그대로다 — 준비 스크립트가 정할 것이 아니다.
-    cp -p "$profile" "$scratch"
     awk -v marker="$SHELL_HOOK_MARKER" '
       $0 == "" && !dropping { blanks++; next }
       $0 == marker { dropping = 1; blanks = 0; next }
@@ -339,9 +357,6 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
       { for (; blanks > 0; blanks--) print ""; print }
       END { for (; blanks > 0; blanks--) print "" }
     ' "$profile" > "$scratch"
-    # **한 순간에** 갈아 끼운다. `cat` 은 쓰는 동안 파일이 반쯤인 상태가 있고,
-    # 하필 그때 셸이 읽으면 그 사람의 설정이 반만 실린다.
-    mv "$scratch" "$profile"
   fi
   {
     printf '\n%s\n' "$SHELL_HOOK_MARKER"
@@ -356,7 +371,10 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
     printf 'case "$PWD/" in %q*)\n' "$REPOSITORY_ROOT/"
     printf '  if [ -f %q ]; then\n    . %q\n  fi ;;\nesac\n' \
       "$SHELL_HOOK_FILE" "$SHELL_HOOK_FILE"
-  } >> "$profile"
+  } >> "$scratch"
+  # **한 순간에** 갈아 끼운다. `cat` 이나 `>>` 는 쓰는 동안 파일이 반쯤인 상태가
+  # 있고, 하필 그때 셸이 읽으면 그 사람의 설정이 반만 실린다.
+  mv "$scratch" "$profile"
 done
 
 close_production_risk_lock 7
@@ -388,6 +406,16 @@ fi
 # **갈아 끼우는 것은 한 순간이어야 한다.** 곧바로 `>` 로 쓰면 그 파일이 비어 있는
 # 찰나가 있고, 하필 그때 셸이 읽으면 주소 없이 시작한다. 옆에 다 쓴 뒤 `mv` 로
 # 옮긴다 — 같은 디렉터리라 이름 바꾸기 하나로 끝난다.
+#
+# **옆에 두는 이름에는 이 프로세스의 번호를 넣는다.** 이 자리는 잠금 밖이다 —
+# 설치 잠금은 위에서 이미 놓았고 준비 잠금은 `prepare-database.sh` 안에서 끝났다.
+# 겹쳐 돌면 둘이 **같은 임시 이름**을 쓰고, 한쪽이 그것을 `mv` 로 옮긴 뒤에도
+# 다른 쪽은 그 파일을 **연 채로** 남아 이어지는 write 가 옮겨진 목적지로 새어
+# 들어간다. 실측(2026-09-09, 0.02초 어긋나게 40회): 40회 모두
+# `mv: cannot stat ...: No such file or directory` 로 죽었고, 40회 모두 발행된
+# 파일이 `DATABASE_URL` 은 이쪽 주소, 표식은 저쪽 주소인 **섞인 상태**로 남았다 —
+# 표식이 자기가 표시하는 값과 어긋나는 것은 `autoselected.sh` 가 딛고 선 바로 그
+# 약속이 깨지는 것이다. 셸 훅 파일은 이미 `.$$` 로 옮기고 있었다.
 if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
   (
     umask 077
@@ -395,9 +423,9 @@ if [ "$database_url_is_ours" = "1" ] && [ -n "${DATABASE_URL:-}" ]; then
       printf 'export DATABASE_URL=%q\n' "$DATABASE_URL"
       # 표식은 `1` 이 아니라 **자기가 표시하는 그 값**을 들고 다닌다.
       printf 'export PRODUCTION_RISK_DATABASE_AUTOSELECTED=%q\n' "$DATABASE_URL"
-    } > "${DATABASE_ENVIRONMENT_FILE}.new"
+    } > "${DATABASE_ENVIRONMENT_FILE}.$$"
   )
-  mv "${DATABASE_ENVIRONMENT_FILE}.new" "$DATABASE_ENVIRONMENT_FILE"
+  mv "${DATABASE_ENVIRONMENT_FILE}.$$" "$DATABASE_ENVIRONMENT_FILE"
 fi
 
 if [ -n "${DATABASE_URL:-}" ]; then

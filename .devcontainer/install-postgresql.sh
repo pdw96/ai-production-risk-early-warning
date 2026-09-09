@@ -25,7 +25,25 @@ log() { echo "$@" >&2; }
 
 # 이미 있으면 아무것도 하지 않는다. 개발자의 호스트에 이미 깔려 있을 수도 있고,
 # 컨테이너를 다시 띄운 것일 수도 있다.
-if command -v pg_isready > /dev/null 2>&1; then
+#
+# **묻는 것은 「이 판의 서버가 있는가」다.** 예전에는 `command -v pg_isready` 로
+# 물었는데, 그것은 서버가 아니라 **클라이언트**의 존재다. 실측(2026-09-09):
+# `pg_isready` 를 주는 꾸러미는 `postgresql-client-common` 이고,
+# `postgresql-client-16` 이 의존하는 것도 그것뿐 — 서버 꾸러미 `postgresql-16` 은
+# 그 사슬에 없다. 클라이언트만 깔린 PATH 로 이 파일을 돌리니 **종료코드 0** 으로
+# 아무것도 하지 않고 끝났고, 그 뒤 `pg_ctlcluster` 는 없었다. 그러면
+# `database.sh` 는 89·94번째 줄에서 SQLite 로 물러난다 — 이 파일이 세우려던
+# 보장이 정작 서지 않고, 아무도 알아채지 못한다.
+#
+# 판까지 함께 묻는 이유. `database.sh` 는 클러스터를 **판이 아니라 포트로**
+# 고른다(104번째 줄). 그래서 15가 5432를 지키고 있으면 그것을 기동해 쓰고,
+# 개발만 한 판 뒤처진 채로 돈다 — 이 파일이 PGDG 에서 16을 받아 오는 이유가
+# 바로 그 어긋남이다. 그러니 `pg_isready` 가 있다는 것으로는 건너뛸 수 없다.
+#
+# 데비안·PGDG 는 서버를 `/usr/lib/postgresql/<판>/bin/postgres` 에 둔다. 그것과
+# `pg_ctlcluster`(`postgresql-common`) 둘 다 있어야 `database.sh` 가 실제로 세운다.
+if [ -x "/usr/lib/postgresql/${MAJOR_VERSION}/bin/postgres" ] \
+  && command -v pg_ctlcluster > /dev/null 2>&1; then
   exit 0
 fi
 

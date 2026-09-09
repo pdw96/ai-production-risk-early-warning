@@ -28,10 +28,27 @@
 # 표 권한만 보면 훅은 주소를 내보내고 검사는 그 자리에서 죽는다. 프로파일 훅은
 # `database.sh` 를 거치지 않으므로 **권한을 되돌려 줄 길도 지나치지 않는다.**
 #
+# **이미 서 있는 표도 함께 묻는다.** 스키마 권한은 「새 표를 만들 수 있는가」이지
+# 「남이 만들어 둔 표를 만질 수 있는가」가 아니다. 여러 사람이 쓰는 개발 호스트에서
+# `production_risk` 를 먼저 만든 사람이 있으면 표의 소유자는 그 사람이고, 이쪽은
+# `public` 의 `CREATE` 를 받아도 그 표에는 아무 권한이 없다.
+#
+# 실측(2026-09-09, PostgreSQL 16.13): `otherdev` 가 소유한 `items` 가 있는
+# 데이터베이스에 `devprobe` 로 붙으니 이 판정은 **종료코드 0**(쓸 수 있다)이었고,
+# 바로 다음 두 동작은 `permission denied for table items` 와
+# `must be owner of table items` 로 거부됐다. 앞의 것은 `app.db.preflight` 와
+# 시드가 하는 일이고, 뒤의 것은 `alembic upgrade head` 가 하는 일이다.
+#
+# 그래서 `public` 에 있는 모든 표·뷰·시퀀스의 소유 역할을 이 역할이 지니는지
+# 묻는다 — `pg_has_role(..., 'USAGE')` 는 자기 자신, 물려받은 구성원 자격,
+# 슈퍼유저를 모두 참으로 본다. 실측: `GRANT otherdev TO devprobe` 뒤에는 판정이
+# `t` 로 바뀌었고 그때 `ALTER TABLE` 도 실제로 통과했으며, 되돌리자 다시 `f` 였다.
+# 능력과 판정이 한 칸도 어긋나지 않는다.
+#
 # 그래서 이 파일이 답하는 것은 「붙을 수 있는가」가 아니라 **「이 저장소가 이
 # 데이터베이스에 하려는 일을 다 할 수 있는가」**다. `database.sh` 는 이 판정에
 # 닿기 전에 `CREATEDB` 를 채워 두므로 그쪽에서는 늘 참이고, 조건이 늘어난다고
-# 고르던 것을 못 고르게 되지 않는다.
+# 고르던 것을 못 고르게 되지 않는다 — 새로 만든 데이터베이스에는 남의 표가 없다.
 #
 # 이 파일을 부르는 곳은 둘이다 — 엔진을 고르는 `database.sh`, 그리고 이미 고른
 # 주소를 다시 내보낼지 정하는 `setup.sh` 의 프로파일 훅. 둘이 같은 질문에 다르게
@@ -49,5 +66,11 @@ clear_ambient_libpq_environment
 psql -w -h "$1" -p "$2" -d "$3" -qtAc \
   "SELECT has_schema_privilege(current_user, 'public', 'USAGE')
       AND has_schema_privilege(current_user, 'public', 'CREATE')
-      AND (SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user)" \
+      AND (SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user)
+      AND NOT EXISTS (SELECT 1
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE n.nspname = 'public'
+                         AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                         AND NOT pg_has_role(current_user, c.relowner, 'USAGE'))" \
   2> /dev/null | grep -qx t

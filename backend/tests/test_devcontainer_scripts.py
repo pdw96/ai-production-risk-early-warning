@@ -833,7 +833,7 @@ def test_the_selected_url_is_published_only_after_preparation() -> None:
     publishes = next(
         index
         for index, line in enumerate(lines)
-        if line.strip() == '} > "${DATABASE_ENVIRONMENT_FILE}.new"'
+        if line.strip() == '} > "${DATABASE_ENVIRONMENT_FILE}.$$"'
     )
 
     assert publishes > prepares, "준비보다 먼저 주소를 알린다"
@@ -1060,8 +1060,8 @@ def test_the_last_usable_url_survives_preparation() -> None:
     assert 'if [ "$database_url_is_ours" != "1" ] || [ -z "${DATABASE_URL:-}" ]' in body
 
     # 갈아 끼우는 것은 한 순간이어야 한다 — 옆에 쓰고 이름을 바꾼다.
-    assert '} > "${DATABASE_ENVIRONMENT_FILE}.new"' in body
-    assert 'mv "${DATABASE_ENVIRONMENT_FILE}.new" "$DATABASE_ENVIRONMENT_FILE"' in body
+    assert '} > "${DATABASE_ENVIRONMENT_FILE}.$$"' in body
+    assert 'mv "${DATABASE_ENVIRONMENT_FILE}.$$" "$DATABASE_ENVIRONMENT_FILE"' in body
 
     # 준비가 실패하면 그때는 지운다 — 반쯤 올라간 주소를 남기지 않는다.
     prepares = next(
@@ -1409,3 +1409,230 @@ def test_a_symlinked_profile_survives(tmp_path: Path) -> None:
     assert "export FROM_DOTFILES=1" in written
     assert written.count("ai-production-risk(") == 1
     assert "shell-hook.sh" in written
+
+
+def test_a_database_full_of_someone_elses_tables_is_not_advertised(
+    tmp_path: Path,
+) -> None:
+    """**스키마 권한은 남의 표를 만질 권리가 아니다.**
+
+    여러 사람이 쓰는 개발 호스트에서 `production_risk` 를 먼저 만든 사람이 있으면
+    표의 소유자는 그 사람이다. 이쪽이 `public` 의 `USAGE`·`CREATE` 를 받아도 그
+    표에는 아무 권한이 없는데, 판정이 스키마만 보면 **쓸 수 있다고 답한다.**
+
+    실측(2026-09-09, PostgreSQL 16.13): `otherdev` 가 소유한 `items` 가 있는
+    데이터베이스에 `devprobe` 로 붙으니 판정은 종료코드 0 이었고, 바로 다음 두
+    동작은 `permission denied for table items`(preflight·시드가 하는 일)와
+    `must be owner of table items`(`alembic upgrade head` 가 하는 일)로 거부됐다.
+
+    진짜 서버를 세우지 않는다. 이 검사가 묻는 것은 「PostgreSQL 이 이렇게 답할 때
+    이 파일이 무엇을 하는가」이므로, 그 답을 내는 가짜 `psql` 을 앞에 둔다 —
+    그리고 **질의가 무엇을 묻는지**가 아니라 그 답에 따라 무엇을 하는지를 본다.
+    """
+    usable_script = REPOSITORY_ROOT / ".devcontainer" / "database-usable.sh"
+
+    # 가짜 `psql` 은 질의를 그대로 평가하지 않는다. 대신 「스키마 권한은 있는데
+    # 남의 표가 서 있는 데이터베이스」를 흉내 낸다 — 소유를 묻는 질의에만 f 다.
+    stub = _stub_directory(
+        tmp_path,
+        {
+            "psql": (
+                'case "$*" in\n'
+                "  *pg_has_role*) echo f;;\n"
+                "  *) echo t;;\n"
+                "esac"
+            )
+        },
+    )
+    environment = _environment_without_a_url(
+        {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}
+    )
+    result = subprocess.run(
+        ["bash", str(usable_script), "/var/run/postgresql", "5432", "production_risk"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=60,
+    )
+    assert result.returncode != 0, (
+        "남의 표가 있는 데이터베이스를 쓸 수 있다고 답했다 — "
+        "판정이 이미 서 있는 표의 소유를 묻지 않는다"
+    )
+
+
+def test_an_explicit_database_url_does_not_provision_postgresql() -> None:
+    """사람이 준 주소에는 **서버를 깔지 않는다.**
+
+    `DATABASE_URL` 을 손수 준 경우 — 바깥 PostgreSQL 이든 명시한 SQLite 든 —
+    아래 갈래는 그 값을 그대로 지키므로 여기서 깐 서버는 한 번도 쓰이지 않는다.
+    쓰이지도 않을 것을 위해 PGDG 저장소를 더하고 apt 로 서버를 앉히는 것은 남의
+    컨테이너에 몇 분과 영구적인 시스템 변경을 남기는 일이다.
+
+    글자로 「안에 있다」고 적는 대신 **줄 번호로 가둔다** — 부르는 자리가 우리가
+    고르는 갈래의 여는 줄과 닫는 줄 사이에 있어야 한다.
+    """
+    lines = SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+
+    opens = next(
+        index
+        for index, line in enumerate(lines)
+        if line == 'if [ -z "${DATABASE_URL:-}" ]; then'
+    )
+    closes = next(index for index, line in enumerate(lines[opens:], opens) if line == "fi")
+    installs = next(
+        index
+        for index, line in enumerate(lines)
+        if "install-postgresql.sh" in line and line.lstrip().startswith("bash ")
+    )
+
+    assert opens < installs < closes, (
+        "주소가 이미 있어도 PostgreSQL 을 깐다 — "
+        f"설치는 {installs + 1}번째 줄, 갈래는 {opens + 1}~{closes + 1}번째 줄"
+    )
+
+
+def test_the_environment_file_is_published_under_a_private_name() -> None:
+    """발행에 쓰는 임시 이름은 **프로세스마다 달라야 한다.**
+
+    이 자리는 잠금 밖이다 — 설치 잠금은 위에서 이미 놓았고 준비 잠금은
+    `prepare-database.sh` 안에서 끝났다. 둘이 같은 임시 이름을 쓰면, 한쪽이 그것을
+    `mv` 로 옮긴 뒤에도 다른 쪽은 그 파일을 **연 채로** 남아 이어지는 write 가
+    옮겨진 목적지로 새어 들어간다.
+
+    실측(2026-09-09, 0.02초 어긋나게 40회): 고정된 이름으로는 40회 모두
+    `mv: cannot stat ...: No such file or directory` 로 죽었고, 40회 모두 발행된
+    파일이 `DATABASE_URL` 은 이쪽 주소, 표식은 저쪽 주소인 섞인 상태로 남았다.
+    프로세스 번호를 넣으니 40회 모두 0 이었고 섞인 것은 0회였다.
+
+    이름을 통째로 못 박지 않는다 — 다음에 이름이 바뀌어도 **프로세스마다 다르다**는
+    성질만 지키면 된다.
+    """
+    lines = [
+        line
+        for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    writes = next(
+        line
+        for line in lines
+        if line.strip().startswith("} > ") and "DATABASE_ENVIRONMENT_FILE" in line
+    )
+    renames = next(
+        line
+        for line in lines
+        if line.strip().startswith("mv ") and "DATABASE_ENVIRONMENT_FILE" in line
+    )
+
+    for line in (writes, renames):
+        assert "$$" in line, f"임시 이름에 프로세스 번호가 없다: {line.strip()}"
+
+
+def test_the_first_profile_install_never_writes_to_the_live_file(
+    tmp_path: Path,
+) -> None:
+    """**첫 설치도 살아 있는 프로파일에 쓰지 않는다.**
+
+    예전에는 표식이 있을 때만 옆에 쓰고 `mv` 했고, 첫 설치는 `>> "$profile"` 로
+    살아 있는 파일에 곧장 붙였다. 실측(2026-09-09, strace): 그 토막은 **write
+    7번**으로 나갔고 중간 상태 8가지 중 **4가지가 `syntax error: unexpected end of
+    file`** 이었다 — `case` 는 열렸는데 `esac` 이 아직 안 온 자리다.
+
+    창은 좁다(실측: 살아 있는 읽기 2,139회 중 0회). 그럼에도 고치는 이유는 두
+    갈래가 서로 다른 약속 위에 서 있던 것 자체가 위험이기 때문이다.
+
+    그래서 **살아 있는 파일로 간 write 를 센다.** 글자를 보지 않고 시스템콜을
+    본다 — 0 이어야 한다.
+    """
+    if shutil.which("strace") is None:
+        pytest.skip("strace 가 없다 — 시스템콜을 셀 수 없다")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = home / ".bashrc"
+    # 표식이 **없는** 상태 — 첫 설치 갈래다.
+    profile.write_text("export EDITOR=vim\n", encoding="utf-8")
+
+    repository = tmp_path / "repo"
+    (repository / ".devcontainer").mkdir(parents=True)
+
+    region = _shell_region(
+        SETUP_SCRIPT, "SHELL_HOOK_MARKER=", "close_production_risk_lock 7"
+    )
+    script = tmp_path / "install.sh"
+    script.write_text(
+        "set -uo pipefail\n"
+        f"REPOSITORY_ROOT={repository}\n"
+        f"SHELL_HOOK_FILE={repository}/.devcontainer/shell-hook.sh\n"
+        f". {REPOSITORY_ROOT / '.devcontainer' / 'lock.sh'}\n" + region + "\n",
+        encoding="utf-8",
+    )
+    environment = _environment_without_a_url({"HOME": str(home)})
+    environment.pop("XDG_CACHE_HOME", None)
+
+    trace = tmp_path / "trace.txt"
+    done = subprocess.run(
+        [
+            "strace", "-f", "-y",           # `-y` 는 fd 옆에 그 파일의 경로를 적어 준다.
+            "-e", "trace=write",
+            "-o", str(trace),
+            "bash", str(script),
+        ],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=180,
+    )
+    assert done.returncode == 0, done.stderr
+
+    written_live = [
+        line
+        for line in trace.read_text(encoding="utf-8", errors="replace").splitlines()
+        # `-y` 는 fd 옆에 `<경로>` 를 적는다. **닫는 꺾쇠까지** 함께 본다 —
+        # 그냥 부분문자열로 보면 옆에 둔 `.bashrc.production-risk.<번호>` 가
+        # 프로파일 경로로 시작하므로 그것까지 물어, 고쳐도 계속 빨갛다.
+        if "write(" in line and f"<{profile}>" in line
+    ]
+    assert not written_live, (
+        "살아 있는 프로파일로 write 가 갔다 — 옆에 쓰고 `mv` 하지 않는다:\n"
+        + "\n".join(written_live[:5])
+    )
+    # 그러면서 결과는 제대로 적혀 있어야 한다 — 아무것도 안 하면 위 단언은 공짜다.
+    assert "ai-production-risk(" in profile.read_text(encoding="utf-8")
+
+
+def test_a_client_only_installation_still_provisions_the_server(
+    tmp_path: Path,
+) -> None:
+    """`pg_isready` 가 있다고 **서버가 있는 것이 아니다.**
+
+    실측(2026-09-09): `pg_isready` 를 주는 꾸러미는 `postgresql-client-common`
+    이고, `postgresql-client-16` 이 의존하는 것도 그것뿐 — 서버 꾸러미
+    `postgresql-16` 은 그 사슬에 없다. 클라이언트만 있는 PATH 로 돌리니 예전
+    코드는 종료코드 0 으로 아무것도 하지 않고 끝났고, 그 뒤 `pg_ctlcluster` 는
+    없었다. 그러면 `database.sh` 는 SQLite 로 물러난다 — 이 파일이 세우려던 보장이
+    정작 서지 않는다.
+
+    건너뛰었는지를 **말로** 본다. 건너뛰면 아무 말이 없고, 건너뛰지 않으면 다음
+    관문(`apt-get` 없음)에서 물러나며 그 이유를 적는다.
+    """
+    install_script = REPOSITORY_ROOT / ".devcontainer" / "install-postgresql.sh"
+
+    # `pg_isready` 는 있고 `pg_ctlcluster` 와 `apt-get` 은 없는 자리.
+    stub = _stub_directory(tmp_path, {"pg_isready": "exit 0"})
+    for name in ("bash", "sed", "grep", "cat", "id", "printf", "uname", "dirname"):
+        found = shutil.which(name)
+        if found:
+            (stub / name).symlink_to(found)
+
+    result = subprocess.run(
+        ["bash", str(install_script)],
+        capture_output=True,
+        text=True,
+        env=_environment_without_a_url({"PATH": str(stub)}),
+        timeout=120,
+    )
+    assert result.returncode == 0, "설치에 실패하는 것은 고장이 아니다 — 0 이어야 한다"
+    assert "SQLite" in result.stderr, (
+        "클라이언트만 보고 서버가 있다고 여겨 건너뛰었다 — "
+        f"아무 말이 없다: {result.stderr!r}"
+    )
