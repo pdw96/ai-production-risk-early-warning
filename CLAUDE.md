@@ -125,7 +125,7 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 이 저장소를 만드는 **절차** 자체가 따로 관리된다. 코드에 손대기 전에 허브를 본다.
 
 - 허브 — **파이프라인 조기경보** https://claude.ai/code/artifact/bbb2fc87-6daf-4075-a27e-3f2d5d0798a1
-  실행 목록과 완료선이 여기 있다. 상태는 **허브에만** 산다.
+  실행 목록과 완료선의 **뜻**이 여기 있다. 어디까지 왔는지는 이슈에 묻고, PR 의 `Closes #N` 이 그것을 닫는다.
 - 세 레인과 아홉 문턱 https://claude.ai/code/artifact/fe9d6b9c-ea26-4e9c-87ab-2de67942e796
 - 파이프라인 문턱 도면 https://claude.ai/code/artifact/5698bb1e-47b4-4c16-8e87-f79369b67822
 - 라운드 계기판 https://claude.ai/code/artifact/7999cda4-de48-4714-b469-92b152be51a5
@@ -140,7 +140,7 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 대화 맥락이 아니라 이 파일과 허브가 원본이다. 순서대로:
 
 1. 이 파일.
-2. 허브의 실행 목록과 완료선 — 지금 무엇을 할 차례인지는 거기 있다.
+2. 열린 이슈와 마일스톤 — 지금 무엇을 할 차례인지는 거기 있다. 허브는 왜 그것을 하는지를 적는다.
 3. `git log --oneline -10 origin/main` 과 열린 PR.
 
 여기까지 읽고 이어갈 수 없으면 허브가 불완전한 것이다. 코드를 고치기 전에
