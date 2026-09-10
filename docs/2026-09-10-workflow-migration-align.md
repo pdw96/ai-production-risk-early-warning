@@ -62,6 +62,14 @@
 > An artifact is **a capture of work**: one self-contained page with **no backend**, so it
 > **can't store form input** or serve multiple routes.
 >
+**정정 (리뷰 지적).** 「저장할 수 없다」를 **절대 원칙으로 읽지 않는다.** 이것은
+**능력을 선언하지 않은 기본 아티팩트**의 이야기이고, 뒤에 확인한 바로는 `db` ·
+`artifact` 능력을 선언하면 **뷰어의 입력을 실제로 저장한다**(설계 문서 §7). 그래서
+허브의 `#state` 가 틀린 이유는 「아티팩트가 저장을 못 해서」가 아니라
+**상태가 사는 곳이 둘이 되기 때문**이다 — 설계 문서는 그 둘을 **쓸 수 있는데도
+기각**했다. 게이트를 넘던 시점에는 그 능력을 몰랐고, **그 무지 위에서 내린 판정이
+결론은 같았다**는 것까지가 이 기록이다.
+
 > a styled page is **more token-intensive** than the same content as terminal text
 
 문서가 드는 용도는 여섯이고 **전부 「보여주는 것」**이다 — PR 워크스루 · 대시보드 ·
@@ -115,8 +123,10 @@ curl -s "https://api.github.com/repos/pdw96/ai-production-risk-early-warning/mil
 
 이슈 **#38~#42 다섯이 전부 CLOSED** 다. **아티팩트 쪽이 틀렸다.** (실측)
 
-이것은 공식 문서의 *"can't store form input"* 과 관제탑 23판이 이미 세운 규칙을
-허브만 아직 안 따르고 있는 것이다.
+이것은 관제탑 23판이 이미 세운 규칙을 허브만 아직 안 따르고 있는 것이다.
+<br>**정정 (리뷰 지적).** 처음엔 이 자리에 *"can't store form input"* 도 근거로
+들었는데 **그건 틀린 근거다**(§3 의 정정) — 능력을 켜면 저장은 된다. **틀린 이유는
+저장 가능성이 아니라 상태가 두 곳에 사는 것**이다.
 
 ### 저장소 쪽 공백
 
