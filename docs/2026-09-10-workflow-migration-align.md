@@ -8,7 +8,12 @@
 - 확인 수단: `Artifact list` · `Artifact read` · GitHub REST(`issues`/`milestones`/`labels`) ·
   `mcp__github__list_issues` · `mcp__github__list_pull_requests` · `find` · `ListAgents` ·
   `WebFetch code.claude.com/docs/en/artifacts`
-- 기준 커밋: `main@8374430` · 작업 가지 `claude/gracious-pasteur-vn2eep`
+- 기준 커밋: ~~`main@8374430`~~ → **실제로는 `main@7071395`** · 작업 가지 `claude/gracious-pasteur-vn2eep`
+  <br>**정정 (리뷰 지적).** 이 문서를 쓸 때 `git fetch` 를 하지 않아 **로컬의 낡은
+  `origin/main` 을 읽었다.** `8374430` 은 `7071395` 의 조상이다(`git merge-base
+  --is-ancestor` 로 확인). **「실측」이라 라벨을 붙인 값이 실은 낡은 캐시였다** —
+  이 저장소가 경계하는 「한 번 재고 규칙처럼 적어 둔 값」의 한 종류이고,
+  **재기 전에 `git fetch` 를 한다**가 그 교훈이다.
 - 라벨 규약: **실측** = 명령·API 로 직접 확인 / **추정** = 내 판단 / **미검증** = 확인해야 하는데 못 함
 
 ---
@@ -56,7 +61,7 @@
 
 > An artifact is **a capture of work**: one self-contained page with **no backend**, so it
 > **can't store form input** or serve multiple routes.
-
+>
 > a styled page is **more token-intensive** than the same content as terminal text
 
 문서가 드는 용도는 여섯이고 **전부 「보여주는 것」**이다 — PR 워크스루 · 대시보드 ·
@@ -181,10 +186,16 @@ find .claude -type f      # → .claude/commands/align.md               (하나�
 | 2 | 완료 조건 | 분석 + 이전 후보 + **설계도 한 장**까지가 끝. 초안은 아티팩트, 완성본은 `docs/`. 착수는 저자 | **3** | 사용자 발화 (질문 1·2 답변) |
 | 3 | 범위 경계 | 포함: 원칙 대조 · 아홉 판정 · 이전 후보 · 설계도. **제외: 허브 `#state` 제거 · `CLAUDE.md` 교정 · Fleet 둘 · 아티팩트 삭제 실행** | **3** | 사용자 발화 (질문 3 답변) |
 | 4 | 제약과 함정 | §5 의 여섯 | **2** | 실측 — `ListAgents` · 관제탑 함정 12·16·17 · 118.8 KB |
-| 5 | 접근 방식 | 세 층으로 판정 → 상태 층만 이전. 기각 넷은 §6 | **2** | 실측 — 관제탑 「세 층」 표 · 닫힌 이슈 #43~#46 |
+| 5 | 접근 방식 | 세 층으로 판정 → **규칙과 상태를 이전**하고 기록은 아티팩트에 남긴다(§6 정정). 기각 넷은 §6 | **2** | 실측 — 관제탑 「세 층」 표 · 닫힌 이슈 #43~#46 |
 | 6 | 사실 근거 상태 | §4 의 값은 전부 이 날짜 실측. 미검증으로 남은 것: 이슈 #52~#55 본문 전량, Fleet 둘의 내용(범위 외) | **2** | 실측 — 다만 실측 예외 상한이 2 다 |
 
 **총점 14 / 18** — 기준 14 이상 ✅ · 2번·3번 각 2점 이상 ✅ · 0점 항목 없음 ✅ → **통과**
+
+> **이 표는 게이트를 통과한 그 시점의 것이고, 뒤에 한 번 더 올랐다.** 이어진 대화에서
+> 사용자가 문제를 특정해 주면서(「아티팩트에 전부 넣고 관리하니 컨텍스트 소모가 크다 ·
+> 관제탑과 레인으로 기계화하려는데 순탄치 않다」) **항목 1 이 2 → 3 이 되어 총점이
+> 15 / 18** 이 됐다. **표를 고쳐 덮지 않는다** — 게이트를 넘을 때 무엇이 비어 있었는지가
+> 이 기록의 값이고, 그 빈 자리를 무엇이 메웠는지는 이 각주가 든다. <sub>리뷰 지적</sub>
 
 ### 이 문서가 가정 위에 서 있는 자리
 
