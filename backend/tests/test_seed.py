@@ -925,3 +925,66 @@ def test_the_container_startup_path_seeds_a_migrated_database(
 
     with Session(empty_bound_engine) as session:
         assert session.scalar(select(func.count()).select_from(Item)) == 20
+
+
+def test_the_container_startup_path_stops_on_a_database_that_predates_alembic(
+    empty_bound_engine: Engine,
+) -> None:
+    """멈추는 쪽도 **프로세스째** 밟는다.
+
+    위의 `check()` 검사들은 판단을 두 엔진에서 본다. 그러나 그것들은 함수를 직접
+    부르면서 모듈의 `engine` 을 갈아 끼우므로, 판단과 기동 사이의 **배선**은
+    아무도 묻지 않는다 — `main()` 이 정말 0 아닌 코드로 죽는지, 모듈이
+    `DATABASE_URL` 을 보는지, `set -eu` 인 `docker-entrypoint.sh` 가 그 코드에서
+    실제로 멈추는지. 그 셋이 하나라도 어긋나면 옛 데이터베이스가 관문을 조용히
+    지나가고, 바로 뒤의 `alembic upgrade head` 가 이미 있는 표에서 죽는다 —
+    관문이 있는 이유가 바로 그 죽음을 알아볼 수 없다는 것이었다.
+
+    CI 는 이 길을 밟지 못한다. 워크플로가 실행하는 `python -m app.db.preflight`
+    는 매번 갓 띄운 **빈** PostgreSQL 위에서 돌아 통과하는 쪽만 지나간다.
+
+    비어 있는 데이터베이스여야 뜻이 선다. 앞 검사가 남긴 `alembic_version` 위에서는
+    관문이 통과시키는 것이 맞아, 멈추지 않는 것을 결함으로 읽을 수 없다.
+
+    자식에게 일회용 데이터베이스의 주소를 넘기는 것은 바로 위 검사와 같은 수다.
+    그래서 이 검사도 두 엔진에서 밟힌다 — 「어떤 표가 있는가」를 묻는 것은
+    `inspect()` 이고, 그 답을 내는 것은 방언마다 다른 카탈로그 조회다.
+    """
+    # 이전 판이 `create_all` 로 만들어 둔 모양: 이 앱이 아는 표는 있는데
+    # 버전 표가 없다.
+    with empty_bound_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE products (id INTEGER PRIMARY KEY)"))
+
+    url = empty_bound_engine.url.render_as_string(hide_password=False)
+    environment = {**os.environ, "DATABASE_URL": url}
+    environment.pop("DATABASE_PATH", None)
+
+    def run_preflight() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "app.db.preflight"],
+            cwd=BACKEND_DIRECTORY,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+    stopped = run_preflight()
+
+    # `set -eu` 인 진입점은 **0 아닌 종료 코드에서만** 멈춘다. 문장을 아무리 잘
+    # 써도 0 으로 끝나면 기동은 그대로 다음 줄로 간다.
+    assert stopped.returncode != 0, stopped.stdout
+    assert "products" in stopped.stderr
+    # 고를 수 있는 두 길이 그 문장 안에 있어야 한다 — 없으면 멈추기만 한 것이고,
+    # 관문이 첫 기동을 영영 막는 것과 구별되지 않는다.
+    assert "python -m app.seed" in stopped.stderr
+    assert "alembic stamp head" in stopped.stderr
+
+    # 그 자리에서 버전 표를 만들어 다시 밟는다. 답이 바뀌는 것이 모듈이
+    # **넘겨준 주소**를 보고 있다는 증거다 — 설정이 가리키는 다른 데이터베이스를
+    # 보고 있었다면 위의 빨강도 여기의 초록도 이 표와 무관하게 나온다.
+    with empty_bound_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num TEXT)"))
+
+    passed = run_preflight()
+
+    assert passed.returncode == 0, passed.stderr
