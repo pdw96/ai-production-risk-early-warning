@@ -45,7 +45,9 @@
 
 1. **저장소 안** — `.claude/` · `.github/` · CI · 린터 · 검사
 2. **저장소 밖** — 룰셋 · 저장소 Settings · 커넥터 · 계정 설정. **재지 못하므로
-   저자 확인 명령지로 낸다**(사용자 선택)
+   저자 확인 명령지로 낸다**(사용자 선택). <sub>**그 전제가 절반 틀렸다** — 룰셋과
+   Settings 는 읽기가 200 이어서 이 문서가 값을 적었다(§8.3). 명령지에 남은 것은
+   Actions · 보안 경보 · 커넥터 · 로컬 파일이다</sub>
 3. **아티팩트 아홉의 현재 처분 상태** — 목록·갱신 시각까지. ~~크기~~ — 합의할 때는 크기도 든다고 적었으나 **도구가 내지 않는다**(§8.4)
 
 **명시적 제외**
@@ -66,7 +68,7 @@
 | 1 | **착수는 저자만 한다** | #48 — *"세션은 스스로 다음 단계를 시작하지 않는다"* |
 | 2 | **한 PR 은 한 가지를 한다** | `CLAUDE.md` — 범위를 넓혀 머지되지 못한 PR 이 이미 한 번 나왔다 |
 | 3 | **이슈 번호는 되돌릴 수 없다** | 설계도 §11 — 이미 참인 것을 열면 열린 목록 전체의 뜻이 흐려진다 |
-| 4 | **저장소 밖은 이 세션이 못 잰다** | 설계도 §5 — 룰셋·Settings·Actions·보안 경보·계정 설정 전부 403 |
+| 4 | **저장소 밖은 이 세션이 못 잰다** | 설계도 §5 — 룰셋·Settings·Actions·보안 경보·계정 설정 전부 403. <sub>**게이트 시점의 전제이고, 절반이 틀렸다** — `#62` 리뷰 중 직접 읽으니 Settings·룰셋은 **200** 이었다(§8.3). 남은 것은 Actions 와 보안 경보다</sub> |
 | 5 | **아티팩트는 기계가 못 보고 읽기가 비싸다** | 허브 한 번 118.8 KB. CI·리뷰·룰셋 전부 아티팩트를 보지 않는다 |
 | 6 | **머지되지 않은 가지에서 잰 값을 사실로 적지 않는다** | `CLAUDE.md` 「절대 하지 않는 것」 |
 | 7 | **지정 가지가 이미 머지됐다** | `git diff --stat origin/main origin/claude/gracious-pasteur-vn2eep` 가 빈 출력 — PR #60 의 스쿼시 커밋이 `main@7e719b9` 다. **`main` 에서 같은 이름으로 다시 끊었다** |
@@ -270,8 +272,16 @@ LOG:  checkpointer process (PID 1968) was terminated by signal 6: Aborted
 | --- | --- |
 | `GET /repos/{owner}/{repo}` | **200** |
 | `GET /repos/.../rulesets` (+ 상세) | **200** |
-| `GET /repos/.../actions/{permissions,variables,secrets}` | **403** |
-| `GET /repos/.../{code-scanning,secret-scanning}/alerts` · `vulnerability-alerts` | **403** |
+| `GET /repos/.../actions/{permissions,variables,secrets}` | **403** — `Access to this GitHub Actions path is not permitted through this proxy` |
+| `GET /repos/.../code-scanning/alerts` | **403** — `Resource not accessible by integration` (권한) |
+| `GET /repos/.../secret-scanning/alerts` | **403** — `not permitted through this proxy` (통로) |
+| `GET /repos/.../dependabot/alerts` | **403** — **`Dependabot alerts are disabled for this repository.`** |
+
+**「보안 경보 셋이 전부 403」도 뭉뚱그린 것이었다.** 셋이 서로 다른 이유로 막힌다 —
+하나는 권한, 하나는 통로, 그리고 **Dependabot 은 막힌 것이 아니라 저장소에서 꺼져
+있다.** 처음에는 `vulnerability-alerts` 로 쟀는데 그것은 **경보 목록이 아니라 기능이
+켜졌는지를 묻는 자리**라, 리뷰 지적을 받고 `dependabot/alerts` 를 다시 쳤다. **엉뚱한
+문을 두드리고 「잠겼다」고 적을 뻔했다.**
 
 **저장소 Settings 와 룰셋은 이 세션이 읽을 수 있다.** 실측값:
 
@@ -428,7 +438,7 @@ claude.ai 커넥터의 **표시 이름**이다.
 
 | 확인할 것 | 어디서 보나 | 왜 필요한가 |
 | --- | --- | --- |
-| **보안 경보 셋** | Security 탭 (code scanning · secret scanning · Dependabot) | 전부 403. `security-review` 스킬은 **경보 조회를 대신하지 못한다** — 별도의 검토일 뿐이다 |
+| **보안 경보 셋** | Security 탭 (code scanning · secret scanning · Dependabot) | **막힌 이유가 셋 다 다르다**(§8.3): code scanning 은 권한, secret scanning 은 통로, **Dependabot 은 저장소에서 꺼져 있다**(`Dependabot alerts are disabled`). 앞의 둘은 **무엇이 떠 있는지** 보고 적고, Dependabot 은 **켤지 말지가 판단**이라 별도 이슈로. `security-review` 스킬은 **경보 조회를 대신하지 못한다** — 별도의 검토일 뿐이다 |
 | **GitHub MCP 커넥터가 두 벌인지** | claude.ai → 설정 → 커넥터 | 설계도 §5 가 두 벌로 실측했다. **무엇이 몇 벌 켜져 있는지를 보고 적는다** — 어느 것을 끄고 남길지는 이 문서가 정하지 않는다(§3 제외). 정리할 값이 있으면 별도 이슈로 |
 | **`~/.claude/settings.json` 의 `autoMode`** | 로컬 파일 | 저장소의 같은 이름 파일은 읽히지 않는다. **배열에서 `"$defaults"` 를 빼면 내장 보호가 통째로 사라진다** |
 | **Actions 의 수동 조작 권한** | Actions 탭 · Settings → Secrets and variables | 설계도 §5 가 `workflow_dispatch` · 재실행 · 시크릿 · 변수를 전부 403 으로 실측했다. §4 가 403 집합에 Actions 를 들면서 이 표에는 행이 없었다 — **무엇이 열려 있는지 보고 적는다** |
@@ -439,7 +449,9 @@ claude.ai 커넥터의 **표시 이름**이다.
 ## 11. 이 문서가 가정 위에 서 있는 자리
 
 - **`mcp` 가 페이지 런타임에서 실제로 커넥터에 닿는지 확인하지 못했다**(8.5). 절반만 닫혔다.
-- **저장소 밖의 현재 값 중 보안 경보와 Actions**(§10). 둘은 읽기도 403 이다(실측 §8.3).
+- **저장소 밖의 현재 값 중 보안 경보와 Actions**(§10). 읽기도 403 이다(실측 §8.3) —
+  다만 **Dependabot 은 막힌 것이 아니라 꺼져 있다.** 그것은 미검증이 아니라 **알게 된
+  값**이고, 켤지 말지는 이 문서가 정하지 않는다.
   나머지(Settings · 룰셋)는 **이 PR 중에 읽어서 닫았다** — `#51` 은 아직 안 됐고 룰셋
   문맥은 `validate` 하나다. 「저장소 밖 전부가 미검증」이라고 적던 자리인데, **쓰기가
   막힌 것을 읽기가 막힌 것으로 읽은** 탓이었다.
