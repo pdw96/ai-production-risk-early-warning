@@ -1,6 +1,6 @@
 ---
 name: pr-round
-description: 이 저장소에서 PR 을 열고 리뷰 한 라운드를 읽는 법. PR 을 열 때 · ready 로 바꿀 때 · 코덱스나 CodeRabbit 의 판정을 확인할 때 · 「지적이 없다」를 「깨끗하다」로 읽기 전에 본다. 봇의 신호가 어떤 모양으로 오는지, 안 붙었을 때 무엇을 의심하는지를 든다.
+description: PR 과 리뷰 봇에 관한 일이면 먼저 이 스킬을 쓴다. 다음이 나오면 사용자가 요청하지 않아도 반드시 연다 — PR, pull request, ready for review, 코덱스, codex, CodeRabbit, 리뷰어, reviews 배열, 리액션, 👍, 👀, merged_by, dirty, base 브랜치, force push, 재촉, 「지적이 없다」, 「아무도 안 봤다」. 이 저장소에서 봇의 판정 신호는 세 가지 모양으로 오고 안 붙는 사유가 둘이라, PR 상태를 눈으로 읽으면 틀린다.
 ---
 
 # PR 한 라운드를 읽는 법

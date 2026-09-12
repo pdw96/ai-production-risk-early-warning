@@ -1,6 +1,6 @@
 ---
 name: env-reach
-description: 이 환경에서 GitHub·아티팩트·세션에 무엇이 닿고 무엇이 막히는지, 그리고 막혔을 때 무엇을 의심하는지. 호출이 거부됐을 때 · 「이건 안 되겠다」고 결론내기 전에 · 세션을 새로 열 때 본다. 여기 적힌 막힘은 규칙이 아니라 잰 날짜가 붙은 측정이므로 다시 잰다.
+description: 도구 호출이 거부됐거나 「이건 안 되겠다」고 결론내려 할 때 먼저 이 스킬을 쓴다. 다음이 나오면 반드시 연다 — 403, Resource not accessible by integration, auto mode classifier, 분류기 거부, GraphQL, Projects 보드, 보안 경보, code scanning, Dependabot, secrets, git push, git/refs, 아티팩트 읽기·재발행·구독, notify_when_idle, SendMessage, watch_url, 커넥터가 안 보인다, add_repo, register_repo_root, 세션을 새로 열었다. 무엇이 닿고 무엇이 막히는지가 잰 날짜와 함께 있고, 막힘은 규칙이 아니라 측정이라 추측하면 틀린다.
 ---
 
 # 무엇이 닿는가 — 그리고 막혔을 때 무엇을 의심하는가
