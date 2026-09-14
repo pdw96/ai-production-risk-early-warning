@@ -144,13 +144,53 @@ git 은 REST 가 아니라 git 프로토콜로 가고 거기엔 자격증명이 
 | **2026-09-12** | **`POST /issues/N/comments`** (MCP · `add_repo` 를 `access: push` 로 붙인 뒤 · 서버 인스턴스 둘) | **403 — 「이슈·PR 쓰기 열림」 행과 어긋난다** |
 | **2026-09-12** | **`POST /pulls`** (MCP) | **403 — 같다** |
 | 2026-09-12 | `git push` | 된다 |
+| 2026-09-14 | `POST /pulls` (MCP) | 403 — 위 줄과 같다. **뒤집히지 않았다** |
+| **2026-09-14** | **`POST /pulls` (REST · `curl` · `$GITHUB_TOKEN`)** | **된다 — `#70`·`#71` 을 실제로 열었다** |
+| 2026-09-14 | `PATCH /pulls/N` (REST · base·제목·본문) | 된다 |
+| 2026-09-14 | 저장소 권한 불리언 | 전부 `false` — **그런데 위의 REST 쓰기는 됐다** |
 
-**마지막 세 줄이 이 표가 표인 이유다.** 「이슈·PR 쓰기 열림」은 2026-09-10 의
-측정이고, 2026-09-12 에는 같은 자리가 403 이었다. **잰 날짜 없이 적었다면 이
+**`POST /pulls` 세 행이 이 표가 표인 이유다.** 「이슈·PR 쓰기 열림」은 2026-09-10
+의 측정이고, 2026-09-12 에는 같은 자리가 403 이었고, 2026-09-14 에는 **경로에 따라
+갈렸다.** 줄이 늘 때 위치로 가리키면 그 문장이 낡으므로 **무엇을 잰 행인지로
+가리킨다** — 이 문단 자신이 한 번 그렇게 낡아서 고쳤다. **잰 날짜 없이 적었다면 이
 문서가 거짓말을 했을 것이다.**
 
 그리고 그 날 **`git push` 는 됐다** — 위의 비대칭이 그대로 다시 나왔다. **GitHub
-API 가 통째로 닫혀도 가지는 올라간다.** 그 경우 PR 은 저자가 웹에서 연다.
+API 가 통째로 닫혀도 가지는 올라간다.**
+
+### 「PR 을 못 연다」로 넓혀 읽지 않는다 — 막힌 것은 **경로**였다
+
+2026-09-14 에 `POST /pulls` 가 **MCP 로는 403, REST 로는 됐다.** 같은 계정 · 같은
+저장소 · 같은 순간이다. 막힌 것은 GitHub 의 권한이 아니라 **MCP 서버가 쓰는
+자격증명**이었고, 셸의 `$GITHUB_TOKEN` 은 `pull_requests=write` 를 들고 있었다.
+
+그날 실제로 한 일의 순서가 이 절이 있는 이유다. MCP 가 403 을 내자 위 표의
+**2026-09-12 행을 보고 「확인됐다」며 멈췄다** — 저자에게 「PR 은 직접 여셔야
+한다」고 알리기까지 했다. 그 행은 **MCP 로 잰 값**인데 그것을 **엔드포인트 전체의
+성질**로 읽은 것이다. 아래 「부작용 없이 재는 법」을 한 번 돌렸으면 5초에 갈렸다.
+
+```bash
+curl -s -o /dev/null -D - -X POST \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "Content-Type: application/json" \
+  -d '{}' https://api.github.com/repos/OWNER/REPO/pulls
+```
+
+`422 "base", "head" weren't supplied` 와 `X-Accepted-Github-Permissions:
+pull_requests=write` 가 왔다 — **권한이 있고 본문만 거부된 것.**
+
+<sub>`Content-Type: application/json` 을 빠뜨리면 프록시가 먼저 가로채 *“Request
+bodies must declare Content-Type”* 를 낸다. GitHub 의 답이 아니므로 그것을 403
+판정에 넣지 않는다.</sub>
+
+**그러니 한 경로의 거절은 그 경로의 값이다.** 이미 `POST /git/refs` 는 403 인데
+`git push` 는 되는 비대칭을 이 문서가 들고 있었다 — 같은 모양이 MCP 와 REST
+사이에도 있다. **하나가 막히면 나머지를 재 보고 나서 저자에게 알린다.**
+
+그리고 그때 저장소 권한 불리언은 **전부 `false` 였다.** 위 「전부 `false` 는
+의심할 근거이고 판정이 아니다」가 이날 실측으로 한 번 더 섰다 — 전부 `false` 인
+채로 PR 이 두 개 열렸다.
 
 ## GraphQL 은 클라우드에서 안 된다 — 다만 계정이 막힌 것이 아니다
 
