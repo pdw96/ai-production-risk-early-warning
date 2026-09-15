@@ -8,6 +8,7 @@
 from pathlib import Path
 
 from tests.markdown_reader import headings as _markdown_headings
+from tests.markdown_reader import section
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -33,7 +34,7 @@ def test_prd_holds_scope_and_constraints() -> None:
     # 지워도 H1 의 「범위와 제약」이 대신 맞는다. 그러면 **목적별 구조가 무너진
     # 바로 그 경우**를 이 검사가 못 잡는다.
     present = headings("PRD.md")
-    for section in (
+    for title in (
         "문제",
         "핵심 사용자와 시나리오",
         "성공 기준",
@@ -43,11 +44,14 @@ def test_prd_holds_scope_and_constraints() -> None:
         "나중에 할 일",
         "제약",
     ):
-        assert section in present, section
+        assert title in present, title
 
     # 「나중에 할 일」이 드는 항목. 확장 계획이 통째로 사라지면 여기가 빨개진다.
+    # **그 절 안에서 찾는다** — 문서 전체에서 찾으면 「출하 리스크」를 계획에서
+    # 지워도 앞의 설명에 남은 「출하」가 대신 맞는다.
+    later = section(content, "나중에 할 일")
     for planned in ("출하", "재고이동", "설비", "AI 브리핑"):
-        assert planned in content, planned
+        assert planned in later, planned
 
 
 def test_prd_separates_scope_ceiling_from_ordering() -> None:
@@ -58,12 +62,13 @@ def test_prd_separates_scope_ceiling_from_ordering() -> None:
     """
     content = _read("PRD.md")
 
-    ceiling = content.index("## 하지 않을 일")
-    ordering = content.index("## 나중에 할 일")
-    assert ceiling < ordering
+    # **`##` 원문이 아니라 파싱된 제목 순서로 본다.** 같은 절을 Setext 로 적으면
+    # 위 검사는 통과하는데 여기만 `ValueError` 로 터지는 자리였다.
+    present = headings("PRD.md")
+    assert present.index("하지 않을 일") < present.index("나중에 할 일")
 
     # 상한선 절에 든 셋. 저자가 정한 것이라 조용히 빠지면 안 된다.
-    ceiling_text = content[ceiling:ordering]
+    ceiling_text = section(content, "하지 않을 일")
     for excluded in ("인증", "공개 인터넷", "합성 샘플"):
         assert excluded in ceiling_text, excluded
 
