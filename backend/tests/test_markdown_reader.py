@@ -150,6 +150,24 @@ def test_the_content_column_follows_the_nesting_depth() -> None:
     assert link_targets(three.format(indent=" " * 14)) == []
 
 
+def test_a_wide_marker_gap_starts_the_item_with_code() -> None:
+    """마커 뒤 공백이 **5칸 이상**이면 그 항목은 들여쓴 코드로 시작한다.
+
+    그때 내용 열은 공백 전부가 아니라 **마커 다음 한 칸**이다. 공백을 그대로
+    더하면 내용 열이 깊어져 **코드 블록 안의 링크가 산문으로 새어 나온다.**
+    지적은 중첩만 들었지만 뿌리가 같아 최상위도 함께 든다.
+    """
+    # `-     항목` 은 내용 열이 2라 코드는 6칸부터. 5칸은 아직 이어지는 줄이다.
+    top = "-     항목\n\n{indent}[사양](docs/schema.md)\n"
+    assert link_targets(top.format(indent=" " * 6)) == []
+    assert link_targets(top.format(indent=" " * 5)) == ["docs/schema.md"]
+
+    # 중첩하면 마커가 4칸에 앉아 내용 열이 6, 코드는 10칸부터다.
+    nested = "- 바깥\n\n    -     항목\n\n{indent}[사양](docs/schema.md)\n"
+    assert link_targets(nested.format(indent=" " * 10)) == []
+    assert link_targets(nested.format(indent=" " * 9)) == ["docs/schema.md"]
+
+
 def test_reference_labels_match_by_the_commonmark_rule() -> None:
     """속 공백을 접고 case folding 해서 맞춘다 — 글자 그대로 비교하지 않는다."""
     assert link_targets("[품목 규칙]\n\n[품목   규칙]: docs/schema.md\n") == [
