@@ -1,5 +1,6 @@
-import re
 from pathlib import Path
+
+from tests.markdown_reader import link_targets
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -41,15 +42,17 @@ def test_readme_points_at_the_documents_that_hold_the_spec() -> None:
     링크를 본다** — 이름이 본문 어딘가에 적혀 있기만 하면 통과하게 두면, 링크를
     평문으로 바꾸거나 목적지를 `missing/docs/schema.md` 로 잘못 적어도 초록이다.
     그러면 이 검사가 지키려던 「닿을 길」이 없는데도 통과한다.
+
+    **누를 수 있는 링크만 센다.** 코드 블록 · 주석 · 인라인 코드 안의 링크와
+    이미지는 화면에서 눌러 갈 수 없으므로 닿을 길이 아니다 — 그것까지 세면 실제
+    링크를 코드 예시로 바꿔 놓아도 초록이 된다(읽는 규칙은 `markdown_reader`).
     """
     readme = REPO_ROOT / "README.md"
     content = readme.read_text(encoding="utf-8")
 
-    # `[보이는 글](목적지)` 의 목적지만 모은다. 앵커(`#…`)는 떼고, 제목이 붙은
-    # 형태(`(경로 "제목")`)도 받는다.
+    # 앵커(`#…`)는 떼고 상대 경로를 푼다.
     linked: set[str] = set()
-    for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", content):
-        target = target.strip().split()[0]
+    for target in link_targets(content):
         if target.startswith(("http://", "https://", "#", "mailto:")):
             continue
         path = (readme.parent / target.split("#", 1)[0]).resolve()
