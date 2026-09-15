@@ -33,6 +33,23 @@ _INLINE_CODE = re.compile(r"(?P<ticks>`+).+?(?P=ticks)", re.DOTALL)
 
 _COMMENT = re.compile(r"<!--.*?-->")
 
+# **Markdown 이 아예 파싱되지 않는 원시 HTML 블록**(CommonMark 의 HTML block
+# type 1)만 코드로 본다. 그 안의 `[사양](x)` 는 화면에 글자로 찍히지 링크가 되지
+# 않는다. 다른 HTML(`<details>` · `<div>`)과 인라인 `<sub>` 는 **여기 넣지
+# 않는다** — 그 안의 Markdown 은 실제로 파싱되고, `PRD.md` 는 `<sub>` 안에 진짜
+# 링크를 들고 있다. 넣었다면 멀쩡한 닿을 길이 사라진다.
+_HTML_RAW_OPEN = re.compile(
+    r"^ {0,3}<(?P<tag>pre|script|style|textarea)(?:[ \t>]|/>|$)", re.IGNORECASE
+)
+
+# 참조형 링크의 정의(`[label]: 목적지`). 화면에서는 인라인 링크와 똑같이 눌린다 —
+# 안 세면 **평범한 Markdown 정리가 CI 를 막는다.**
+_LINK_DEFINITION = re.compile(r"^ {0,3}\[(?P<label>[^\]]+)\]:\s*(?P<target>\S+)")
+
+# 참조형 사용(`[보이는 글][label]` · `[label][]` · `[label]`). 마지막 꼴은 **정의된
+# 라벨일 때만** 링크이므로, 정의를 모은 뒤에 거른다.
+_LINK_REFERENCE = re.compile(r"(?<!!)\[(?P<text>[^\]]*)\](?:\[(?P<label>[^\]]*)\])?")
+
 _LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
 # Setext 밑줄은 **문단** 위에서만 제목이다. 목록 항목 · 인용 · 표의 행은 문단이
@@ -48,12 +65,19 @@ def prose_lines(text: str) -> list[str]:
     지우지 않고 빈 줄을 남기는 것은 **문단 경계가 살아 있어야** 하기 때문이다 —
     `문단` · 펜스 · `---` 를 그냥 이어 붙이면 없던 Setext 제목이 생긴다.
 
-    코드로 보는 것은 셋이다: 펜스 블록, HTML 주석, 그리고 **4칸 이상 들여쓴
-    블록**(CommonMark 의 indented code block). 마지막 것은 목록 안에서는 코드가
-    아니라 이어지는 줄이므로, 목록 문맥에서는 세지 않는다.
+    코드로 보는 것은 넷이다: 펜스 블록, HTML 주석, **4칸 이상 들여쓴 블록**
+    (CommonMark 의 indented code block), 그리고 **Markdown 이 파싱되지 않는 원시
+    HTML 블록**(`<pre>` · `<script>` · `<style>` · `<textarea>`). 셋째는 목록
+    안에서는 코드가 아니라 이어지는 줄이므로 목록 문맥에서 세지 않는다.
+
+    **안 보는 것** — `<details>` · `<div>` 같은 나머지 HTML 블록과 인라인 `<sub>`
+    는 그대로 읽는다. 그 안의 Markdown 은 실제로 파싱되기 때문이고(`PRD.md` 가
+    `<sub>` 안에 진짜 링크를 든다), 그래서 **여는 태그와 닫는 태그 사이에 Markdown
+    을 숨기는 다른 길은 여전히 열려 있다.**
     """
     out: list[str] = []
     open_fence: str | None = None
+    open_html: re.Pattern[str] | None = None
     in_comment = False
 
     for line in text.splitlines():
@@ -81,9 +105,24 @@ def prose_lines(text: str) -> list[str]:
             out.append("")
             continue
 
+        if open_html is not None:
+            # type 1 블록은 **빈 줄이 아니라 닫는 태그**에서 끝난다.
+            if open_html.search(line):
+                open_html = None
+            out.append("")
+            continue
+
         fence = _FENCE.match(line)
         if fence is not None:
             open_fence = fence.group("fence")
+            out.append("")
+            continue
+
+        raw = _HTML_RAW_OPEN.match(line)
+        if raw is not None:
+            close = re.compile(rf"</{raw.group('tag')}\s*>", re.IGNORECASE)
+            if not close.search(line):
+                open_html = close
             out.append("")
             continue
 
@@ -101,7 +140,11 @@ def prose_lines(text: str) -> list[str]:
 def _indented_code(lines: list[str]) -> set[int]:
     """들여쓴 코드 블록으로 읽어야 하는 줄 번호.
 
-    블록은 **빈 줄 다음의 4칸 들여쓴 줄**에서 열리고 덜 들여쓴 줄에서 닫힌다.
+    블록은 **문단을 끊지 못할 뿐** 어디서나 열린다 — 빈 줄 다음, **문서의 첫
+    줄**, 그리고 제목처럼 문단이 아닌 블록 다음이다. 「빈 줄 다음」만 보면 문서를
+    통째로 4칸 들여써 코드로 만들어도 첫 줄에서 상태가 열리지 않아 **그 뒤가 전부
+    산문으로 샌다.**
+
     바로 앞의 내용이 목록이면 그 들여쓰기는 코드가 아니라 **이어지는 줄**이므로
     열지 않는다 — 그쪽을 코드로 지우면 멀쩡한 목록 본문이 사라진다.
     """
@@ -118,7 +161,7 @@ def _indented_code(lines: list[str]) -> set[int]:
                 marked.add(index)
                 continue
             in_code = False
-        elif indented and index > 0 and not lines[index - 1].strip():
+        elif indented and _opens_indented_code(lines, index):
             in_list = previous_content is not None and (
                 _LIST_ITEM.match(previous_content) is not None
                 or previous_content.startswith("  ")
@@ -130,6 +173,21 @@ def _indented_code(lines: list[str]) -> set[int]:
         previous_content = line
 
     return marked
+
+
+def _opens_indented_code(lines: list[str], index: int) -> bool:
+    """그 줄에서 들여쓴 코드 블록이 열릴 수 있는가.
+
+    CommonMark 에서 들여쓴 코드는 **문단을 끊지 못한다.** 그것이 유일한 제약이고,
+    문서의 첫 줄이나 제목 다음은 끊을 문단이 없으므로 열린다.
+    """
+    if index == 0:
+        return True
+    previous = lines[index - 1]
+    if not previous.strip():
+        return True
+    # 제목은 문단이 아니라 제 나름의 블록이라, 바로 다음 줄에서 코드가 열린다.
+    return _ATX.match(previous) is not None
 
 
 def headings(text: str) -> list[str]:
@@ -196,12 +254,34 @@ def link_targets(text: str) -> list[str]:
 
     코드 블록 · 주석 · 코드 span 안의 것과 이미지는 뺀다 — **화면에서 눌러 갈 수
     있는 것**만이 닿을 길이기 때문이다.
+
+    **참조형(`[사양][schema]` 와 `[schema]: docs/schema.md`)도 센다.** 화면에서
+    인라인 링크와 똑같이 눌리므로, 안 세면 평범한 Markdown 정리가 CI 를 막는다.
+    `[label]` 한 꼴만 쓴 것은 **정의된 라벨일 때만** 링크다 — 정의가 없으면 그냥
+    대괄호 글자이므로 세지 않는다.
     """
+    lines = [_INLINE_CODE.sub("", line) for line in prose_lines(text)]
+    definitions: dict[str, str] = {}
+    for line in lines:
+        found = _LINK_DEFINITION.match(line)
+        if found is not None:
+            definitions.setdefault(
+                found.group("label").strip().lower(), found.group("target")
+            )
+
     out: list[str] = []
-    for line in prose_lines(text):
-        for target in _LINK.findall(_INLINE_CODE.sub("", line)):
+    for line in lines:
+        if _LINK_DEFINITION.match(line) is not None:
+            # 정의 줄 자체는 사용이 아니다 — 세면 `[label]` 을 링크로 두 번 센다.
+            continue
+        for target in _LINK.findall(line):
             target = target.strip()
             if target:
                 # `(경로 "제목")` 형태에서 경로만 든다.
+                out.append(target.split()[0])
+        for found in _LINK_REFERENCE.finditer(_LINK.sub("", line)):
+            label = found.group("label") or found.group("text")
+            target = definitions.get(label.strip().lower())
+            if target:
                 out.append(target.split()[0])
     return out

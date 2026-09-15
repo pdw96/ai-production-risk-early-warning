@@ -93,3 +93,41 @@ def test_only_clickable_links_count_as_a_path() -> None:
 def test_indented_continuation_of_a_list_is_not_code() -> None:
     """목록 안의 들여쓰기는 코드가 아니라 이어지는 줄이다 — 그 링크는 눌린다."""
     assert link_targets("- 항목\n\n    [사양](docs/schema.md)\n") == ["docs/schema.md"]
+
+
+def test_indented_code_opens_where_there_is_no_paragraph_to_interrupt() -> None:
+    """「빈 줄 다음」만 보면 **문서 전체를 코드로 만들어도** 첫 줄에서 안 열린다.
+
+    그러면 뒤의 들여쓴 줄이 전부 산문으로 새서, README 를 통째로 4칸 들여써
+    링크를 하나도 누를 수 없게 해 놓아도 도달성 검사가 초록이 된다.
+    """
+    assert link_targets("    [사양](docs/schema.md)\n    [범위](PRD.md)\n") == []
+    assert link_targets("# 제목\n    [사양](docs/schema.md)\n") == []
+
+
+def test_reference_links_are_a_path_too() -> None:
+    """참조형도 화면에서는 똑같이 눌린다 — 안 세면 멀쩡한 정리가 CI 를 막는다."""
+    assert link_targets("[사양][schema]\n\n[schema]: docs/schema.md\n") == [
+        "docs/schema.md"
+    ]
+    assert link_targets("[schema][]\n\n[schema]: docs/schema.md\n") == ["docs/schema.md"]
+
+    # 정의가 없으면 그냥 대괄호 글자다.
+    assert link_targets("[사양][없는라벨]\n") == []
+
+
+def test_raw_html_blocks_hide_their_link_syntax() -> None:
+    """`<pre>` 안의 `[사양](x)` 는 글자로 찍힌다 — 눌러 갈 수 없다."""
+    assert link_targets("<pre>\n[사양](docs/schema.md)\n</pre>\n") == []
+
+
+def test_markdown_inside_other_html_still_counts() -> None:
+    """**여기가 넓히면 깨지는 자리다.** `<sub>`·`<details>` 안은 파싱된다.
+
+    `PRD.md` 가 `<sub>` 안에 진짜 링크를 들고 있어서, 원시 HTML 을 넓게 잡으면
+    멀쩡한 닿을 길이 사라진다.
+    """
+    assert link_targets("<sub>[사양](docs/schema.md)</sub>\n") == ["docs/schema.md"]
+    assert link_targets(
+        "<details>\n<summary>x</summary>\n\n[사양](docs/schema.md)\n\n</details>\n"
+    ) == ["docs/schema.md"]
