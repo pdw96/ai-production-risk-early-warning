@@ -2,12 +2,12 @@
 
 가상의 소재 제조공장 데이터로 도는 생산 리스크 조기경보 MVP. Next.js 화면 →
 FastAPI → 서비스 계층 순수 함수 → SQLAlchemy(PostgreSQL, 로컬 기본값은 SQLite).
-무엇을 만드는지는 `README.md` 에, 어디까지 만드는지는 `PRD.md` 에 있다. 이 파일은
-**어떻게 일하는지**만 적는다.
+이 파일은 **어떻게 일하는지**만 적는다.
 
-**머지 전에 무엇을 보고 통과시키는지는 `CHECKLIST.md` 가 든다.** 여기에 베껴 오지
-않는다 — 두 곳에 적으면 한쪽이 조용히 낡는다. 다만 **가리키는 줄이 없으면 그 파일은
-없는 것과 같으므로** 이 줄은 남는다.
+무엇을 만드는지는 **목적별로 갈라져** 있다 — 어디까지 만드는지는 `PRD.md`, 엔티티와
+관계는 `docs/schema.md`, 무엇을 보고 위험이라 하는지는 `docs/decision-rules.md`,
+돌리는 법과 보이는 것은 `README.md`, 머지 전에 보는 것은 `CHECKLIST.md` 다.
+어느 것이 어디 사는지는 `PRD.md` 첫머리의 표가 든다.
 
 ## 명령
 
@@ -73,7 +73,8 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 | 고치면 | 깨진다 | 무엇을 보나 |
 | --- | --- | --- |
 | `.github/workflows/cloud-validation.yml` | `test_ci_workflow.py` | 접속 주소와 서비스 컨테이너의 짝, CI 와 compose 의 엔진 판, 두 엔진 실행, 운영 비밀번호 유입 |
-| `README.md` 의 절 제목 | `test_readme.py` | 있어야 하는 절이 있는지 |
+| `README.md` 의 절 제목 | `test_readme.py` | 돌리는 법의 절이 있는지, 사양을 든 문서를 가리키는지 |
+| `PRD.md`·`docs/schema.md`·`docs/decision-rules.md` | `test_docs.py` | 무엇이 어느 파일에 사는지, 같은 절 제목이 두 곳에 생기지 않았는지 |
 | 시드(`app/seed.py`)·판정 규칙 | `test_golden_cases.py` | 시드를 통과한 실제 값 전개를 통째로 |
 | 마이그레이션·제약 | `test_migrations.py`·`test_live_engine.py` | 앞은 방언별 SQL 문자열, 뒤는 **실제 엔진에서 무는지** |
 
@@ -153,7 +154,7 @@ CI 와 `backend/Dockerfile` 이 그 판으로 돈다 — **판 번호는 위 표
 - 라운드 계기판 https://claude.ai/code/artifact/7999cda4-de48-4714-b469-92b152be51a5
 - 지금 도는 파이프라인 https://claude.ai/code/artifact/d1ac383f-df1f-4116-bf7e-8d256df2bd17
 - 조기경보 ERP 설계도 https://claude.ai/code/artifact/7c4ef005-f388-459e-ae6c-87041b1b7745
-  **1단계(ERP Setup)의 시작점**이다 — 무엇을 세울지는 여기서 정한다(`README.md` 의 「만드는 순서」가 이 줄을 가리킨다).
+  **1단계(ERP Setup)의 시작점**이다 — 무엇을 세울지는 여기서 정한다(`PRD.md` 의 「만드는 순서」가 이 줄을 가리킨다).
   **1단계를 열 때 이것을 프로젝트·마일스톤·이슈로 쪼갠다.** 아티팩트 안의 그림은 진척을 세지 못하기 때문이다 —
   쪼개기 전에는 1단계가 시작되지 않는다.
 
