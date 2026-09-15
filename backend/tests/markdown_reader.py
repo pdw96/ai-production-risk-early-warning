@@ -35,6 +35,12 @@ _COMMENT = re.compile(r"<!--.*?-->")
 
 _LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
+# Setext 밑줄은 **문단** 위에서만 제목이다. 목록 항목 · 인용 · 표의 행은 문단이
+# 아니라 제 나름의 블록이고, 그 다음 줄의 `---` 는 그 블록을 닫는 수평선이다 —
+# 문단으로 세면 `- 항목` 이나 `| 1 | 2 |` 가 통째로 제목이 되어, 그 자리에서
+# 절이 잘린다(`section()` 이 그 제목을 절의 끝으로 읽는다).
+_NOT_PARAGRAPH = re.compile(r"^ {0,3}(?:>|\|)")
+
 
 def prose_lines(text: str) -> list[str]:
     """코드와 주석을 **빈 줄로 바꾼** 같은 길이의 줄 목록을 돌려준다.
@@ -155,7 +161,12 @@ def section(text: str, title: str) -> str:
 
 def _heading_spans(lines: list[str]) -> list[tuple[int, int, str]]:
     """(줄 번호, 깊이, 제목 글자). Setext 는 **문단 위에서만** 제목이다 —
-    빈 줄이나 다른 제목 위의 `---` 는 수평선이므로 세지 않는다.
+    빈 줄 · 다른 제목 · 목록 · 인용 · 표의 행 위의 `---` 는 수평선이므로 세지
+    않는다.
+
+    **문단인지는 그 줄 하나로만 본다.** 인용 안에서 `> 문단` 다음 줄에 `> ---` 로
+    적은 제목은 여기서 잡히지 않는다 — 이 저장소의 문서가 아직 그렇게 쓰지 않아서
+    두는 공백이고, 쓰게 되면 그 제목이 조용히 빠진다.
     """
     out: list[tuple[int, int, str]] = []
 
@@ -172,6 +183,8 @@ def _heading_spans(lines: list[str]) -> list[tuple[int, int, str]]:
         if not previous.strip():
             continue
         if _ATX.match(previous) is not None or _SETEXT.match(previous) is not None:
+            continue
+        if _NOT_PARAGRAPH.match(previous) is not None or _LIST_ITEM.match(previous):
             continue
         out.append((index - 1, 1 if setext.group(1)[0] == "=" else 2, previous.strip()))
 
