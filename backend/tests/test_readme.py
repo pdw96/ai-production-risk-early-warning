@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.markdown_reader import link_targets
+from tests.markdown_reader import headings, link_targets, section
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -10,19 +10,39 @@ def test_readme_documents_local_run() -> None:
 
     사양(범위·데이터 모델·판정 규칙)은 목적이 달라 옆 파일로 나갔다 —
     test_docs.py 가 그쪽을 본다.
+
+    **여기 든 것은 성격이 둘이고, 그래서 보는 방법도 둘이다.** 한 반복문에 묶어
+    글자 포함으로 보면 절 제목이 지워져도 본문·링크·표에 남은 같은 글자가 대신
+    맞는다. 반대로 전부 제목으로 요구하면 **애초에 제목이 아닌 것**이 빨개진다 —
+    업무 모듈 일곱은 「화면 안내」 절의 **표 행**이지 절이 아니다.
     """
     content = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-    required_sections = (
+    # ① 절은 제목으로 본다. `Docker` 가 아니라 `Docker로 실행` 인 것이 그 차이다 —
+    #    부분 문자열로 보면 제목이 무엇인지 검사가 알지 못한다.
+    present = headings(content)
+    for title in (
         "아키텍처",
         "샘플 데이터 초기화",
         "사전 요구사항",
         "백엔드 설치·실행",
         "프론트엔드 설치·실행",
-        "Docker",
+        "Docker로 실행",
         "화면 안내",
         "테스트와 종단 간 검증",
-        # 화면 안내가 드는 업무 모듈. 화면이 사라지면 여기가 먼저 빨개진다.
+    ):
+        assert title in present, title
+
+    # ② 업무 모듈은 제목이 아니라 그 절의 **표 행**이다. 절로 좁히는 것만으로는
+    #    모자란다 — 절을 설명하는 산문에도 같은 낱말이 있어서, 화면이 표에서
+    #    사라져도 그쪽이 대신 맞는다(실제로 행을 지워 확인했다). 행만 본다.
+    rows = [
+        line
+        for line in section(content, "화면 안내").splitlines()
+        if line.lstrip().startswith("|")
+    ]
+    screens = "\n".join(rows)
+    for module in (
         "기준정보관리",
         "구매관리",
         "재고관리",
@@ -30,9 +50,8 @@ def test_readme_documents_local_run() -> None:
         "영업관리",
         "품질관리",
         "창고별 재고",
-    )
-    for section in required_sections:
-        assert section in content, section
+    ):
+        assert module in screens, module
 
 
 def test_readme_points_at_the_documents_that_hold_the_spec() -> None:
