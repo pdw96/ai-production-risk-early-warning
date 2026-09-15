@@ -121,6 +121,24 @@ def test_raw_html_blocks_hide_their_link_syntax() -> None:
     assert link_targets("<pre>\n[사양](docs/schema.md)\n</pre>\n") == []
 
 
+def test_code_inside_a_list_is_measured_from_the_content_column() -> None:
+    """목록 안의 코드는 **그 항목의 내용 열**부터다 — `- 항목` 이면 6칸.
+
+    4칸으로 고정하면 둘이 한꺼번에 어긋난다: 4칸은 이어지는 줄인데 지우고,
+    6칸은 코드인데 남긴다. 아래 둘이 그 두 자리다.
+    """
+    assert link_targets("- 항목\n\n      [사양](docs/schema.md)\n") == []
+    assert link_targets("- 항목\n\n    [사양](docs/schema.md)\n") == ["docs/schema.md"]
+
+
+def test_reference_labels_match_by_the_commonmark_rule() -> None:
+    """속 공백을 접고 case folding 해서 맞춘다 — 글자 그대로 비교하지 않는다."""
+    assert link_targets("[품목 규칙]\n\n[품목   규칙]: docs/schema.md\n") == [
+        "docs/schema.md"
+    ]
+    assert link_targets("[Schema]\n\n[SCHEMA]: docs/schema.md\n") == ["docs/schema.md"]
+
+
 def test_indented_code_opens_after_a_setext_heading_too() -> None:
     """Setext 도 제목이다 — 그 밑줄 다음 줄에서 코드가 열린다."""
     assert link_targets("제목\n=====\n    [사양](docs/schema.md)\n") == []

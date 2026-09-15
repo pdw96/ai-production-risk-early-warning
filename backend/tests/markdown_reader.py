@@ -167,34 +167,49 @@ def _indented_code(lines: list[str]) -> set[int]:
     통째로 4칸 들여써 코드로 만들어도 첫 줄에서 상태가 열리지 않아 **그 뒤가 전부
     산문으로 샌다.**
 
-    바로 앞의 내용이 목록이면 그 들여쓰기는 코드가 아니라 **이어지는 줄**이므로
-    열지 않는다 — 그쪽을 코드로 지우면 멀쩡한 목록 본문이 사라진다.
+    **몇 칸부터 코드인지는 자리마다 다르다** — `_code_column` 이 든다.
     """
     marked: set[int] = set()
     in_code = False
+    threshold = 4
     previous_content: str | None = None
 
     for index, line in enumerate(lines):
         if not line.strip():
             continue
-        indented = len(line) - len(line.lstrip(" ")) >= 4
+        indent = len(line) - len(line.lstrip(" "))
         if in_code:
-            if indented:
+            if indent >= threshold:
                 marked.add(index)
                 continue
             in_code = False
-        elif indented and _opens_indented_code(lines, index):
-            in_list = previous_content is not None and (
-                _LIST_ITEM.match(previous_content) is not None
-                or previous_content.startswith("  ")
-            )
-            if not in_list:
+        elif _opens_indented_code(lines, index):
+            threshold = _code_column(previous_content)
+            if indent >= threshold:
                 in_code = True
                 marked.add(index)
                 continue
         previous_content = line
 
     return marked
+
+
+def _code_column(previous_content: str | None) -> int:
+    """들여쓴 코드가 시작되는 열 — **목록 안에서는 그 항목의 내용 열이 기준이다.**
+
+    `- 항목` 의 내용은 2칸 뒤에서 시작하므로 그 목록 안의 코드 블록은 **6칸**이다.
+    4칸으로 고정해 두면 두 가지가 한꺼번에 어긋난다 — 4칸은 코드가 아니라 목록의
+    **이어지는 줄**인데 코드로 지우고(거짓 빨강), 6칸은 코드인데 「목록이니까」라는
+    이유로 산문에 남긴다(거짓 초록). 앞엣것을 막으려고 목록이면 통째로 열지 않던
+    자리가 뒤엣것을 들이고 있었다. **열을 세면 둘 다 맞는다.**
+    """
+    if previous_content is None:
+        return 4
+    item = _LIST_ITEM.match(previous_content)
+    if item is not None:
+        return item.end() + 4
+    # 이어지는 줄이 이미 들여써 있으면 그 들여쓰기가 내용 열이다.
+    return len(previous_content) - len(previous_content.lstrip(" ")) + 4
 
 
 def _opens_indented_code(lines: list[str], index: int) -> bool:
@@ -309,7 +324,7 @@ def link_targets(text: str) -> list[str]:
             continue
         defined_at.add(index)
         definitions.setdefault(
-            found.group("label").strip().lower(), _destination(found.group("target"))
+            _normalize_label(found.group("label")), _destination(found.group("target"))
         )
 
     out: list[str] = []
@@ -323,10 +338,20 @@ def link_targets(text: str) -> list[str]:
                 out.append(target)
         for found in _LINK_REFERENCE.finditer(_LINK.sub("", line)):
             label = found.group("label") or found.group("text")
-            target = definitions.get(label.strip().lower())
+            target = definitions.get(_normalize_label(label))
             if target:
                 out.append(target)
     return out
+
+
+def _normalize_label(label: str) -> str:
+    """참조 라벨을 맞추는 규칙 — **속 공백을 접고 case folding 한다.**
+
+    `[품목 규칙]` 과 `[품목   규칙]:` 은 CommonMark 에서 같은 라벨이다. 글자 그대로
+    비교하면 정의를 못 찾아 **화면에서는 눌리는 링크가 없는 것으로 세어진다** —
+    닿을 길이 멀쩡한데 검사가 막는 쪽이라 급하다.
+    """
+    return " ".join(label.split()).casefold()
 
 
 def _defines_here(lines: list[str], index: int) -> bool:
