@@ -24,8 +24,9 @@ _ATX = re.compile(r"^ {0,3}(?P<level>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+)?[ \t
 # 때문에 여기 안 걸린다.
 _SETEXT = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 
-# 이미지(`![대체글](경로)`)는 링크가 아니다 — 앞의 `!` 를 보고 뺀다.
-_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+# 이미지(`![대체글](경로)`)는 링크가 아니다 — 앞의 `!` 를 보고 뺀다. 백슬래시로
+# 벗어난 `\[` 도 링크가 아니라 **글자 그대로** 찍히므로 같이 뺀다.
+_LINK = re.compile(r"(?<![!\\])\[[^\]]*\]\(([^)]+)\)")
 
 # 코드 span 은 **같은 개수의 백틱**으로 열고 닫는다. `` ``[사양](x)`` `` 처럼
 # 둘 이상으로 감싼 것을 한 쌍씩만 지우면 안쪽 링크 문법이 그대로 남는다.
@@ -48,7 +49,9 @@ _LINK_DEFINITION = re.compile(r"^ {0,3}\[(?P<label>[^\]]+)\]:\s*(?P<target>\S+)"
 
 # 참조형 사용(`[보이는 글][label]` · `[label][]` · `[label]`). 마지막 꼴은 **정의된
 # 라벨일 때만** 링크이므로, 정의를 모은 뒤에 거른다.
-_LINK_REFERENCE = re.compile(r"(?<!!)\[(?P<text>[^\]]*)\](?:\[(?P<label>[^\]]*)\])?")
+_LINK_REFERENCE = re.compile(
+    r"(?<![!\\])\[(?P<text>[^\]]*)\](?:\[(?P<label>[^\]]*)\])?"
+)
 
 _LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
@@ -113,7 +116,7 @@ def prose_lines(text: str) -> list[str]:
             continue
 
         fence = _FENCE.match(line)
-        if fence is not None:
+        if fence is not None and _opens_fence(fence):
             open_fence = fence.group("fence")
             out.append("")
             continue
@@ -135,6 +138,15 @@ def prose_lines(text: str) -> list[str]:
     for index in _indented_code(out):
         out[index] = ""
     return out
+
+
+def _opens_fence(fence: re.Match[str]) -> bool:
+    """여는 펜스로 볼 수 있는가 — **백틱 펜스의 정보 문자열에는 백틱이 못 온다.**
+
+    안 보면 ``` ``` bad`info ``` 같은 줄에서 블록이 열려, **그 뒤의 진짜 제목과
+    링크가 통째로 코드로 지워진다.** 물결 펜스에는 이 제한이 없다.
+    """
+    return not (fence.group("fence")[0] == "`" and "`" in fence.group("info"))
 
 
 def _indented_code(lines: list[str]) -> set[int]:
@@ -187,7 +199,8 @@ def _opens_indented_code(lines: list[str], index: int) -> bool:
     if not previous.strip():
         return True
     # 제목은 문단이 아니라 제 나름의 블록이라, 바로 다음 줄에서 코드가 열린다.
-    return _ATX.match(previous) is not None
+    # Setext 는 그 **밑줄**이 직전 줄이므로 밑줄도 함께 본다.
+    return _ATX.match(previous) is not None or _SETEXT.match(previous) is not None
 
 
 def headings(text: str) -> list[str]:
@@ -261,27 +274,64 @@ def link_targets(text: str) -> list[str]:
     대괄호 글자이므로 세지 않는다.
     """
     lines = [_INLINE_CODE.sub("", line) for line in prose_lines(text)]
+
+    # **참조 정의는 문단을 끊지 못한다.** 문단에 바로 이어 붙은
+    # `[label]: 목적지` 는 정의가 아니라 그 문단의 이어지는 글자이고, 화면에는
+    # 정의도 링크도 아닌 평범한 글자로 찍힌다. 그것을 정의로 세면 뒤의
+    # `[label]` 이 링크가 되어, **진짜 링크가 없는 README 가 통과한다.**
     definitions: dict[str, str] = {}
-    for line in lines:
+    defined_at: set[int] = set()
+    for index, line in enumerate(lines):
         found = _LINK_DEFINITION.match(line)
-        if found is not None:
-            definitions.setdefault(
-                found.group("label").strip().lower(), found.group("target")
-            )
+        if found is None or not _defines_here(lines, index):
+            continue
+        defined_at.add(index)
+        definitions.setdefault(
+            found.group("label").strip().lower(), _destination(found.group("target"))
+        )
 
     out: list[str] = []
-    for line in lines:
-        if _LINK_DEFINITION.match(line) is not None:
+    for index, line in enumerate(lines):
+        if index in defined_at:
             # 정의 줄 자체는 사용이 아니다 — 세면 `[label]` 을 링크로 두 번 센다.
             continue
-        for target in _LINK.findall(line):
-            target = target.strip()
+        for raw in _LINK.findall(line):
+            target = _destination(raw)
             if target:
-                # `(경로 "제목")` 형태에서 경로만 든다.
-                out.append(target.split()[0])
+                out.append(target)
         for found in _LINK_REFERENCE.finditer(_LINK.sub("", line)):
             label = found.group("label") or found.group("text")
             target = definitions.get(label.strip().lower())
             if target:
-                out.append(target.split()[0])
+                out.append(target)
     return out
+
+
+def _defines_here(lines: list[str], index: int) -> bool:
+    """그 줄이 참조 **정의**인가 — 문단에 이어 붙은 것은 정의가 아니다."""
+    if index == 0:
+        return True
+    previous = lines[index - 1]
+    if not previous.strip():
+        return True
+    # 제목 다음과 정의가 잇따르는 자리에서는 끊을 문단이 없다.
+    return (
+        _ATX.match(previous) is not None
+        or _SETEXT.match(previous) is not None
+        or _LINK_DEFINITION.match(previous) is not None
+    )
+
+
+def _destination(raw: str) -> str:
+    """목적지 한 칸만 든다 — `(경로 "제목")` 에서 경로만, `<경로>` 는 꺾쇠를 벗겨서.
+
+    꺾쇠는 유효하고 **눌리는** 표기다. 그대로 두면 `<docs/schema.md>` 라는 없는
+    경로가 되어, 멀쩡한 표기 변경이 CI 를 막는다.
+    """
+    raw = raw.strip()
+    if raw.startswith("<"):
+        end = raw.find(">")
+        if end != -1:
+            return raw[1:end].strip()
+    parts = raw.split()
+    return parts[0] if parts else ""

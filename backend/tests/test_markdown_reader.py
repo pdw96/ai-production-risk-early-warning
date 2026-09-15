@@ -121,6 +121,43 @@ def test_raw_html_blocks_hide_their_link_syntax() -> None:
     assert link_targets("<pre>\n[사양](docs/schema.md)\n</pre>\n") == []
 
 
+def test_indented_code_opens_after_a_setext_heading_too() -> None:
+    """Setext 도 제목이다 — 그 밑줄 다음 줄에서 코드가 열린다."""
+    assert link_targets("제목\n=====\n    [사양](docs/schema.md)\n") == []
+
+
+def test_a_definition_cannot_interrupt_a_paragraph() -> None:
+    """문단에 이어 붙은 `[label]: 목적지` 는 정의가 아니라 그 문단의 글자다.
+
+    정의로 세면 뒤의 `[label]` 이 링크가 되어, **화면에 누를 것이 없는 README**
+    가 도달성 검사를 통과한다.
+    """
+    assert link_targets("문단\n[schema]: docs/schema.md\n\n[schema]\n") == []
+
+    # 빈 줄 뒤의 같은 줄은 진짜 정의다 — 여기까지 막으면 멀쩡한 문서가 빨개진다.
+    assert link_targets("문단\n\n[schema]: docs/schema.md\n\n[schema]\n") == [
+        "docs/schema.md"
+    ]
+
+
+def test_angle_bracketed_destinations_are_a_path() -> None:
+    """`<경로>` 는 유효하고 **눌리는** 표기다 — 꺾쇠째 읽으면 없는 경로가 된다."""
+    assert link_targets("[사양](<docs/schema.md>)\n") == ["docs/schema.md"]
+
+
+def test_a_backtick_fence_cannot_carry_a_backtick_info_string() -> None:
+    """그 줄은 펜스를 **열지 않는다** — 열면 뒤의 진짜 제목이 코드로 지워진다."""
+    assert headings("``` bad`info\n# 진짜 제목\n") == ["진짜 제목"]
+
+    # 물결 펜스에는 그 제한이 없다.
+    assert headings("~~~ bad`info\n# 숨은 제목\n~~~\n") == []
+
+
+def test_an_escaped_bracket_is_not_a_link() -> None:
+    """`\\[사양](x)` 는 글자 그대로 찍힌다 — 눌러 갈 수 없다."""
+    assert link_targets("\\[사양](docs/schema.md)\n") == []
+
+
 def test_markdown_inside_other_html_still_counts() -> None:
     """**여기가 넓히면 깨지는 자리다.** `<sub>`·`<details>` 안은 파싱된다.
 
