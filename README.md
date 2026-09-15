@@ -197,7 +197,7 @@ python -m alembic revision --autogenerate -m "설명"   # 모델을 고친 뒤
 - Windows PowerShell
 - Python 3.12 — CI와 컨테이너 이미지가 쓰는 판입니다. 3.11에서는 골든 케이스의 완료예정일이 하루 어긋납니다.
 - Node.js 20 이상 및 npm
-- Docker로 실행할 경우: Docker Engine과 Compose v2 이상 (위 Python·Node 설치는 불필요)
+- Docker로 실행할 경우: **Docker Engine 28.0 이상**과 Compose v2 이상 (위 Python·Node 설치는 불필요). 판을 못 박는 것은 `compose.yaml` 이 포트를 `127.0.0.1` 에 묶어 **로그인 없는 API 가 밖에서 닿지 않게** 하기 때문입니다 — 28.0 미만 Engine 에서는 로컬호스트로 게시한 포트도 같은 네트워크의 다른 호스트에서 닿을 수 있다고 알려져 있어, 그 경계가 서지 않습니다.
 
 ## 백엔드 설치·실행
 
