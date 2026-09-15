@@ -131,6 +131,25 @@ def test_code_inside_a_list_is_measured_from_the_content_column() -> None:
     assert link_targets("- 항목\n\n    [사양](docs/schema.md)\n") == ["docs/schema.md"]
 
 
+def test_the_content_column_follows_the_nesting_depth() -> None:
+    """중첩 목록의 내용 열은 **그 마커가 앉은 칸**에서 센다.
+
+    최상위 규칙(`{0,3}`)으로 중첩 마커를 찾으면 못 잡고 들여쓰기+4 로 떨어져
+    내용 열을 실제보다 얕게 잡는다. 그러면 **이어지는 줄이 코드로 지워져**
+    멀쩡한 문서의 링크가 없는 것이 된다 — 검사를 막는 방향이라 급하다.
+    """
+    # `    - 항목` 은 내용 열이 6이라 코드는 10칸부터다. 8칸은 이어지는 줄이다.
+    assert link_targets("- 바깥\n\n    - 항목\n\n        [사양](docs/schema.md)\n") == [
+        "docs/schema.md"
+    ]
+
+    # 세 단 중첩. `        - 셋` 은 내용 열이 10이라 12칸은 이어지는 줄이고,
+    # 14칸이라야 비로소 코드다.
+    three = "- 하나\n\n    - 둘\n\n        - 셋\n\n{indent}[사양](docs/schema.md)\n"
+    assert link_targets(three.format(indent=" " * 12)) == ["docs/schema.md"]
+    assert link_targets(three.format(indent=" " * 14)) == []
+
+
 def test_reference_labels_match_by_the_commonmark_rule() -> None:
     """속 공백을 접고 case folding 해서 맞춘다 — 글자 그대로 비교하지 않는다."""
     assert link_targets("[품목 규칙]\n\n[품목   규칙]: docs/schema.md\n") == [

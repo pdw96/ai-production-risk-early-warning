@@ -65,6 +65,13 @@ _LINK_REFERENCE = re.compile(
 
 _LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
+# **내용 열을 잴 때만** 쓰는 목록 마커 — 앞 공백을 몇 칸이든 받는다. 위의 `{0,3}`
+# 은 **최상위** 목록의 규칙이라 `    - 항목` 같은 중첩 마커를 못 잡고, 그러면
+# `_code_column` 이 들여쓰기+4 로 떨어져 **내용 열을 실제보다 얕게** 잡는다.
+# 그 자리는 `_heading_spans` 의 Setext 판정과 뜻이 다르므로 **정규식을 나눈다** —
+# 거기서는 최상위 규칙이 맞고, 넓히면 깊이 들여쓴 줄까지 목록으로 읽는다.
+_LIST_CONTENT = re.compile(r"^ *(?:[-*+]|\d{1,9}[.)])[ \t]+")
+
 # Setext 밑줄은 **문단** 위에서만 제목이다. 목록 항목 · 인용 · 표의 행은 문단이
 # 아니라 제 나름의 블록이고, 그 다음 줄의 `---` 는 그 블록을 닫는 수평선이다 —
 # 문단으로 세면 `- 항목` 이나 `| 1 | 2 |` 가 통째로 제목이 되어, 그 자리에서
@@ -197,7 +204,8 @@ def _indented_code(lines: list[str]) -> set[int]:
 def _code_column(previous_content: str | None) -> int:
     """들여쓴 코드가 시작되는 열 — **목록 안에서는 그 항목의 내용 열이 기준이다.**
 
-    `- 항목` 의 내용은 2칸 뒤에서 시작하므로 그 목록 안의 코드 블록은 **6칸**이다.
+    `- 항목` 의 내용은 2칸 뒤에서 시작하므로 그 목록 안의 코드 블록은 **6칸**이고,
+    한 단 더 들어간 `    - 항목` 이면 내용 열이 6이라 코드는 **10칸**부터다.
     4칸으로 고정해 두면 두 가지가 한꺼번에 어긋난다 — 4칸은 코드가 아니라 목록의
     **이어지는 줄**인데 코드로 지우고(거짓 빨강), 6칸은 코드인데 「목록이니까」라는
     이유로 산문에 남긴다(거짓 초록). 앞엣것을 막으려고 목록이면 통째로 열지 않던
@@ -205,7 +213,7 @@ def _code_column(previous_content: str | None) -> int:
     """
     if previous_content is None:
         return 4
-    item = _LIST_ITEM.match(previous_content)
+    item = _LIST_CONTENT.match(previous_content)
     if item is not None:
         return item.end() + 4
     # 이어지는 줄이 이미 들여써 있으면 그 들여쓰기가 내용 열이다.
