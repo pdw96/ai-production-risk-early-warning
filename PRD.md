@@ -73,8 +73,13 @@
 
 ## 제약
 
-- **스택** — 판 번호는 여기 적지 않는다. `CLAUDE.md` 의 표제(「파이썬은 3.12 다」)
-  와 `backend/requirements.txt` · `frontend/package.json` 이 든다.
+- **스택** — 판 번호는 여기 적지 않는다. 다만 **의존성 판과 런타임 판은 사는
+  곳이 다르다.** 의존성은 `backend/requirements.txt` 와 `frontend/package.json`
+  이 들고, 런타임은 파이썬이 `CLAUDE.md` 의 표제(「파이썬은 3.12 다」), 노드가
+  `README.md` 의 사전 요구사항(최소 판)과 `frontend/Dockerfile` · CI 워크플로
+  (**실제로 도는 판** — 22)다. **`frontend/package.json` 에는 `engines` 가
+  없다**(실측 2026-09-15) — 없는 것을 가리키면 고치러 간 사람이 빈손으로
+  돌아온다.
 - **호스팅** — 로컬 · Docker Compose · GitHub Actions. 그 밖은 없다.
 - **외부 API — 없다.** 셀 쿼터의 대상이 없다. 의존성 어디에도 외부 서비스 호출이
   없는 것이 이 값을 지키는 방법이고, 하나 들이는 순간 이 줄이 거짓이 된다.
