@@ -88,19 +88,33 @@ def test_schema_document_holds_entities_and_defers_to_code() -> None:
 
 
 def test_decision_rules_document_holds_the_calculations() -> None:
-    """무엇을 보고 위험이라 하는지가 여기 산다."""
+    """무엇을 보고 위험이라 하는지가 여기 산다.
+
+    **글자가 아니라 제목으로 본다** — PRD 쪽이 먼저 밟은 자리다. 포함 여부만 보면
+    `## 완제품 로트와 출하검사` 를 지워도 앞선 상호참조 링크에 남은 같은 글자가
+    대신 맞아, **계산 문서의 필수 절이 사라졌는데 회귀 검사가 초록**이 된다.
+    """
     content = _read("docs/decision-rules.md")
 
-    for rule in (
+    present = headings("docs/decision-rules.md")
+    for title in (
         "납기 위험",
-        "14일 안전재고",
-        "LOT/FIFO",
+        "14일 안전재고 — LOT/FIFO 기반",
         "창고와 가용 재고",
         "완제품 로트와 출하검사",
-        "품질관리",
-        "OQC",
+        "품질관리 — IQC·PQC·OQC",
     ):
-        assert rule in content, rule
+        assert title in present, title
+
+    # 제목이 아니라 **본문**이 들어야 하는 것. 절 안에서 찾고, 제목에 이미 있는
+    # 낱말은 쓰지 않는다 — 제목이 대신 맞으면 본문이 비어도 통과하기 때문이다.
+    ordering = section(content, "14일 안전재고 — LOT/FIFO 기반")
+    for term in ("FEFO", "유효기간", "폐기"):
+        assert term in ordering, term
+
+    quality = section(content, "품질관리 — IQC·PQC·OQC")
+    for term in ("검사 대기", "재고 흐름"):
+        assert term in quality, term
 
 
 def test_no_heading_lives_in_two_documents() -> None:
