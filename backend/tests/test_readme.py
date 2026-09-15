@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -36,9 +37,25 @@ def test_readme_documents_local_run() -> None:
 def test_readme_points_at_the_documents_that_hold_the_spec() -> None:
     """가리키는 줄이 없으면 나간 사양은 그냥 사라진 것이 된다.
 
-    README 만 열어 본 사람이 범위·모델·규칙에 닿을 길이 여기다.
+    README 만 열어 본 사람이 범위·모델·규칙에 닿을 길이 여기다. **문자열이 아니라
+    링크를 본다** — 이름이 본문 어딘가에 적혀 있기만 하면 통과하게 두면, 링크를
+    평문으로 바꾸거나 목적지를 `missing/docs/schema.md` 로 잘못 적어도 초록이다.
+    그러면 이 검사가 지키려던 「닿을 길」이 없는데도 통과한다.
     """
-    content = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = REPO_ROOT / "README.md"
+    content = readme.read_text(encoding="utf-8")
+
+    # `[보이는 글](목적지)` 의 목적지만 모은다. 앵커(`#…`)는 떼고, 제목이 붙은
+    # 형태(`(경로 "제목")`)도 받는다.
+    linked: set[str] = set()
+    for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", content):
+        target = target.strip().split()[0]
+        if target.startswith(("http://", "https://", "#", "mailto:")):
+            continue
+        path = (readme.parent / target.split("#", 1)[0]).resolve()
+        linked.add(str(path))
 
     for target in ("PRD.md", "docs/schema.md", "docs/decision-rules.md"):
-        assert target in content, target
+        wanted = (REPO_ROOT / target).resolve()
+        assert str(wanted) in linked, f"{target} 로 가는 링크가 없다"
+        assert wanted.exists(), f"{target} 로 링크는 있는데 그 파일이 없다"

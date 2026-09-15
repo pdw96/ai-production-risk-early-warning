@@ -102,22 +102,47 @@ def test_no_heading_lives_in_two_documents() -> None:
     duplicates: list[str] = []
 
     for name in SPLIT_DOCUMENTS:
-        fenced = False
-        for line in _read(name).splitlines():
-            # 코드 블록 안의 `# 백엔드` 같은 주석은 절 제목이 아니다. 세면 두
-            # 파일이 같은 주석을 쓰는 것만으로 빨개진다.
-            if line.startswith("```"):
-                fenced = not fenced
-                continue
-            if fenced:
-                continue
-            match = re.match(r"^#{1,3} (.+)$", line)
-            if match is None:
-                continue
-            heading = match.group(1).strip()
-            if heading in seen:
+        for heading in _headings(name):
+            # **같은 파일 안의 반복은 중복이 아니다.** 이 검사가 묻는 것은
+            # 「두 파일에 같은 제목이 있는가」이므로, 한 문서가 서로 다른 상위 절
+            # 아래에 같은 하위 제목을 두는 것은 갈라 둔 것이 합쳐진 것이 아니다.
+            if heading in seen and seen[heading] != name:
                 duplicates.append(f"{heading!r}: {seen[heading]} 와 {name}")
-            else:
-                seen[heading] = name
+            seen.setdefault(heading, name)
 
     assert not duplicates, duplicates
+
+
+# 펜스는 **문자와 길이와 들여쓰기**를 함께 본다. ``` 만 보면 세 가지를 놓친다 —
+# `~~~` 펜스, 1~3칸 들여쓴 펜스, 그리고 백틱 넷으로 연 블록 **안의** 백틱 셋이다.
+# 마지막 것은 닫는 펜스가 아닌데 상태를 뒤집어, 코드 안의 `# 백엔드` 를 제목으로
+# 세게 만든다.
+_FENCE = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})")
+
+# 제목은 **H1~H6 전부**다. H3 까지만 보면 문서가 잘게 갈릴 때 `####` 이하의
+# 중복이 조용히 통과하고, 그 순간 이 검사가 막으려던 것이 무력해진다.
+_HEADING = re.compile(r"^ {0,3}(?P<level>#{1,6}) +(?P<text>.+?)\s*#*\s*$")
+
+
+def _headings(name: str) -> list[str]:
+    """코드 블록 밖의 Markdown 제목만 돌려준다."""
+    out: list[str] = []
+    open_fence: str | None = None
+
+    for line in _read(name).splitlines():
+        fence = _FENCE.match(line)
+        if fence is not None:
+            marker = fence.group("fence")
+            if open_fence is None:
+                open_fence = marker
+                continue
+            # 닫는 펜스는 **같은 문자**이고 **연 것보다 짧지 않아야** 한다.
+            if marker[0] == open_fence[0] and len(marker) >= len(open_fence):
+                open_fence = None
+            continue
+        if open_fence is not None:
+            continue
+        match = _HEADING.match(line)
+        if match is not None:
+            out.append(match.group("text").strip())
+    return out
