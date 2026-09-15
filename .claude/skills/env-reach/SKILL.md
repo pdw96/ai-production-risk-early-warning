@@ -300,11 +300,15 @@ ERP`)에서 같은 항목을 쟀다.
 
 | 항목 | 이 환경 | `fleet` 환경 |
 | --- | --- | --- |
-| `gh api user` | `pdw96` · core 15000 | 같다 |
+| 읽기 신원 — 이 환경은 `GET /user`(`curl`), `fleet` 은 `gh api user` | `pdw96` · core 15000 | 같다 |
 | REST 쓰기 작성자 | `claude[bot]` | 같다 |
 | MCP `add_issue_comment` 의 작성자 | — (403 이라 못 씀) | `pdw96` (`performed_via_github_app: Claude`) |
 | **MCP 쓰기 가용성** | **403** | **열려 있다** — 코멘트 · PR 생성 · 리뷰 트리거 전부 성공 |
 | GraphQL | 403 | 같다 |
+
+<sub>**첫 행의 두 칸은 경로가 다르다.** 이 환경에는 `gh` 가 없어(실측 2026-09-15)
+`curl` 로 쟀다 — 값이 같아도 **같은 경로로 같았다고는 말할 수 없다.** 이 문서가 경로를
+축으로 세우는 이상 **표의 항목 이름에도 경로를 적는다.**</sub>
 
 **같은 MCP 도구가 한쪽에서 열리고 한쪽에서 닫힌다.** 그러므로
 `403 Resource not accessible by integration` 은 **경로만으로도 환경만으로도 정해지지
@@ -314,7 +318,8 @@ ERP`)에서 같은 항목을 쟀다.
 
 **그리고 표에 못 잰 칸이 하나 있다.** 이 환경의 MCP 작성자 이름은 쓰기가 403 이라
 관측되지 않았다 — 그러니 「신원이 붙는 방식까지 두 환경이 같다」고는 아직 말할 수
-없다. 같은 것으로 확인된 것은 `gh api user` · REST 쓰기 작성자 · GraphQL 세 줄이다.
+없다. 같은 것으로 확인된 것은 **읽기 신원** · REST 쓰기 작성자 · GraphQL 세 줄이고,
+그중 첫 줄은 **양쪽이 서로 다른 경로로 쟀다**(위 각주).
 
 **그래서 이 문서의 값을 다른 저장소 문서로 옮기지 않는다.** 저자가 이 정리를 `fleet` 의
 `AGENTS.md` 에 그대로 옮겨 커밋했다가 되돌렸다 — **`fleet` 에서는 MCP 쓰기가 멀쩡히
@@ -360,10 +365,13 @@ pinned set of PR-review operations is served.”* 였는데, 지금은 **REST �
 읽기(`GET .../ccr/review_threads`)는 다르다 — 부작용이 없고, **무엇이 아직
 해소되지 않았는지를 저자에게 알리는 데 쓴다.**
 
-**`gh` CLI 의 상당수가 GraphQL 클라이언트라 여기서 실패한다** — `gh pr view
---json number` 가 그렇다(전부는 아니다. 여기 드는 것은 **부작용 없이 확인해 본
-하나**다). `gh api repos/{o}/{r}/…`(REST)만 돈다. 「`gh` 가 안 된다」가 아니라
-**그 하위명령이 GraphQL 인가**로 갈린다.
+**`gh` CLI 의 하위명령 중에 GraphQL 클라이언트라 여기서 실패하는 것이 있다** —
+`gh pr view --json number` 가 그렇다. `gh api repos/{o}/{r}/…`(REST)는 돈다.
+「`gh` 가 안 된다」가 아니라 **그 하위명령이 GraphQL 인가**로 갈린다.
+
+**잰 것은 양쪽으로 하나씩이다.** 그러니 이것은 **가르는 기준**이지 어느 쪽이 얼마나
+되는지의 셈이 아니다 — 「상당수가 GraphQL 이다」도 「REST 는 `gh api` 뿐이다」도 여기
+있는 관측으로는 말할 수 없다. **쓸 하위명령이 생기면 그것을 따로 잰다.**
 
 **`--json` 에는 필드를 반드시 붙인다.** 필드 없이 쓰면 `gh` 가 요청을 보내기 전에
 필드를 요구하며 끝나므로, 그 실패는 전송 방식에 대해 **아무것도 말해 주지 않는다** —
@@ -383,7 +391,10 @@ pinned set of PR-review operations is served.”* 였는데, 지금은 **REST �
 재고, **판과 날짜를 함께** 적는다.</sub>
 
 <sub>실측 2026-09-14 · PR `#65` — GraphQL `POST /graphql` 403, `GET
-.../pulls/65/ccr/review_threads` 200(미해소 6건).</sub>
+.../pulls/65/ccr/review_threads` 200(미해소 6건). **2026-09-15 에 이 환경에서 다시 재도
+같았다** — 부작용 없는 읽기 질의(`viewer { login }`)로 건 `POST /graphql` 이 403 이고,
+거절 문구가 **위 표의 경로 넷을 그대로 나열했다**(문구가 또 바뀌지는 않았다).
+`GET .../pulls/72/ccr/review_threads` 는 200(14건 전부 미해소).</sub>
 
 <sub>**`POST .../ccr/ready_for_review` 는 그 뒤 실제로 불렸다** — 2026-09-14,
 `#70`·`#71`·`#72` 에 각각 `200 {"draft":false}`. **저자가 직접 지시해서 누른
